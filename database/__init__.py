@@ -66,6 +66,31 @@ class api_tx:
                 print(traceback.format_exc())
                 raise
 
+        # Phase W F.2 fix: if the previous transaction on this shared
+        # connection left it in INERROR (= "idle in transaction (aborted)")
+        # state, every subsequent execute() returns "current transaction
+        # is aborted, commands ignored" immediately and the api_tx __exit__
+        # rollback that should clear it can itself fail under statement_timeout.
+        # Proactively rollback before the new cursor opens so we always start
+        # from a clean tx slate.
+        status = _api_conn.info.transaction_status
+        if status in (
+            psycopg.pq.TransactionStatus.INERROR,
+            psycopg.pq.TransactionStatus.INTRANS,
+        ):
+            try:
+                _api_conn.rollback()
+            except:
+                # If rollback itself fails, recycle the connection.
+                try:
+                    _api_conn.close()
+                except:
+                    pass
+                _api_conn = psycopg.Connection.connect(
+                    conninfo=_api_conninfo,
+                    row_factory=psycopg.rows.dict_row,
+                )
+
         self.cur = _api_conn.cursor()
 
         if self.isolation_level != _default_transaction_isolation:
