@@ -50,7 +50,7 @@ sleep 3
 
 curl -X POST http://localhost:3000/config -H "Content-Type: application/json" -d '{
   "service": "ws://chat:5443",
-  "domain": "duolicious.app",
+  "domain": "ahavah.app",
   "resource": "testresource",
   "username": "'$user1uuid'",
   "password": "'$user1token'"
@@ -81,8 +81,8 @@ q "insert into skipped values ($user2id, $user1id, false, 'testing blocking')"
 curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
 <message
     type='chat'
-    from='$user1uuid@duolicious.app'
-    to='$user2uuid@duolicious.app'
+    from='$user1uuid@ahavah.app'
+    to='$user2uuid@ahavah.app'
     id='id1'
     check_uniqueness='false'
     xmlns='jabber:client'>
@@ -115,8 +115,8 @@ curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
 
 <message
     type='chat'
-    from='$user1uuid@duolicious.app'
-    to='$user2uuid@duolicious.app'
+    from='$user1uuid@ahavah.app'
+    to='$user2uuid@ahavah.app'
     id='id1'
     check_uniqueness='false'
     xmlns='jabber:client'>
@@ -140,12 +140,12 @@ curl -sX GET http://localhost:3000/pop | grep -qF '<duo_message_delivered id="id
 
 [[ "$(q "select count(*) from inbox where \
     luser = '${user1uuid}' and \
-    remote_bare_jid = '${user2uuid}@duolicious.app' and \
+    remote_bare_jid = '${user2uuid}@ahavah.app' and \
     box = 'chats'")" = 1 ]]
 
 [[ "$(q "select count(*) from inbox where \
     luser = '${user2uuid}' and \
-    remote_bare_jid = '${user1uuid}@duolicious.app' and \
+    remote_bare_jid = '${user1uuid}@ahavah.app' and \
     box = 'inbox'")" = 1 ]]
 
 
@@ -199,8 +199,8 @@ echo Unoriginal intros are rejected
 curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
 <message
     type='chat'
-    from='$user1uuid@duolicious.app'
-    to='$user3uuid@duolicious.app'
+    from='$user1uuid@ahavah.app'
+    to='$user3uuid@ahavah.app'
     id='id2'
     check_uniqueness='false'
     xmlns='jabber:client'>
@@ -228,8 +228,8 @@ q "update person set push_token = 'user-3-token' where uuid::text = '$user3uuid'
 curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
 <message
     type='chat'
-    from='$user1uuid@duolicious.app'
-    to='$user3uuid@duolicious.app'
+    from='$user1uuid@ahavah.app'
+    to='$user3uuid@ahavah.app'
     id='id3'
     check_uniqueness='false'
     xmlns='jabber:client'>
@@ -265,7 +265,7 @@ echo "User 3 can send user 1 an unoriginal message now that they're chatting"
 
 curl -X POST http://localhost:3000/config -H "Content-Type: application/json" -d '{
   "service": "ws://chat:5443",
-  "domain": "duolicious.app",
+  "domain": "ahavah.app",
   "resource": "testresource",
   "username": "'$user3uuid'",
   "password": "'$user3token'"
@@ -276,8 +276,8 @@ sleep 0.5
 curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
 <message
     type='chat'
-    from='$user3uuid@duolicious.app'
-    to='$user1uuid@duolicious.app'
+    from='$user3uuid@ahavah.app'
+    to='$user1uuid@ahavah.app'
     id='id3'
     check_uniqueness='false'
     xmlns='jabber:client'>
@@ -321,8 +321,8 @@ q "update person set intro_seconds = 0, chat_seconds = 0"
 curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
 <message
     type='chat'
-    from='$user3uuid@duolicious.app'
-    to='$user1uuid@duolicious.app'
+    from='$user3uuid@ahavah.app'
+    to='$user1uuid@ahavah.app'
     id='id3'
     check_uniqueness='false'
     xmlns='jabber:client'>
@@ -350,7 +350,7 @@ c DELETE /account
 
 curl -X POST http://localhost:3000/config -H "Content-Type: application/json" -d '{
   "service": "ws://chat:5443",
-  "domain": "duolicious.app",
+  "domain": "ahavah.app",
   "resource": "testresource",
   "username": "'$user1uuid'",
   "password": "'$user1token'"
@@ -362,7 +362,7 @@ curl -sX GET http://localhost:3000/pop | grep -qF '<failure xmlns="urn:ietf:para
 
 curl -X POST http://localhost:3000/config -H "Content-Type: application/json" -d '{
   "service": "ws://chat:5443",
-  "domain": "duolicious.app",
+  "domain": "ahavah.app",
   "resource": "testresource",
   "username": "'$user2uuid'",
   "password": "'$user2token'"

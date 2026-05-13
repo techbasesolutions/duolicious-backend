@@ -1,8 +1,8 @@
 To: [
-  "user2@duolicious.app"
+  "user2@ahavah.app"
 ]
 From: [
-  "Duolicious <no-reply@duolicious.app>"
+  "Ahavah <no-reply@ahavah.app>"
 ]
 Subj: [
   "=?utf-8?q?You_have_a_new_message_=F0=9F=98=8D?="
@@ -21,7 +21,7 @@ Body: <!DOCTYPE html>
                 <table style="max-width: 600px; width: 100%;" cellspacing="0" cellpadding="0" border="0" align="center">
                     <tr>
                         <td bgcolor="#70f" align="center">
-                            <img src="https://email-assets.duolicious.app/header-logo.png" alt="Duolicious Logo" width="108" height="50" />
+                            <img src="https://email-assets.ahavah.app/header-logo.png" alt="Ahavah Logo" width="108" height="50" />
                         </td>
                     </tr>
                     <tr>
@@ -38,10 +38,10 @@ Body: <!DOCTYPE html>
                         <table border="0" cellspacing="0" cellpadding="0">
                           <tbody><tr>
                             <td style="border-radius:50px; border:3px solid #70f; font-size: 20px; line-height:26px; color: #70f; text-align:center; min-width:auto!important">
-                              <a href="https://get.duolicious.app/" style="display:block;padding:11px 40px;text-decoration:none;color:#70f" target="_blank">
+                              <a href="https://get.ahavah.app/" style="display:block;padding:11px 40px;text-decoration:none;color:#70f" target="_blank">
                                 <span style="text-decoration:none;color:#70f">
                                   <strong>
-                                    Open Duolicious
+                                    Open Ahavah
                                   </strong>
                                 </span>
                               </a>
@@ -61,23 +61,23 @@ Body: <!DOCTYPE html>
                             <div>
                                 <p>Getting too many notifications? You can put a cap on how often you get them:</p>
                                 <span>Chats:
-                                    <a href="https://api.duolicious.app/update-notifications?email=user2%40duolicious.app&type=Chats&frequency=Immediately"  style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Immediately</a> |
-                                    <a href="https://api.duolicious.app/update-notifications?email=user2%40duolicious.app&type=Chats&frequency=Daily"        style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Daily</a> |
-                                    <a href="https://api.duolicious.app/update-notifications?email=user2%40duolicious.app&type=Chats&frequency=Every+3+days" style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Every 3 days</a> |
-                                    <a href="https://api.duolicious.app/update-notifications?email=user2%40duolicious.app&type=Chats&frequency=Weekly"       style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Weekly</a> |
-                                    <a href="https://api.duolicious.app/update-notifications?email=user2%40duolicious.app&type=Chats&frequency=Never"        style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Never</a>
+                                    <a href="https://api.ahavah.app/update-notifications?email=user2%40ahavah.app&type=Chats&frequency=Immediately"  style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Immediately</a> |
+                                    <a href="https://api.ahavah.app/update-notifications?email=user2%40ahavah.app&type=Chats&frequency=Daily"        style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Daily</a> |
+                                    <a href="https://api.ahavah.app/update-notifications?email=user2%40ahavah.app&type=Chats&frequency=Every+3+days" style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Every 3 days</a> |
+                                    <a href="https://api.ahavah.app/update-notifications?email=user2%40ahavah.app&type=Chats&frequency=Weekly"       style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Weekly</a> |
+                                    <a href="https://api.ahavah.app/update-notifications?email=user2%40ahavah.app&type=Chats&frequency=Never"        style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Never</a>
                                 </span>
                                 <br/>
                                 <br/>
                                 <span>Intros:
-                                    <a href="https://api.duolicious.app/update-notifications?email=user2%40duolicious.app&type=Intros&frequency=Immediately"  style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Immediately</a> |
-                                    <a href="https://api.duolicious.app/update-notifications?email=user2%40duolicious.app&type=Intros&frequency=Daily"        style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Daily</a> |
-                                    <a href="https://api.duolicious.app/update-notifications?email=user2%40duolicious.app&type=Intros&frequency=Every+3+days" style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Every 3 days</a> |
-                                    <a href="https://api.duolicious.app/update-notifications?email=user2%40duolicious.app&type=Intros&frequency=Weekly"       style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Weekly</a> |
-                                    <a href="https://api.duolicious.app/update-notifications?email=user2%40duolicious.app&type=Intros&frequency=Never"        style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Never</a>
+                                    <a href="https://api.ahavah.app/update-notifications?email=user2%40ahavah.app&type=Intros&frequency=Immediately"  style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Immediately</a> |
+                                    <a href="https://api.ahavah.app/update-notifications?email=user2%40ahavah.app&type=Intros&frequency=Daily"        style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Daily</a> |
+                                    <a href="https://api.ahavah.app/update-notifications?email=user2%40ahavah.app&type=Intros&frequency=Every+3+days" style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Every 3 days</a> |
+                                    <a href="https://api.ahavah.app/update-notifications?email=user2%40ahavah.app&type=Intros&frequency=Weekly"       style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Weekly</a> |
+                                    <a href="https://api.ahavah.app/update-notifications?email=user2%40ahavah.app&type=Intros&frequency=Never"        style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Never</a>
                                 </span>
                                 <p>
-                                    <a href="https://api.duolicious.app/update-notifications?email=user2%40duolicious.app&type=Every&frequency=Never" style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Unsubscribe all</a>
+                                    <a href="https://api.ahavah.app/update-notifications?email=user2%40ahavah.app&type=Every&frequency=Never" style="font-weight: 400; color: #bbb; padding: 3px; text-decoration: none;">Unsubscribe all</a>
                                 </p>
                             </div>
                         </td>

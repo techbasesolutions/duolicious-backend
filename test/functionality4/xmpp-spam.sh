@@ -39,7 +39,7 @@ sleep 3
 
 curl -X POST http://localhost:3000/config -H "Content-Type: application/json" -d '{
   "service": "ws://chat:5443",
-  "domain": "duolicious.app",
+  "domain": "ahavah.app",
   "resource": "testresource",
   "username": "'$user1uuid'",
   "password": "'$user1token'"
@@ -56,8 +56,8 @@ echo A potential spam message is blocked
 curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
 <message
     type='chat'
-    from='$user1uuid@duolicious.app'
-    to='$user2uuid@duolicious.app'
+    from='$user1uuid@ahavah.app'
+    to='$user2uuid@ahavah.app'
     id='id1'
     xmlns='jabber:client'>
   <body>You should join discord.gg/spaghetti</body>
@@ -83,8 +83,8 @@ echo A benign message is allowed
 curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
 <message
     type='chat'
-    from='$user1uuid@duolicious.app'
-    to='$user2uuid@duolicious.app'
+    from='$user1uuid@ahavah.app'
+    to='$user2uuid@ahavah.app'
     id='id1'
     xmlns='jabber:client'>
   <body>damn I want to volunteer to walk puppies</body>
@@ -115,7 +115,7 @@ echo Poential spam messages are allowed during established conversations
 
 curl -X POST http://localhost:3000/config -H "Content-Type: application/json" -d '{
   "service": "ws://chat:5443",
-  "domain": "duolicious.app",
+  "domain": "ahavah.app",
   "resource": "testresource",
   "username": "'$user2uuid'",
   "password": "'$user2token'"
@@ -126,8 +126,8 @@ echo 3
 curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
 <message
     type='chat'
-    from='$user2uuid@duolicious.app'
-    to='$user1uuid@duolicious.app'
+    from='$user2uuid@ahavah.app'
+    to='$user1uuid@ahavah.app'
     id='id1'
     xmlns='jabber:client'>
   <body>You should join discord.gg/spaghetti</body>
@@ -150,7 +150,7 @@ curl -sX GET http://localhost:3000/pop | grep -qF '<duo_message_delivered id="id
 
 curl -X POST http://localhost:3000/config -H "Content-Type: application/json" -d '{
   "service": "ws://chat:5443",
-  "domain": "duolicious.app",
+  "domain": "ahavah.app",
   "resource": "testresource",
   "username": "'$user3uuid'",
   "password": "'$user3token'"
@@ -167,8 +167,8 @@ q "update person set sign_up_time = now() - interval '7 days' where uuid = '$use
 curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
 <message
     type='chat'
-    from='$user3uuid@duolicious.app'
-    to='$user2uuid@duolicious.app'
+    from='$user3uuid@ahavah.app'
+    to='$user2uuid@ahavah.app'
     id='id1'
     xmlns='jabber:client'>
   <body>You should also join discord.gg/spaghetti</body>

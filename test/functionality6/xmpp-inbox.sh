@@ -54,7 +54,7 @@ send_message () {
   sleep 1
 
   # Construct the JSON payload equivalent to:
-  # <message type='chat' from='${fromUuid}@duolicious.app' to='${toUuid}@duolicious.app'
+  # <message type='chat' from='${fromUuid}@ahavah.app' to='${toUuid}@ahavah.app'
   #          id='id1' xmlns='jabber:client'>
   #   <body>${message}</body>
   #   <request xmlns='urn:xmpp:receipts'/>
@@ -63,8 +63,8 @@ send_message () {
 {
   "message": {
     "@type": "chat",
-    "@from": "${fromUuid}@duolicious.app",
-    "@to": "${toUuid}@duolicious.app",
+    "@from": "${fromUuid}@ahavah.app",
+    "@to": "${toUuid}@ahavah.app",
     "@id": "id1",
     "@xmlns": "jabber:client",
     "body": "${message}",
@@ -129,14 +129,14 @@ mark_displayed () {
   sleep 1
 
   # Construct JSON payload equivalent to:
-  # <message to='${toUuid}@duolicious.app' from='${fromUuid}@duolicious.app'>
+  # <message to='${toUuid}@ahavah.app' from='${fromUuid}@ahavah.app'>
   #   <displayed xmlns='urn:xmpp:chat-markers:0' id='${queryId}'/>
   # </message>
   read -r -d '' query <<EOF || true
 {
   "message": {
-    "@to": "${toUuid}@duolicious.app",
-    "@from": "${fromUuid}@duolicious.app",
+    "@to": "${toUuid}@ahavah.app",
+    "@from": "${fromUuid}@ahavah.app",
     "displayed": {
       "@xmlns": "urn:xmpp:chat-markers:0",
       "@id": "${queryId}"
@@ -174,8 +174,8 @@ expected_inbox_1=$(cat << EOF
 {
   "message": {
     "@xmlns": "jabber:client",
-    "@from": "${user1uuid}@duolicious.app",
-    "@to": "${user1uuid}@duolicious.app",
+    "@from": "${user1uuid}@ahavah.app",
+    "@to": "${user1uuid}@ahavah.app",
     "@id": "id1",
     "result": {
       "@xmlns": "erlang-solutions.com:xmpp:inbox:0",
@@ -189,8 +189,8 @@ expected_inbox_1=$(cat << EOF
         },
         "message": {
           "@xmlns": "jabber:client",
-          "@from": "${user2uuid}@duolicious.app",
-          "@to": "${user1uuid}@duolicious.app",
+          "@from": "${user2uuid}@ahavah.app",
+          "@to": "${user1uuid}@ahavah.app",
           "@id": "id1",
           "@type": "chat",
           "body": "from user 2 to user 1",
@@ -209,8 +209,8 @@ expected_inbox_1=$(cat << EOF
 {
   "message": {
     "@xmlns": "jabber:client",
-    "@from": "${user1uuid}@duolicious.app",
-    "@to": "${user1uuid}@duolicious.app",
+    "@from": "${user1uuid}@ahavah.app",
+    "@to": "${user1uuid}@ahavah.app",
     "@id": "id1",
     "result": {
       "@xmlns": "erlang-solutions.com:xmpp:inbox:0",
@@ -224,8 +224,8 @@ expected_inbox_1=$(cat << EOF
         },
         "message": {
           "@xmlns": "jabber:client",
-          "@from": "${user3uuid}@duolicious.app",
-          "@to": "${user1uuid}@duolicious.app",
+          "@from": "${user3uuid}@ahavah.app",
+          "@to": "${user1uuid}@ahavah.app",
           "@id": "id1",
           "@type": "chat",
           "body": "from user 3 to user 1",
@@ -255,8 +255,8 @@ expected_inbox_2=$(cat << EOF
 {
   "message": {
     "@xmlns": "jabber:client",
-    "@from": "${user2uuid}@duolicious.app",
-    "@to": "${user2uuid}@duolicious.app",
+    "@from": "${user2uuid}@ahavah.app",
+    "@to": "${user2uuid}@ahavah.app",
     "@id": "id1",
     "result": {
       "@xmlns": "erlang-solutions.com:xmpp:inbox:0",
@@ -270,8 +270,8 @@ expected_inbox_2=$(cat << EOF
         },
         "message": {
           "@xmlns": "jabber:client",
-          "@from": "${user2uuid}@duolicious.app",
-          "@to": "${user1uuid}@duolicious.app",
+          "@from": "${user2uuid}@ahavah.app",
+          "@to": "${user1uuid}@ahavah.app",
           "@id": "id1",
           "@type": "chat",
           "body": "from user 2 to user 1",
@@ -290,8 +290,8 @@ expected_inbox_2=$(cat << EOF
 {
   "message": {
     "@xmlns": "jabber:client",
-    "@from": "${user2uuid}@duolicious.app",
-    "@to": "${user2uuid}@duolicious.app",
+    "@from": "${user2uuid}@ahavah.app",
+    "@to": "${user2uuid}@ahavah.app",
     "@id": "id1",
     "result": {
       "@xmlns": "erlang-solutions.com:xmpp:inbox:0",
@@ -305,8 +305,8 @@ expected_inbox_2=$(cat << EOF
         },
         "message": {
           "@xmlns": "jabber:client",
-          "@from": "${user3uuid}@duolicious.app",
-          "@to": "${user2uuid}@duolicious.app",
+          "@from": "${user3uuid}@ahavah.app",
+          "@to": "${user2uuid}@ahavah.app",
           "@id": "id1",
           "@type": "chat",
           "body": "from user 3 to user 2",
@@ -336,8 +336,8 @@ expected_inbox_3=$(cat << EOF
 {
   "message": {
     "@xmlns": "jabber:client",
-    "@from": "${user3uuid}@duolicious.app",
-    "@to": "${user3uuid}@duolicious.app",
+    "@from": "${user3uuid}@ahavah.app",
+    "@to": "${user3uuid}@ahavah.app",
     "@id": "id1",
     "result": {
       "@xmlns": "erlang-solutions.com:xmpp:inbox:0",
@@ -351,8 +351,8 @@ expected_inbox_3=$(cat << EOF
         },
         "message": {
           "@xmlns": "jabber:client",
-          "@from": "${user3uuid}@duolicious.app",
-          "@to": "${user1uuid}@duolicious.app",
+          "@from": "${user3uuid}@ahavah.app",
+          "@to": "${user1uuid}@ahavah.app",
           "@id": "id1",
           "@type": "chat",
           "body": "from user 3 to user 1",
@@ -371,8 +371,8 @@ expected_inbox_3=$(cat << EOF
 {
   "message": {
     "@xmlns": "jabber:client",
-    "@from": "${user3uuid}@duolicious.app",
-    "@to": "${user3uuid}@duolicious.app",
+    "@from": "${user3uuid}@ahavah.app",
+    "@to": "${user3uuid}@ahavah.app",
     "@id": "id1",
     "result": {
       "@xmlns": "erlang-solutions.com:xmpp:inbox:0",
@@ -386,8 +386,8 @@ expected_inbox_3=$(cat << EOF
         },
         "message": {
           "@xmlns": "jabber:client",
-          "@from": "${user3uuid}@duolicious.app",
-          "@to": "${user2uuid}@duolicious.app",
+          "@from": "${user3uuid}@ahavah.app",
+          "@to": "${user2uuid}@ahavah.app",
           "@id": "id1",
           "@type": "chat",
           "body": "from user 3 to user 2",
@@ -426,8 +426,8 @@ expected_inbox_1=$(cat << EOF
 {
   "message": {
     "@xmlns": "jabber:client",
-    "@from": "${user1uuid}@duolicious.app",
-    "@to": "${user1uuid}@duolicious.app",
+    "@from": "${user1uuid}@ahavah.app",
+    "@to": "${user1uuid}@ahavah.app",
     "@id": "id1",
     "result": {
       "@xmlns": "erlang-solutions.com:xmpp:inbox:0",
@@ -441,8 +441,8 @@ expected_inbox_1=$(cat << EOF
         },
         "message": {
           "@xmlns": "jabber:client",
-          "@from": "${user2uuid}@duolicious.app",
-          "@to": "${user1uuid}@duolicious.app",
+          "@from": "${user2uuid}@ahavah.app",
+          "@to": "${user1uuid}@ahavah.app",
           "@id": "id1",
           "@type": "chat",
           "body": "from user 2 to user 1",
@@ -461,8 +461,8 @@ expected_inbox_1=$(cat << EOF
 {
   "message": {
     "@xmlns": "jabber:client",
-    "@from": "${user1uuid}@duolicious.app",
-    "@to": "${user1uuid}@duolicious.app",
+    "@from": "${user1uuid}@ahavah.app",
+    "@to": "${user1uuid}@ahavah.app",
     "@id": "id1",
     "result": {
       "@xmlns": "erlang-solutions.com:xmpp:inbox:0",
@@ -476,8 +476,8 @@ expected_inbox_1=$(cat << EOF
         },
         "message": {
           "@xmlns": "jabber:client",
-          "@from": "${user3uuid}@duolicious.app",
-          "@to": "${user1uuid}@duolicious.app",
+          "@from": "${user3uuid}@ahavah.app",
+          "@to": "${user1uuid}@ahavah.app",
           "@id": "id1",
           "@type": "chat",
           "body": "from user 3 to user 1",

@@ -51,8 +51,8 @@ read -r -d '' payload <<EOF || true
 {
   "message": {
     "@type": "chat",
-    "@from": "${user1uuid}@duolicious.app",
-    "@to": "${user4uuid}@duolicious.app",
+    "@from": "${user1uuid}@ahavah.app",
+    "@to": "${user4uuid}@ahavah.app",
     "@id": "id1",
     "@xmlns": "jabber:client",
     "body": "this message should require verification",
@@ -97,8 +97,8 @@ read -r -d '' payload <<EOF || true
 {
   "message": {
     "@type": "chat",
-    "@from": "${user2uuid}@duolicious.app",
-    "@to": "${user4uuid}@duolicious.app",
+    "@from": "${user2uuid}@ahavah.app",
+    "@to": "${user4uuid}@ahavah.app",
     "@id": "id2",
     "@xmlns": "jabber:client",
     "body": "this message should require verification but be sent",
@@ -142,8 +142,8 @@ read -r -d '' payload <<EOF || true
 {
   "message": {
     "@type": "chat",
-    "@from": "${user3uuid}@duolicious.app",
-    "@to": "${user4uuid}@duolicious.app",
+    "@from": "${user3uuid}@ahavah.app",
+    "@to": "${user4uuid}@ahavah.app",
     "@id": "id3",
     "@xmlns": "jabber:client",
     "body": "this message should be sent because verification isn't required",

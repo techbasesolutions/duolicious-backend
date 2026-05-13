@@ -92,7 +92,7 @@ test_rate_limit () {
 
   curl -X POST http://localhost:3000/config -H "Content-Type: application/json" -d '{
     "service": "ws://chat:5443",
-    "domain": "duolicious.app",
+    "domain": "ahavah.app",
     "resource": "testresource",
     "username": "'$sender2uuid'",
     "password": "'$sender2token'"
@@ -107,8 +107,8 @@ test_rate_limit () {
   curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
   <message
       type='chat'
-      from='$sender2uuid@duolicious.app'
-      to='$sender1uuid@duolicious.app'
+      from='$sender2uuid@ahavah.app'
+      to='$sender1uuid@ahavah.app'
       id='id'
       xmlns='jabber:client'>
     <body>from sender 2 to sender 1</body>
@@ -124,7 +124,7 @@ test_rate_limit () {
 
   curl -X POST http://localhost:3000/config -H "Content-Type: application/json" -d '{
     "service": "ws://chat:5443",
-    "domain": "duolicious.app",
+    "domain": "ahavah.app",
     "resource": "testresource",
     "username": "'$sender1uuid'",
     "password": "'$sender1token'"
@@ -138,8 +138,8 @@ test_rate_limit () {
   curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
   <message
       type='chat'
-      from='$sender1uuid@duolicious.app'
-      to='$sender2uuid@duolicious.app'
+      from='$sender1uuid@ahavah.app'
+      to='$sender2uuid@ahavah.app'
       id='id'
       xmlns='jabber:client'>
     <body>from sender 1 to sender 2</body>
@@ -156,8 +156,8 @@ test_rate_limit () {
     curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
     <message
         type='chat'
-        from='$sender1uuid@duolicious.app'
-        to='$recipientUuid@duolicious.app'
+        from='$sender1uuid@ahavah.app'
+        to='$recipientUuid@ahavah.app'
         id='id$i'
         xmlns='jabber:client'>
       <body>${greetings[$i]}</body>
@@ -177,8 +177,8 @@ test_rate_limit () {
   curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
   <message
       type='chat'
-      from='$sender1uuid@duolicious.app'
-      to='$recipientNUuid@duolicious.app'
+      from='$sender1uuid@ahavah.app'
+      to='$recipientNUuid@ahavah.app'
       id='id${max_intros_per_day}'
       xmlns='jabber:client'>
     <body>${greetings[$max_intros_per_day]}</body>
@@ -200,8 +200,8 @@ test_rate_limit () {
   curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
   <message
       type='chat'
-      from='$sender1uuid@duolicious.app'
-      to='$recipientN1Uuid@duolicious.app'
+      from='$sender1uuid@ahavah.app'
+      to='$recipientN1Uuid@ahavah.app'
       id='id999'
       xmlns='jabber:client'>
       <body>${greetings[$((max_intros_per_day + 1))]}</body>
@@ -230,8 +230,8 @@ test_rate_limit () {
   curl -X POST http://localhost:3000/send -H "Content-Type: application/xml" -d "
   <message
       type='chat'
-      from='$sender1uuid@duolicious.app'
-      to='$recipientN1Uuid@duolicious.app'
+      from='$sender1uuid@ahavah.app'
+      to='$recipientN1Uuid@ahavah.app'
       id='id$((max_intros_per_day + 2))'
       xmlns='jabber:client'>
       <body>${greetings[$((max_intros_per_day + 2))]}</body>

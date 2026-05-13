@@ -19,12 +19,12 @@ setup () {
 
   q "
   UPDATE person
-  SET email = REPLACE(email, '@example.com', '@duolicious.app')
+  SET email = REPLACE(email, '@example.com', '@ahavah.app')
   "
 
-  user1id=$(q "select uuid from person where email = 'user1@duolicious.app'")
-  user2id=$(q "select uuid from person where email = 'user2@duolicious.app'")
-  user3id=$(q "select uuid from person where email = 'user3@duolicious.app'")
+  user1id=$(q "select uuid from person where email = 'user1@ahavah.app'")
+  user2id=$(q "select uuid from person where email = 'user2@ahavah.app'")
+  user3id=$(q "select uuid from person where email = 'user3@ahavah.app'")
 
   q "update person set last_online_time = to_timestamp(0) where uuid = '$user1id'"
   q "update person set last_online_time = to_timestamp(0) where uuid = '$user2id'"

@@ -69,8 +69,8 @@ send_audio_messages () {
 {
   "message": {
     "@type": "chat",
-    "@from": "${fromUuid}@duolicious.app",
-    "@to": "${toUuid}@duolicious.app",
+    "@from": "${fromUuid}@ahavah.app",
+    "@to": "${toUuid}@ahavah.app",
     "@id": "id1",
     "@xmlns": "jabber:client",
     "@audio_base64": "${message}"
@@ -157,7 +157,7 @@ get_conversation () {
           },
           {
             "@var": "with",
-            "value": "${otherPersonUuid}@duolicious.app"
+            "value": "${otherPersonUuid}@ahavah.app"
           }
         ]
       },
@@ -240,8 +240,8 @@ expected_conversation_1_2=$(cat << EOF
   {
     "message": {
       "@xmlns": "jabber:client",
-      "@from": "${user1uuid}@duolicious.app",
-      "@to": "${user1uuid}@duolicious.app",
+      "@from": "${user1uuid}@ahavah.app",
+      "@to": "${user1uuid}@ahavah.app",
       "@id": "redacted",
       "result": {
         "@xmlns": "urn:xmpp:mam:2",
@@ -255,12 +255,12 @@ expected_conversation_1_2=$(cat << EOF
           },
           "message": {
             "@xmlns": "jabber:client",
-            "@from": "${user1uuid}@duolicious.app",
+            "@from": "${user1uuid}@ahavah.app",
             "@id": "redacted",
-            "@to": "${user2uuid}@duolicious.app",
+            "@to": "${user2uuid}@ahavah.app",
             "@type": "chat",
             "@audio_uuid": "redacted",
-            "body": "Voice message\n                                                                                                                                \nUpgrade to the latest version of Duolicious to hear this message",
+            "body": "Voice message\n                                                                                                                                \nUpgrade to the latest version of Ahavah to hear this message",
             "request": {
               "@xmlns": "urn:xmpp:receipts"
             }
@@ -272,8 +272,8 @@ expected_conversation_1_2=$(cat << EOF
   {
     "iq": {
       "@xmlns": "jabber:client",
-      "@from": "${user1uuid}@duolicious.app",
-      "@to": "${user1uuid}@duolicious.app",
+      "@from": "${user1uuid}@ahavah.app",
+      "@to": "${user1uuid}@ahavah.app",
       "@id": "$(( query_id_1 + 1 ))",
       "@type": "result",
       "fin": {
@@ -284,8 +284,8 @@ expected_conversation_1_2=$(cat << EOF
   {
     "iq": {
       "@xmlns": "jabber:client",
-      "@from": "${user1uuid}@duolicious.app",
-      "@to": "${user1uuid}@duolicious.app",
+      "@from": "${user1uuid}@ahavah.app",
+      "@to": "${user1uuid}@ahavah.app",
       "@id": "$(( query_id_1 + 2 ))",
       "@type": "result",
       "fin": {
@@ -302,8 +302,8 @@ expected_conversation_2_1=$(cat << EOF
   {
     "message": {
       "@xmlns": "jabber:client",
-      "@from": "${user2uuid}@duolicious.app",
-      "@to": "${user2uuid}@duolicious.app",
+      "@from": "${user2uuid}@ahavah.app",
+      "@to": "${user2uuid}@ahavah.app",
       "@id": "redacted",
       "result": {
         "@xmlns": "urn:xmpp:mam:2",
@@ -317,12 +317,12 @@ expected_conversation_2_1=$(cat << EOF
           },
           "message": {
             "@xmlns": "jabber:client",
-            "@from": "${user1uuid}@duolicious.app",
+            "@from": "${user1uuid}@ahavah.app",
             "@id": "redacted",
-            "@to": "${user2uuid}@duolicious.app",
+            "@to": "${user2uuid}@ahavah.app",
             "@type": "chat",
             "@audio_uuid": "redacted",
-            "body": "Voice message\n                                                                                                                                \nUpgrade to the latest version of Duolicious to hear this message",
+            "body": "Voice message\n                                                                                                                                \nUpgrade to the latest version of Ahavah to hear this message",
             "request": {
               "@xmlns": "urn:xmpp:receipts"
             }
@@ -334,8 +334,8 @@ expected_conversation_2_1=$(cat << EOF
   {
     "iq": {
       "@xmlns": "jabber:client",
-      "@from": "${user2uuid}@duolicious.app",
-      "@to": "${user2uuid}@duolicious.app",
+      "@from": "${user2uuid}@ahavah.app",
+      "@to": "${user2uuid}@ahavah.app",
       "@id": "$(( query_id_2 + 1 ))",
       "@type": "result",
       "fin": {
@@ -346,8 +346,8 @@ expected_conversation_2_1=$(cat << EOF
   {
     "iq": {
       "@xmlns": "jabber:client",
-      "@from": "${user2uuid}@duolicious.app",
-      "@to": "${user2uuid}@duolicious.app",
+      "@from": "${user2uuid}@ahavah.app",
+      "@to": "${user2uuid}@ahavah.app",
       "@id": "$(( query_id_2 + 2 ))",
       "@type": "result",
       "fin": {
@@ -364,8 +364,8 @@ expected_conversation_1_3=$(cat << EOF
   {
     "message": {
       "@xmlns": "jabber:client",
-      "@from": "${user1uuid}@duolicious.app",
-      "@to": "${user1uuid}@duolicious.app",
+      "@from": "${user1uuid}@ahavah.app",
+      "@to": "${user1uuid}@ahavah.app",
       "@id": "redacted",
       "result": {
         "@xmlns": "urn:xmpp:mam:2",
@@ -379,12 +379,12 @@ expected_conversation_1_3=$(cat << EOF
           },
           "message": {
             "@xmlns": "jabber:client",
-            "@from": "${user1uuid}@duolicious.app",
+            "@from": "${user1uuid}@ahavah.app",
             "@id": "redacted",
-            "@to": "${user3uuid}@duolicious.app",
+            "@to": "${user3uuid}@ahavah.app",
             "@type": "chat",
             "@audio_uuid": "redacted",
-            "body": "Voice message\n                                                                                                                                \nUpgrade to the latest version of Duolicious to hear this message",
+            "body": "Voice message\n                                                                                                                                \nUpgrade to the latest version of Ahavah to hear this message",
             "request": {
               "@xmlns": "urn:xmpp:receipts"
             }
@@ -396,8 +396,8 @@ expected_conversation_1_3=$(cat << EOF
   {
     "iq": {
       "@xmlns": "jabber:client",
-      "@from": "${user1uuid}@duolicious.app",
-      "@to": "${user1uuid}@duolicious.app",
+      "@from": "${user1uuid}@ahavah.app",
+      "@to": "${user1uuid}@ahavah.app",
       "@id": "$(( query_id_3 + 1 ))",
       "@type": "result",
       "fin": {
@@ -408,8 +408,8 @@ expected_conversation_1_3=$(cat << EOF
   {
     "iq": {
       "@xmlns": "jabber:client",
-      "@from": "${user1uuid}@duolicious.app",
-      "@to": "${user1uuid}@duolicious.app",
+      "@from": "${user1uuid}@ahavah.app",
+      "@to": "${user1uuid}@ahavah.app",
       "@id": "$(( query_id_3 + 2 ))",
       "@type": "result",
       "fin": {
