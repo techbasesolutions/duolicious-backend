@@ -1,4 +1,13 @@
 """Thread‑safe SMTP helper with typed API and automatic retries.
+
+Phase W: gained an opt-in HTTPS path to Resend's API at /emails. Set
+`DUO_USE_RESEND_API=true` to bypass smtplib entirely and POST messages
+over port 443 instead of 25/465/587. DigitalOcean droplets block
+outbound SMTP ports by default (anti-spam policy), so the HTTPS path
+is the only practical way to send mail from a DO-hosted backend.
+When the flag is on, `host`/`port`/`username` are ignored; `password`
+is used as the Resend API key (matches the `DUO_SMTP_PASS=re_...`
+configuration pattern Resend itself documents for SMTP-bridge clients).
 """
 
 import os
@@ -16,6 +25,18 @@ SMTP_HOST: str = os.environ["DUO_SMTP_HOST"]
 SMTP_PORT: int = int(os.environ["DUO_SMTP_PORT"])
 SMTP_USER: str = os.environ["DUO_SMTP_USER"]
 SMTP_PASS: str = os.environ["DUO_SMTP_PASS"]
+USE_RESEND_API: bool = os.environ.get("DUO_USE_RESEND_API", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+RESEND_API_URL: str = "https://api.resend.com/emails"
+
+# Phase W staging: ahavah.app isn't verified in Resend yet (domain not
+# even registered). Override every outbound from-address to the universal
+# `onboarding@resend.dev` placeholder (works on every Resend account
+# without domain verification). Unset to restore caller-supplied from.
+RESEND_FROM_OVERRIDE: str = os.environ.get("DUO_RESEND_FROM_OVERRIDE", "")
 
 
 class Smtp:
@@ -34,7 +55,11 @@ class Smtp:
 
         self._lock: threading.RLock = threading.RLock()
 
-        self._connect()
+        # Phase W: defer SMTP connection until first send. Eager-connecting at
+        # __init__ time crashed module imports when SMTP was unreachable
+        # (e.g. DigitalOcean blocks outbound 587 → smtplib hangs → Smtp.__init__
+        # raises → smtp module import fails → entire api container fails to
+        # boot). _try_send already calls _connect lazily when self._smtp is None.
 
     def _connect(self) -> None:
         """(Re)‑establish an SMTP connection (protected by *lock*)."""
@@ -74,6 +99,17 @@ class Smtp:
         to_addr: str,
         from_addr: str | None = None,
     ) -> None:
+        # Phase W: branch to Resend HTTPS API when DUO_USE_RESEND_API=true.
+        # See module docstring for context (DO blocks outbound SMTP ports).
+        if USE_RESEND_API:
+            self._try_send_resend_api(
+                subject=subject,
+                body=body,
+                to_addr=to_addr,
+                from_addr=from_addr,
+            )
+            return
+
         if self._smtp is None:
             # Lazily reconnect if previous attempt failed.
             self._connect()
@@ -94,6 +130,52 @@ class Smtp:
             to_addrs=[to_addr],
             msg=msg.as_string(),
         )
+
+    def _try_send_resend_api(
+        self,
+        *,
+        subject: str,
+        body: str,
+        to_addr: str,
+        from_addr: str | None = None,
+    ) -> None:
+        """Send via Resend's HTTPS API (port 443) instead of SMTP.
+
+        Uses `requests` (already installed transitively via boto3) instead
+        of `urllib` because Cloudflare in front of Resend returns "1010"
+        403 against urllib's TLS fingerprint. `requests` has a fingerprint
+        Cloudflare accepts as legitimate.
+
+        self.password = Resend API key (matches the SMTP-bridge config
+        pattern where DUO_SMTP_PASS holds re_…).
+        """
+        import requests
+
+        # Phase W staging: force every from-address to RESEND_FROM_OVERRIDE
+        # if set, because ahavah.app isn't a verified Resend domain yet.
+        # Unset env var = use caller-supplied from_addr as normal.
+        _from_addr: str = (
+            RESEND_FROM_OVERRIDE or from_addr or f"no-reply@{EMAIL_DOMAIN}"
+        )
+        payload = {
+            "from": f"{PRODUCT_NAME} <{_from_addr}>",
+            "to": [to_addr],
+            "subject": subject,
+            "html": body,
+        }
+        resp = requests.post(
+            RESEND_API_URL,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {self.password}",
+                "User-Agent": "ahavah-backend/1.0",
+            },
+            timeout=15,
+        )
+        if resp.status_code >= 300:
+            raise Exception(
+                f"Resend API HTTP {resp.status_code}: {resp.text[:500]}"
+            )
 
     def send(
         self,
@@ -131,9 +213,14 @@ class Smtp:
                 print(f"Attempt {attempt} failed; retrying in {delay:.1f}s.")
                 time.sleep(delay)
 
-                # Best effort reconnect for the next iteration
-                with suppress(Exception):
-                    self._connect()
+                # Best effort reconnect for the next iteration. Skip when
+                # on the HTTPS Resend path: _connect() opens an SMTP socket
+                # on port 587 which DigitalOcean droplets block by default,
+                # causing each "reconnect" to hang for the smtplib timeout
+                # (30s) and turning a 7s backoff into 90s+ of waiting.
+                if not USE_RESEND_API:
+                    with suppress(Exception):
+                        self._connect()
 
     # ------------------------------------------------------------------
 
