@@ -2,12 +2,26 @@ from pathlib import Path
 from typing import Optional
 from flask import request
 import duotypes as t
+
+# Task 0.5 telemetry: init Sentry as early as possible so import-time errors
+# in the rest of this module are captured. No-op if SENTRY_DSN is unset.
+from util.analytics import init_sentry as _init_sentry
+_init_sentry()
+
 from service import (
+    discovery,
+    identity_verification,
     location,
     person,
-    question,
+    revenuecat_webhook,
     search,
+    translation,
 )
+# `question` import removed in Task 0.3c — Q&A subsystem strip.
+# `discovery` added in Phase 1 Task 1.3 — country/language/long-distance prefs.
+# `translation` added in Phase 2 Task 2.4 — outgoing translation preview.
+# `identity_verification` added in Phase 3 Task 3.1 — Stripe Identity gold tier.
+# `revenuecat_webhook` added in Phase 5 Task 5.2 — IAP receipt validation.
 from database import api_tx
 import psycopg
 from service.api.decorators import (
@@ -237,23 +251,9 @@ def delete_onboardee_info(req: t.DeleteOnboardeeInfo, s: t.SessionInfo):
 def post_finish_onboarding(s: t.SessionInfo):
     return person.post_finish_onboarding(s)
 
-@aget('/next-questions')
-def get_next_questions(s: t.SessionInfo):
-    return question.get_next_questions(
-        s=s,
-        n=request.args.get('n', '10'),
-        o=request.args.get('o', '0'),
-    )
-
-@apost('/answer')
-@validate(t.PostAnswer)
-def post_answer(req: t.PostAnswer, s: t.SessionInfo):
-    return person.post_answer(req, s)
-
-@adelete('/answer')
-@validate(t.DeleteAnswer)
-def delete_answer(req: t.DeleteAnswer, s: t.SessionInfo):
-    return person.delete_answer(req, s)
+# /next-questions, POST /answer, DELETE /answer routes removed in Task 0.3c —
+# Q&A subsystem strip per audit. The `person.post_answer` / `person.delete_answer`
+# methods will be removed in Task 0.3f.
 
 @aget('/search')
 def get_search(s: t.SessionInfo):
@@ -344,28 +344,9 @@ def post_unskip(s: t.SessionInfo, prospect_person_id: int):
 def post_unskip_by_uuid(s: t.SessionInfo, prospect_uuid: str):
     return person.post_unskip_by_uuid(s, prospect_uuid)
 
-@aget(
-    '/compare-personalities'
-    '/<int:prospect_person_id>'
-    '/<any(mbti, big5, attachment, politics, other):topic>'
-)
-def get_compare_personalities(
-    s: t.SessionInfo,
-    prospect_person_id: int,
-    topic: str
-):
-    return person.get_compare_personalities(s, prospect_person_id, topic)
-
-@aget('/compare-answers/<int:prospect_person_id>')
-def get_compare_answers(s: t.SessionInfo, prospect_person_id: int):
-    return person.get_compare_answers(
-        s,
-        prospect_person_id,
-        agreement=request.args.get('agreement'),
-        topic=request.args.get('topic'),
-        n=request.args.get('n', '10'),
-        o=request.args.get('o', '0'),
-    )
+# /compare-personalities and /compare-answers/<id> routes removed in Task 0.3c.
+# The `person.get_compare_personalities` / `person.get_compare_answers` methods
+# will be removed in Task 0.3f.
 
 @apost('/inbox-info')
 @validate(t.PostInboxInfo)
@@ -374,7 +355,59 @@ def post_inbox_info(req: t.PostInboxInfo, s: t.SessionInfo):
 
 @adelete('/account')
 def delete_account(s: t.SessionInfo):
+    # Task 0.7 note: this is duolicious's existing immediate hard-delete.
+    # Plan Phase 5 enhancement: convert to soft-delete + 7-day grace +
+    # cancel-link email (Resend). The user's deletion_requested_at gets set;
+    # the cron worker hard-deletes after grace expires. Required for the
+    # "wait, I clicked delete by mistake" recovery path App Store reviewers
+    # tend to test.
     return person.delete_or_ban_account(s=s)
+
+@aget('/account/export')
+def get_account_export(s: t.SessionInfo):
+    """GDPR right-to-portability export. Returns the user's profile data as
+    JSON. Phase 0 Task 0.7 stub — currently returns the same shape as
+    `/profile-info`. Phase 5+ extends to include messages history, swipes,
+    and matches in a portable archive."""
+    return person.get_profile_info(s)
+
+# --- Phase 1 Task 1.3 — discovery preferences -----------------------------
+
+@aget('/discovery-prefs')
+def get_discovery_prefs(s: t.SessionInfo):
+    return discovery.get_discovery_prefs(s)
+
+@apatch('/discovery-prefs')
+def patch_discovery_prefs(s: t.SessionInfo):
+    return discovery.patch_discovery_prefs(s)
+
+@apost('/search-preference-country')
+def post_search_preference_country(s: t.SessionInfo):
+    return discovery.post_search_preference_country(s)
+
+@apost('/search-preference-language')
+def post_search_preference_language(s: t.SessionInfo):
+    return discovery.post_search_preference_language(s)
+
+@apost('/search-preference-long-distance')
+def post_search_preference_long_distance(s: t.SessionInfo):
+    return discovery.post_search_preference_long_distance(s)
+
+@apost('/translate-preview')
+def post_translate_preview(s: t.SessionInfo):
+    return translation.post_translate_preview(s)
+
+@apost('/verification/start-id-flow')
+def post_start_id_flow(s: t.SessionInfo):
+    return identity_verification.post_start_id_flow(s)
+
+@post('/webhooks/stripe-identity')
+def post_stripe_identity_webhook():
+    return identity_verification.post_stripe_identity_webhook()
+
+@post('/webhooks/revenuecat')
+def post_revenuecat_webhook():
+    return revenuecat_webhook.post_revenuecat_webhook()
 
 @apost('/deactivate')
 def post_deactivate(s: t.SessionInfo):
@@ -403,19 +436,8 @@ def get_search_filers(s: t.SessionInfo):
 def post_search_filter(req: t.PostSearchFilter, s: t.SessionInfo):
     return person.post_search_filter(req, s)
 
-@aget('/search-filter-questions')
-def get_search_filter_questions(s: t.SessionInfo):
-    return question.get_search_filter_questions(
-        s=s,
-        q=request.args.get('q', ''),
-        n=request.args.get('n', '10'),
-        o=request.args.get('o', '0'),
-    )
-
-@apost('/search-filter-answer')
-@validate(t.PostSearchFilterAnswer)
-def post_search_filter_answer(req: t.PostSearchFilterAnswer, s: t.SessionInfo):
-    return person.post_search_filter_answer(req, s)
+# /search-filter-questions and /search-filter-answer routes removed in Task 0.3c.
+# The `person.post_search_filter_answer` method will be removed in Task 0.3f.
 
 @aget('/search-clubs')
 def get_search_clubs(s: t.SessionInfo):

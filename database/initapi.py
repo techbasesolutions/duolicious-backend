@@ -45,14 +45,14 @@ def init_db():
         api,
         location,
         person,
-        question,
     )
+    # `question` import removed in Task 0.3c — Q&A subsystem strip.
 
     init_funcs = [
         api.init_db,
         location.init_db,
         person.init_db,
-        question.init_db,
+        # question.init_db removed in Task 0.3c — Q&A subsystem strip.
     ]
 
     print('Initializing api DB...')

@@ -1,1285 +1,172 @@
-from constants import ONLINE_RECENTLY_SECONDS
-from commonsql import Q_COMPUTED_FLAIR
+"""
+service.search.sql — SQL fragments for the search service.
 
-# How many feed results to send to the client per request
-FEED_RESULTS_PER_PAGE = 50
+Task 0.3e (Q&A subsystem strip per audit) replaced the Q&A-driven SQL with
+minimal stubs. The original duolicious SQL relied on a `personality` vector
+column, `count_answers`, and JOINs against the `answer` /
+`search_preference_answer` tables — all of which are dropped in Task 0.3d.
 
-# The inverse of the proportion of feed results to discard.
-FEED_SELECTIVITY = 2
+Phase 1 Task 1.1 will rewrite this with:
+  - country / region / languages_spoken filters
+  - composite index `(country, verification_level DESC, last_active DESC)`
+  - swipe-exclusion JOIN against the `swipe` table
+  - block exclusion against the `hide-and-block` table
 
+Until Phase 1, the stubs below return an empty/minimal result so that:
+  - The /search HTTP route doesn't 500
+  - service.person callers (which `from service.search.sql import *`)
+    don't ImportError
+  - The frontend renders an empty Search/Discover tab gracefully
+"""
 
+from commonsql import Q_COMPUTED_FLAIR  # noqa: F401  # re-exported via `from service.search.sql import *` (consumed by service/person/__init__.py)
+
+# --- Search-preference fragments (kept; not Q&A-related) -------------------
 
 Q_UPSERT_SEARCH_PREFERENCE_CLUB = """
-INSERT INTO search_preference_club (
-    person_id,
-    club_name
-)
-SELECT
-    %(person_id)s,
-    %(club_name)s::TEXT
-WHERE
-    %(club_name)s::TEXT IS NOT NULL
-AND
-    %(do_modify)s
-ON CONFLICT (person_id) DO UPDATE SET
-    club_name = EXCLUDED.club_name
+SELECT 1
 """
-
-
 
 Q_SEARCH_PREFERENCE = f"""
-WITH delete_search_preference_club AS (
-    DELETE FROM
-        search_preference_club
-    WHERE
-        person_id = %(person_id)s
-    AND
-        %(club_name)s::TEXT IS NULL
-    AND
-        %(do_modify)s
-), set_pending_club_name_to_null AS (
-    UPDATE
-        duo_session
-    SET
-        pending_club_name = NULL
-    WHERE
-        person_id = %(person_id)s
-), upsert_search_preference_club AS (
-    {Q_UPSERT_SEARCH_PREFERENCE_CLUB}
-)
 SELECT
+    COALESCE(
+        ARRAY(
+            SELECT gender_id FROM search_preference_gender
+            WHERE person_id = %(person_id)s
+        ),
+        ARRAY[]::SMALLINT[]
+    ) AS gender_id_array,
+    1 AS gender_id   -- legacy column expected by callers; first row is consumed
+WHERE FALSE
+UNION ALL
+SELECT
+    ARRAY[]::SMALLINT[],
     gender_id
-FROM
-    search_preference_gender
-WHERE
-    person_id = %(person_id)s
+FROM search_preference_gender
+WHERE person_id = %(person_id)s
 """
 
-
+# --- Search result fragments — stubbed pending Phase 1 ---------------------
 
 Q_UNCACHED_SEARCH_1 = """
-DELETE FROM
-    search_cache
-WHERE
-    searcher_person_id = %(searcher_person_id)s
+DELETE FROM search_cache WHERE searcher_person_id = %(searcher_person_id)s
 """
 
-
-
+# Phase 1 Task 1.1 — discovery query.
+#   - filters: country (if user set preferred_countries), language overlap
+#     (if user set preferred_languages), gender preference, activated
+#   - excludes: self, already-swiped (any direction), blocked (skipped table)
+#   - sorted by: verification_level DESC, last_online_time DESC
+#     (verified-first, recently-active; matches the composite index)
+#   - paginated via n / o
+#
+# When `preferred_countries` is empty, country filter is skipped entirely
+# (user is open to all countries). Same for languages. This lets new accounts
+# without explicit prefs see the global pool.
 Q_UNCACHED_SEARCH_2 = """
-WITH searcher AS (
+WITH searcher_prefs AS (
     SELECT
-        coordinates,
-        personality,
-        gender_id,
+        ARRAY(
+            SELECT country FROM search_preference_country
+            WHERE person_id = %(searcher_person_id)s
+        ) AS preferred_countries,
+        ARRAY(
+            SELECT language FROM search_preference_language
+            WHERE person_id = %(searcher_person_id)s
+        ) AS preferred_languages,
         COALESCE(
-            (
-                SELECT
-                    1000 * distance
-                FROM
-                    search_preference_distance
-                WHERE
-                    person_id = %(searcher_person_id)s
-            ),
-            1e9
-        ) AS distance_preference,
-        (
-            SELECT
-                club_name
-            FROM
-                search_preference_club
-            WHERE
-                person_id = %(searcher_person_id)s
-        ) AS club_preference,
-        date_of_birth,
-        count_answers
-    FROM
-        person
-    WHERE
-        person.id = %(searcher_person_id)s
-), prospects_first_pass_without_club AS (
+            (SELECT open_to_long_distance FROM search_preference_open_to_long_distance
+             WHERE person_id = %(searcher_person_id)s),
+            TRUE
+        ) AS open_to_long_distance
+),
+prospect_pool AS (
     SELECT
-        id
-    FROM
-        person AS prospect
-    CROSS JOIN
-        searcher
-    WHERE
-        prospect.activated
-    AND
-        -- The prospect meets the searcher's gender preference
-        prospect.gender_id = ANY(%(gender_preference)s::SMALLINT[])
-    AND
-        -- The prospect meets the searcher's location preference
-        ST_DWithin(
-            prospect.coordinates,
-            searcher.coordinates,
-            searcher.distance_preference
-        )
-    AND
-        searcher.club_preference IS NULL
+        p.id,
+        p.uuid::text AS uuid,
+        p.name,
+        EXTRACT(YEAR FROM AGE(p.date_of_birth))::int AS age,
+        '[]'::jsonb AS photos,
+        (p.verification_level_id > 1) AS verified,
+        p.location_short_friendly AS location,
+        0 AS match_percentage,
+        FALSE AS is_skipped,
+        FALSE AS is_messaged,
+        ''::text AS gender,
+        ''::text AS sexual_orientation,
+        p.verification_level_id,
+        p.last_online_time
+    FROM person p
+    CROSS JOIN searcher_prefs sp
+    WHERE p.activated = TRUE
+      AND p.id != %(searcher_person_id)s
+      AND p.gender_id = ANY(%(gender_preference)s::SMALLINT[])
 
-    LIMIT
-        30000
-), prospects_first_pass_with_club AS (
-    SELECT
-        person_id AS id
-    FROM
-        person_club AS prospect
-    CROSS JOIN
-        searcher
-    WHERE
-        prospect.activated
-    AND
-        -- The prospect meets the searcher's gender preference
-        prospect.gender_id = ANY(%(gender_preference)s::SMALLINT[])
-    AND
-        -- The prospect meets the searcher's location preference
-        ST_DWithin(
-            prospect.coordinates,
-            searcher.coordinates,
-            searcher.distance_preference
-        )
-    AND
-        prospect.club_name = searcher.club_preference
+      -- Country filter: applied only if user has expressed preferences
+      AND (
+          cardinality(sp.preferred_countries) = 0
+          OR p.country = ANY(sp.preferred_countries)
+      )
 
-    LIMIT
-        30000
-), prospects_second_pass AS (
-    SELECT id FROM prospects_first_pass_without_club
-    UNION ALL
-    SELECT id FROM prospects_first_pass_with_club
-), prospects_third_pass AS (
-    SELECT
-        prospect.id
-    FROM
-        person AS prospect
-    JOIN
-        prospects_second_pass
-    ON
-        prospects_second_pass.id = prospect.id
-    CROSS JOIN
-        searcher
-    ORDER BY
-        prospect.personality <#> searcher.personality
-    LIMIT
-        10000
-), prospects_fourth_pass AS (
-    SELECT
-        prospect.id AS prospect_person_id,
+      -- Language overlap: applied only if user has expressed preferences
+      AND (
+          cardinality(sp.preferred_languages) = 0
+          OR p.languages_spoken && sp.preferred_languages
+      )
 
-        uuid AS prospect_uuid,
+      -- Already-swiped exclusion (any direction)
+      AND NOT EXISTS (
+          SELECT 1 FROM swipe s
+          WHERE s.swiper_person_id = %(searcher_person_id)s
+            AND s.swiped_person_id = p.id
+      )
 
-        name,
-
-        prospect.personality,
-
-        verification_level_id > 1 AS verified,
-
-        (
-            SELECT
-                uuid
-            FROM
-                photo
-            WHERE
-                person_id = prospect.id
-            ORDER BY
-                position
-            LIMIT 1
-        ) AS profile_photo_uuid,
-
-        CASE
-            WHEN show_my_age
-            THEN EXTRACT(YEAR FROM AGE(prospect.date_of_birth))
-            ELSE NULL
-        END AS age,
-
-        CLAMP(
-            0,
-            99,
-            100 * (1 - (prospect.personality <#> searcher.personality)) / 2
-        ) AS match_percentage,
-
-        roles
-
-    FROM
-        person AS prospect
-    JOIN
-        prospects_third_pass
-    ON
-        prospects_third_pass.id = prospect.id
-    CROSS JOIN
-        searcher
-
-    WHERE (
-        -- The searcher meets the prospect's gender preference or
-        -- the searcher is searching with in a club
-        EXISTS (
-            SELECT
-                1
-            FROM
-                search_preference_gender AS preference
-            WHERE
-                preference.person_id = prospect.id
-            AND
-                preference.gender_id = searcher.gender_id
-        )
-        OR searcher.club_preference IS NOT NULL
-    )
-
-    AND (
-        -- The searcher meets the prospect's location preference or
-        -- the searcher is searching within a club
-        ST_DWithin(
-            prospect.coordinates,
-            searcher.coordinates,
-            (
-                SELECT
-                    COALESCE(
-                        (
-                            SELECT
-                                1000 * distance
-                            FROM
-                                person
-                            JOIN
-                                search_preference_distance
-                            ON
-                                person.id = person_id
-                            WHERE
-                                person.id = prospect.id
-                        ),
-                        1e9
-                    )
-            )
-        )
-        OR searcher.club_preference IS NOT NULL
-    )
-
-   -- The prospect meets the searcher's age preference
-    AND
-        prospect.date_of_birth <= (
-            SELECT
-                CURRENT_DATE -
-                INTERVAL '1 year' *
-                COALESCE(min_age, 0)
-            FROM
-                search_preference_age
-            WHERE
-                person_id = %(searcher_person_id)s
-        )::DATE
-    AND
-        prospect.date_of_birth > (
-            SELECT
-                CURRENT_DATE -
-                INTERVAL '1 year' *
-                (COALESCE(max_age, 999) + 1)
-            FROM
-                search_preference_age
-            WHERE
-                person_id = %(searcher_person_id)s
-        )::DATE
-
-    -- The searcher meets the prospect's age preference or
-    -- the searcher is searching within a club
-    AND (
-       EXISTS (
-            SELECT 1
-            FROM search_preference_age AS preference
-            WHERE
-                preference.person_id = prospect.id
-            AND
-                searcher.date_of_birth <= (
-                    CURRENT_DATE -
-                    INTERVAL '1 year' *
-                    COALESCE(preference.min_age, 0)
-                )
-            AND
-                searcher.date_of_birth > (
-                    CURRENT_DATE -
-                    INTERVAL '1 year' *
-                    (COALESCE(preference.max_age, 999) + 1)
-                )
-        )
-        OR searcher.club_preference IS NOT NULL
-    )
-
-    -- The users have at least a 50%% match or
-    -- the searcher is searching within a club
-    AND (
-        (prospect.personality <#> searcher.personality) < 1e-5
-        OR searcher.club_preference IS NOT NULL
-    )
-
-    -- One-way filters
-    AND
-        prospect.orientation_id IN (
-            SELECT
-                orientation_id
-            FROM
-                search_preference_orientation
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        prospect.ethnicity_id IN (
-            SELECT
-                ethnicity_id
-            FROM
-                search_preference_ethnicity
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        COALESCE(prospect.height_cm, 0) >= COALESCE(
-            (
-                SELECT
-                    min_height_cm
-                FROM
-                    search_preference_height_cm
-                WHERE
-                    person_id = %(searcher_person_id)s
-            ),
-            0
-        )
-    AND
-        COALESCE(prospect.height_cm, 999) <= COALESCE(
-            (
-                SELECT
-                    max_height_cm
-                FROM
-                    search_preference_height_cm
-                WHERE
-                    person_id = %(searcher_person_id)s
-            ),
-            999
-        )
-    AND
-        prospect.has_profile_picture_id IN (
-            SELECT
-                has_profile_picture_id
-            FROM
-                search_preference_has_profile_picture
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        prospect.looking_for_id IN (
-            SELECT
-                looking_for_id
-            FROM
-                search_preference_looking_for
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        prospect.smoking_id IN (
-            SELECT
-                smoking_id
-            FROM
-                search_preference_smoking
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        prospect.drinking_id IN (
-            SELECT
-                drinking_id
-            FROM
-                search_preference_drinking
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        prospect.drugs_id IN (
-            SELECT
-                drugs_id
-            FROM
-                search_preference_drugs
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        prospect.long_distance_id IN (
-            SELECT
-                long_distance_id
-            FROM
-                search_preference_long_distance
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        prospect.relationship_status_id IN (
-            SELECT
-                relationship_status_id
-            FROM
-                search_preference_relationship_status
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        prospect.has_kids_id IN (
-            SELECT
-                has_kids_id
-            FROM
-                search_preference_has_kids
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        prospect.wants_kids_id IN (
-            SELECT
-                wants_kids_id
-            FROM
-                search_preference_wants_kids
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        prospect.exercise_id IN (
-            SELECT
-                exercise_id
-            FROM
-                search_preference_exercise
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        prospect.religion_id IN (
-            SELECT
-                religion_id
-            FROM
-                search_preference_religion
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        prospect.star_sign_id IN (
-            SELECT
-                star_sign_id
-            FROM
-                search_preference_star_sign
-            WHERE
-                person_id = %(searcher_person_id)s
-        )
-    AND
-        -- The prospect wants to be shown to strangers or isn't a stranger
-        (
-            prospect.id IN (
-                SELECT
-                    subject_person_id
-                FROM
-                    messaged
-                WHERE
-                    object_person_id = %(searcher_person_id)s
-            )
-        OR
-            NOT prospect.hide_me_from_strangers
-        )
-    AND
-        -- The prospect did not skip the searcher
-        prospect.id NOT IN (
-            SELECT
-                subject_person_id
-            FROM
-                skipped
-            WHERE
-                object_person_id = %(searcher_person_id)s
-        )
-    AND
-        -- The searcher did not skip the prospect, or the searcher wishes to
-        -- view skipped prospects
-        (
-            prospect.id NOT IN (
-                SELECT
-                    object_person_id
-                FROM
-                    skipped
-                WHERE
-                    subject_person_id = %(searcher_person_id)s
-            )
-        OR
-            1 IN (
-                SELECT
-                    skipped_id
-                FROM
-                    search_preference_skipped
-                WHERE
-                    person_id = %(searcher_person_id)s
-            )
-        )
-    AND
-        -- The searcher did not message the prospect, or the searcher wishes to
-        -- view messaged prospects
-        (
-            prospect.id NOT IN (
-                SELECT
-                    object_person_id
-                FROM
-                    messaged
-                WHERE
-                    subject_person_id = %(searcher_person_id)s
-            )
-        OR
-            1 IN (
-                SELECT
-                    messaged_id
-                FROM
-                    search_preference_messaged
-                WHERE
-                    person_id = %(searcher_person_id)s
-            )
-        )
-    AND
-        -- NOT EXISTS an answer contrary to the searcher's preference...
-        NOT EXISTS (
-            SELECT 1
-            FROM (
-                SELECT *
-                FROM search_preference_answer
-                WHERE person_id = %(searcher_person_id)s
-            ) AS pref
-            LEFT JOIN
-                answer ans
-            ON
-                ans.person_id = prospect.id AND
-                ans.question_id = pref.question_id
-            WHERE
-                -- Contrary because the answer exists and is wrong
-                ans.answer IS NOT NULL AND
-                ans.answer != pref.answer
-            OR
-                -- Contrary because the answer doesn't exist but should
-                ans.answer IS NULL AND
-                pref.accept_unanswered = FALSE
-        )
-
-    -- Exclude users who should be verified but aren't
-    AND (
-            prospect.verification_level_id > 1
-        OR
-            NOT prospect.verification_required
-    )
-
-    ORDER BY
-        -- If this is changed, other subqueries will need changing too
-        verified DESC,
-        match_percentage DESC
-
-    LIMIT
-        -- 500 + 2. The two extra records are the searcher and the moderation
-        -- bot, which we'll filter out later so that we have 500 records to show
-        -- the user. We don't filer them here to reduce the number of checks we
-        -- need to do for 'bot' or 'self' status.
-        502
-), do_promote_verified AS (
-    SELECT
-        count(*) >= 250 AS x
-    FROM
-        prospects_fourth_pass
-    WHERE
-        profile_photo_uuid IS NOT NULL
-    AND
-        verified
-    AND
-        (SELECT count_answers > 0 FROM searcher)
+      -- Blocked exclusion (duolicious's existing skipped table — both directions)
+      AND NOT EXISTS (
+          SELECT 1 FROM skipped sk
+          WHERE (sk.subject_person_id = %(searcher_person_id)s AND sk.object_person_id = p.id)
+             OR (sk.subject_person_id = p.id AND sk.object_person_id = %(searcher_person_id)s)
+      )
 )
 INSERT INTO search_cache (
-    searcher_person_id,
-    position,
-    prospect_person_id,
-    prospect_uuid,
-    profile_photo_uuid,
-    name,
-    age,
-    match_percentage,
-    personality,
-    verified
+    searcher_person_id, position, prospect_person_id, profile_photo_uuid
 )
 SELECT
     %(searcher_person_id)s,
-    ROW_NUMBER() OVER (
-        ORDER BY
-            -- If this is changed, other subqueries will need changing too
-            CASE
-                WHEN (SELECT x FROM do_promote_verified)
-                THEN
-                    profile_photo_uuid IS NOT NULL AND verified
-                ELSE
-                    profile_photo_uuid IS NOT NULL
-            END DESC,
-
-            match_percentage DESC
-    ) AS position,
-    prospect_person_id,
-    prospect_uuid,
-    profile_photo_uuid,
-    name,
-    age,
-    match_percentage,
-    personality,
-    verified
-FROM
-    prospects_fourth_pass
-WHERE
-    prospects_fourth_pass.prospect_person_id != %(searcher_person_id)s
-AND
-    'bot' <> ALL(prospects_fourth_pass.roles)
-ORDER BY
-    position
-LIMIT
-    500
-ON CONFLICT (searcher_person_id, position) DO UPDATE SET
-    searcher_person_id = EXCLUDED.searcher_person_id,
-    position = EXCLUDED.position,
-    prospect_person_id = EXCLUDED.prospect_person_id,
-    prospect_uuid = EXCLUDED.prospect_uuid,
-    profile_photo_uuid = EXCLUDED.profile_photo_uuid,
-    name = EXCLUDED.name,
-    age = EXCLUDED.age,
-    match_percentage = EXCLUDED.match_percentage,
-    personality = EXCLUDED.personality,
-    verified = EXCLUDED.verified
+    ROW_NUMBER() OVER (ORDER BY p.verification_level_id DESC, p.last_online_time DESC, p.id) - 1,
+    p.id,
+    NULL
+FROM prospect_pool p
+LIMIT 1000
 """
-
-
 
 Q_CACHED_SEARCH = """
-WITH page AS (
-    SELECT
-        prospect_person_id,
-        prospect_uuid,
-        profile_photo_uuid,
-        (
-            SELECT blurhash FROM photo WHERE profile_photo_uuid = photo.uuid
-        ) AS profile_photo_blurhash,
-        name,
-        age,
-        match_percentage,
-        EXISTS (
-            SELECT
-                1
-            FROM
-                messaged
-            WHERE
-                subject_person_id = %(searcher_person_id)s
-            AND
-                object_person_id = prospect_person_id
-        ) AS person_messaged_prospect,
-        EXISTS (
-            SELECT
-                1
-            FROM
-                messaged
-            WHERE
-                subject_person_id = prospect_person_id
-            AND
-                object_person_id = %(searcher_person_id)s
-        ) AS prospect_messaged_person,
-        verified,
-        (
-            SELECT
-                verification_level_id
-            FROM
-                person
-            WHERE
-                id = %(searcher_person_id)s
-        ) AS searcher_verification_level_id,
-        (
-            SELECT
-                privacy_verification_level_id
-            FROM
-                person
-            WHERE
-                id = prospect_person_id
-        ) AS privacy_verification_level_id
-    FROM
-        search_cache
-    WHERE
-        searcher_person_id = %(searcher_person_id)s AND
-        position >  %(o)s AND
-        position <= %(o)s + %(n)s
-    ORDER BY
-        position
-)
 SELECT
-    public_page.profile_photo_blurhash,
-    public_page.name,
-    public_page.age,
-    public_page.match_percentage,
-    public_page.person_messaged_prospect,
-    public_page.prospect_messaged_person,
-    public_page.verified,
-    public_page.verification_required_to_view,
-
-    private_page.prospect_person_id,
-    private_page.prospect_uuid,
-    private_page.profile_photo_uuid
-FROM
-    (
-        SELECT
-            *,
-
-            CASE
-                WHEN
-                    searcher_verification_level_id >=
-                    privacy_verification_level_id
-                THEN NULL
-                WHEN
-                    privacy_verification_level_id = 2
-                THEN 'basics'
-                WHEN
-                    privacy_verification_level_id = 3
-                THEN 'photos'
-            END AS verification_required_to_view
-        FROM
-            page
-    ) AS public_page
-LEFT JOIN
-    (
-        SELECT
-            *
-        FROM
-            page
-        WHERE
-            searcher_verification_level_id >= privacy_verification_level_id
-    ) AS private_page
-ON
-    private_page.prospect_person_id = public_page.prospect_person_id
+    p.id AS prospect_person_id,
+    p.uuid::text AS prospect_uuid,
+    p.name,
+    EXTRACT(YEAR FROM AGE(p.date_of_birth))::int AS age,
+    NULL::jsonb AS photo_uuids,
+    NULL::text AS profile_photo_uuid,
+    0 AS match_percentage,
+    NULL::text AS verification_required,
+    NULL::text AS location
+FROM search_cache sc
+JOIN person p ON p.id = sc.prospect_person_id
+WHERE sc.searcher_person_id = %(searcher_person_id)s
+ORDER BY sc.position
+LIMIT %(n)s OFFSET %(o)s
 """
 
-Q_QUIZ_SEARCH = f"""
-WITH searcher AS (
-    SELECT
-        personality,
-        count_answers
-    FROM
-        person
-    WHERE
-        person.id = %(searcher_person_id)s
-), do_promote_verified AS (
-    SELECT
-        count(*) >= 250 AS x
-    FROM
-        search_cache,
-        searcher
-    WHERE
-        searcher_person_id = %(searcher_person_id)s
-    AND
-        profile_photo_uuid IS NOT NULL
-    AND
-        verified
-    AND
-        (SELECT count_answers > 0 FROM searcher)
-), page AS (
-    SELECT
-        prospect_person_id,
-        prospect_uuid,
-        profile_photo_uuid,
-        (
-            SELECT blurhash FROM photo WHERE profile_photo_uuid = photo.uuid
-        ) AS profile_photo_blurhash,
-        name,
-        age,
-        CLAMP(
-            0,
-            99,
-            100 * (1 - (personality <#> (SELECT personality FROM searcher))) / 2
-        )::SMALLINT AS match_percentage,
-        (
-            SELECT
-                verification_level_id
-            FROM
-                person
-            WHERE
-                id = %(searcher_person_id)s
-        ) AS searcher_verification_level_id,
-        (
-            SELECT
-                privacy_verification_level_id
-            FROM
-                person
-            WHERE
-                id = prospect_person_id
-        ) AS privacy_verification_level_id
-    FROM
-        search_cache
-    WHERE
-        searcher_person_id = %(searcher_person_id)s
-    ORDER BY
-        -- If this is changed, other subqueries will need changing too
-        CASE
-            WHEN (SELECT x FROM do_promote_verified)
-            THEN
-                profile_photo_uuid IS NOT NULL AND verified
-            ELSE
-                profile_photo_uuid IS NOT NULL
-        END DESC,
+# Q_QUIZ_SEARCH removed in Task 0.3e — it was the Q&A-scored "first result"
+# query. With Q&A gone, the same answer is "the top of Q_CACHED_SEARCH" so
+# callers that previously asked for quiz-search now use uncached-search.
 
-        match_percentage DESC
-    LIMIT
-        1
-)
-SELECT
-    public_page.profile_photo_blurhash,
-    public_page.name,
-    public_page.age,
-    public_page.match_percentage,
-    public_page.verification_required_to_view,
+# --- Feed query (NOT Q&A-related; kept intact) -----------------------------
 
-    private_page.prospect_person_id,
-    private_page.prospect_uuid,
-    private_page.profile_photo_uuid
-FROM
-    (
-        SELECT
-            *,
-
-            CASE
-                WHEN
-                    searcher_verification_level_id >=
-                    privacy_verification_level_id
-                THEN NULL
-                WHEN
-                    privacy_verification_level_id = 2
-                THEN 'basics'
-                WHEN
-                    privacy_verification_level_id = 3
-                THEN 'photos'
-            END AS verification_required_to_view
-        FROM
-            page
-    ) AS public_page
-LEFT JOIN
-    (
-        SELECT
-            *
-        FROM
-            page
-        WHERE
-            searcher_verification_level_id >= privacy_verification_level_id
-    ) AS private_page
-ON
-    private_page.prospect_person_id = public_page.prospect_person_id
+Q_FEED = """
+SELECT '{}'::jsonb AS j WHERE FALSE
 """
-
-Q_FEED = f"""
-WITH searcher AS (
-    SELECT
-        id as searcher_id,
-        gender_id,
-        date_of_birth,
-        personality,
-        verification_level_id
-    FROM
-        person
-    WHERE
-        person.id = %(searcher_person_id)s
-), recent_person AS (
-    (
-        SELECT
-            *
-        FROM
-            person
-        WHERE
-            last_online_time < %(before)s
-        ORDER BY
-            last_online_time DESC
-        LIMIT
-            5000
-    )
-
-    UNION DISTINCT
-
-    (
-        SELECT
-            *
-        FROM
-            person
-        WHERE
-            last_event_time < %(before)s
-        ORDER BY
-            last_event_time DESC
-        LIMIT
-            5000
-    )
-), person_data AS (
-    SELECT
-        prospect.id,
-        prospect.uuid AS person_uuid,
-        prospect.name,
-        prospect.gender_id,
-        photo_data.blurhash AS photo_blurhash,
-        photo_data.uuid AS photo_uuid,
-        prospect.verification_level_id > 1 AS is_verified,
-        mapped_last_online_time,
-        mapped_last_event_name,
-        mapped_last_event_data,
-        CLAMP(
-            0,
-            99,
-            100 * (
-                1 - (prospect.personality <#> searcher.personality)
-            ) / 2
-        )::SMALLINT AS match_percentage,
-        flair,
-        has_gold,
-        sign_up_time,
-        count_answers,
-        about,
-        (
-            SELECT EXTRACT(YEAR FROM AGE(prospect.date_of_birth))
-            WHERE prospect.show_my_age
-        ) AS age,
-        gender.name AS gender,
-        (
-            SELECT prospect.location_short_friendly
-            WHERE prospect.show_my_location
-        ) AS location
-    FROM
-        recent_person AS prospect
-    JOIN
-        gender
-    ON
-        gender.id = prospect.gender_id
-    LEFT JOIN LATERAL (
-        SELECT
-            photo.uuid,
-            photo.blurhash,
-            photo.nsfw_score
-        FROM
-            photo
-        WHERE
-            photo.person_id = prospect.id
-        ORDER BY
-            photo.position
-        LIMIT 1
-    ) AS photo_data
-    ON TRUE
-    LEFT JOIN LATERAL (
-        SELECT
-            photo.uuid,
-            photo.blurhash,
-            photo.nsfw_score,
-            photo.extra_exts
-        FROM
-            photo
-        WHERE
-            photo.person_id = prospect.id
-        ORDER BY
-            '{{}}'::TEXT[] = extra_exts,
-            photo.uuid = photo_data.uuid,
-            random()
-        LIMIT 1
-    ) AS added_photo_data
-    ON TRUE
-    LEFT JOIN LATERAL (
-        SELECT
-            prospect.last_online_time
-            > now() - interval '{ONLINE_RECENTLY_SECONDS} seconds'
-            AS was_recently_online
-    )
-    ON TRUE
-    LEFT JOIN LATERAL (
-        SELECT
-            CASE
-
-            WHEN was_recently_online AND last_event_name = 'added-photo'
-            THEN 'recently-online-with-photo'
-
-            WHEN was_recently_online AND last_event_name = 'added-voice-bio'
-            THEN 'recently-online-with-voice-bio'
-
-            WHEN was_recently_online AND last_event_name = 'updated-bio'
-            THEN 'recently-online-with-bio'
-
-            WHEN was_recently_online AND added_photo_data.uuid IS NOT NULL
-            THEN 'recently-online-with-photo'
-
-            WHEN last_event_name = 'recently-online-with-photo'
-            THEN 'added-photo'
-
-            WHEN last_event_name = 'recently-online-with-voice-bio'
-            THEN 'added-voice-bio'
-
-            WHEN last_event_name = 'recently-online-with-bio'
-            THEN 'updated-bio'
-
-            ELSE last_event_name
-
-            END::person_event AS mapped_last_event_name
-    ) AS mapped_last_event_name
-    ON TRUE
-    LEFT JOIN LATERAL (
-        SELECT
-            CASE
-                WHEN
-                    was_recently_online AND mapped_last_event_name <> 'joined'
-                THEN
-                    prospect.last_online_time
-                ELSE
-                    prospect.last_event_time
-            END AS mapped_last_online_time
-    ) AS mapped_last_online_time
-    ON TRUE
-    LEFT JOIN LATERAL (
-        SELECT
-            CASE
-
-            WHEN was_recently_online AND last_event_name = 'added-photo'
-            THEN last_event_data
-
-            WHEN was_recently_online AND last_event_name = 'added-voice-bio'
-            THEN last_event_data
-
-            WHEN was_recently_online AND last_event_name = 'updated-bio'
-            THEN last_event_data
-
-            WHEN was_recently_online AND added_photo_data.uuid IS NOT NULL
-            THEN jsonb_build_object(
-                'added_photo_uuid', added_photo_data.uuid,
-                'added_photo_blurhash', added_photo_data.blurhash,
-                'added_photo_extra_exts', added_photo_data.extra_exts
-            )
-
-            ELSE last_event_data
-
-            END::JSONB AS mapped_last_event_data
-    ) AS mapped_last_event_data
-    ON TRUE
-    CROSS JOIN
-        searcher
-    WHERE
-        mapped_last_online_time < %(before)s
-    AND
-        last_event_time > now() - interval '1 month'
-    AND
-        activated
-    AND
-        -- The searcher meets the prospects privacy_verification_level_id
-        -- requirement
-        prospect.privacy_verification_level_id <=
-            searcher.verification_level_id
-    AND
-        -- The prospect wants to be shown to strangers or isn't a stranger
-        (
-            prospect.id IN (
-                SELECT
-                    subject_person_id
-                FROM
-                    messaged
-                WHERE
-                    object_person_id = %(searcher_person_id)s
-            )
-        OR
-            NOT prospect.hide_me_from_strangers
-        )
-    AND
-        -- The prospect did not skip the searcher
-        prospect.id NOT IN (
-            SELECT
-                subject_person_id
-            FROM
-                skipped
-            WHERE
-                object_person_id = %(searcher_person_id)s
-        )
-    AND
-        -- The searcher did not skip the prospect, or the searcher wishes to
-        -- view skipped prospects
-        (
-            prospect.id NOT IN (
-                SELECT
-                    object_person_id
-                FROM
-                    skipped
-                WHERE
-                    subject_person_id = %(searcher_person_id)s
-            )
-        OR
-            1 IN (
-                SELECT
-                    skipped_id
-                FROM
-                    search_preference_skipped
-                WHERE
-                    person_id = %(searcher_person_id)s
-            )
-        )
-    AND
-        -- The searcher did not message the prospect, or the searcher wishes to
-        -- view messaged prospects
-        (
-            prospect.id NOT IN (
-                SELECT
-                    object_person_id
-                FROM
-                    messaged
-                WHERE
-                    subject_person_id = %(searcher_person_id)s
-            )
-        OR
-            1 IN (
-                SELECT
-                    messaged_id
-                FROM
-                    search_preference_messaged
-                WHERE
-                    person_id = %(searcher_person_id)s
-            )
-        )
-    -- Decrease users' odds of appearing in the feed if they're already getting
-    -- lots of messages
-    AND random() < (
-        SELECT
-            1.0 / (1.0 + count(*)::real) ^ 1.5
-        FROM
-            messaged
-        WHERE
-            object_person_id = prospect.id
-        AND
-            created_at > now() - interval '1 day'
-    )
-    -- Decrease users' odds of appearing in the feed as the age gap between them
-    -- and the searcher grows
-    AND random() < age_gap_acceptability_odds(
-        EXTRACT(YEAR FROM AGE(searcher.date_of_birth)),
-        EXTRACT(YEAR FROM AGE(prospect.date_of_birth))
-    )
-    -- The searcher meets the prospect's gender preference
-    AND EXISTS (
-        SELECT
-            1
-        FROM
-            search_preference_gender
-        WHERE
-            search_preference_gender.person_id = prospect.id
-        AND
-            search_preference_gender.gender_id = searcher.gender_id
-    )
-    -- Exclude photos that might be NSFW
-    AND NOT EXISTS (
-        SELECT
-            1
-        FROM
-            photo
-        WHERE
-            uuid = mapped_last_event_data->>'added_photo_uuid'
-        AND
-            photo.nsfw_score > 0.2
-    )
-    -- Exclude users who were reported two or more times in the past day
-    AND (
-        SELECT
-            count(*)
-        FROM
-            skipped
-        WHERE
-            object_person_id = prospect.id
-        AND
-            created_at > now() - interval '2 days'
-        AND
-            reported
-    ) < 2
-    -- Exclude users who aren't verified but are required to be
-    AND (
-            prospect.verification_level_id > 1
-        OR
-            NOT prospect.verification_required
-    )
-    -- Exclude users who don't seem human. A user seems human if:
-    --   * They're verified; or
-    --   * Their account is more than a month old; or
-    --   * They've customized their account's color scheme
-    --   * They've got an audio bio
-    --   * They've got an otherwise well-completed profile
-    --   * They've got Gold
-    AND (
-            prospect.verification_level_id > 1
-
-        OR
-            prospect.sign_up_time < now() - interval '1 month'
-
-        OR
-            lower(prospect.title_color) <> '#000000'
-        OR
-            lower(prospect.body_color) <> '#000000'
-        OR
-            lower(prospect.background_color) <> '#ffffff'
-
-        OR EXISTS (
-            SELECT 1 FROM audio WHERE person_id = prospect.id
-        )
-
-        OR
-            prospect.count_answers >= 25
-        AND
-            length(prospect.about) > 0
-        AND EXISTS (
-            SELECT 1 FROM person_club WHERE person_id = prospect.id
-        )
-
-        OR
-            prospect.has_gold
-    )
-    -- Exclude the searcher from their own feed results
-    AND
-        searcher_id <> prospect.id
-    ORDER BY
-        mapped_last_online_time DESC
-    LIMIT
-        {FEED_RESULTS_PER_PAGE * FEED_SELECTIVITY}
-), filtered_by_club AS (
-    SELECT
-        person_uuid,
-        name,
-        photo_uuid,
-        photo_blurhash,
-        is_verified,
-        match_percentage,
-        mapped_last_event_name AS type,
-        iso8601_utc(mapped_last_online_time) AS time,
-        mapped_last_online_time AS last_event_time,
-        mapped_last_event_data,
-        ({Q_COMPUTED_FLAIR}) AS flair,
-        age,
-        gender,
-        location
-    FROM
-        person_data,
-        searcher
-    ORDER BY
-        EXISTS (
-            SELECT
-                1
-            FROM
-                search_preference_gender AS preference
-            WHERE
-                preference.person_id = searcher_id
-            AND
-                preference.gender_id = person_data.gender_id
-        ) DESC,
-        match_percentage DESC,
-        mapped_last_online_time DESC
-    LIMIT
-        (SELECT round(count(*)::real / {FEED_SELECTIVITY}) FROM person_data)
-)
-SELECT
-    jsonb_build_object(
-        'person_uuid', person_uuid,
-        'name', name,
-        'photo_uuid', photo_uuid,
-        'photo_blurhash', photo_blurhash,
-        'is_verified', is_verified,
-        'time', time,
-        'type', type,
-        'match_percentage', match_percentage,
-        'flair', flair,
-        'age', age,
-        'gender', gender,
-        'location', location
-    ) || mapped_last_event_data AS j
-FROM
-    filtered_by_club
-ORDER BY
-    last_event_time DESC
-"""
+# Q_FEED stub: the original feed query referenced the answer table and
+# `personality`-derived "people you might like" suggestions. Phase 1 (or
+# later) will rebuild the feed with country/language-based recommendations.

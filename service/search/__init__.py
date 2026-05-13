@@ -1,10 +1,23 @@
+"""
+service.search — discovery query service.
+
+Task 0.3e (Q&A subsystem strip per audit) removed:
+  - Q_QUIZ_SEARCH import + `_quiz_search_results` helper + 'quiz-search' branch
+    in `get_search_type` and `get_search`.
+
+The remaining `_uncached_search_results` and `_cached_search_results` helpers
+now operate on the stub SQL fragments in `service/search/sql/__init__.py`.
+
+Phase 1 Task 1.1 will rewrite these with country/language/verification
+ranking once `bumpy-design-tokens` and the new `swipe` table land.
+"""
+
 import psycopg
 import duotypes as t
 from database import api_tx
 from typing import Tuple
 from service.search.sql import (
     Q_CACHED_SEARCH,
-    Q_QUIZ_SEARCH,
     Q_SEARCH_PREFERENCE,
     Q_UNCACHED_SEARCH_1,
     Q_UNCACHED_SEARCH_2,
@@ -17,14 +30,6 @@ from datetime import datetime
 @dataclass
 class ClubHttpArg:
     club: str | None
-
-
-def _quiz_search_results(tx, searcher_person_id: int):
-    params = dict(
-        searcher_person_id=searcher_person_id,
-    )
-
-    return tx.execute(Q_QUIZ_SEARCH, params).fetchall()
 
 
 def _uncached_search_results(
@@ -65,6 +70,9 @@ def _cached_search_results(tx, searcher_person_id: int, no: Tuple[int, int]):
 
 
 def get_search_type(n: str | None, o: str | None):
+    """Default to uncached-search. The original 'quiz-search' branch (returned
+    when n/o were None) was Q&A-driven and removed in 0.3e. Callers passing
+    no pagination now get the first page of uncached-search."""
     n_: int | None = n if n is None else int(n)
     o_: int | None = o if o is None else int(o)
 
@@ -73,11 +81,15 @@ def get_search_type(n: str | None, o: str | None):
     if o_ is not None and not o_ >= 0:
         raise ValueError('o must be >= 0')
 
-    no = None if (n_ is None or o_ is None) else (n_, o_)
+    # Default first-page when caller didn't paginate.
+    if n_ is None:
+        n_ = 10
+    if o_ is None:
+        o_ = 0
 
-    if no is None:
-        return 'quiz-search', no
-    elif no[1] == 0:
+    no = (n_, o_)
+
+    if no[1] == 0:
         return 'uncached-search', no
     else:
         return 'cached-search', no
@@ -110,13 +122,7 @@ def get_search(
 
         gender_preference = [row['gender_id'] for row in rows]
 
-
-        if search_type == 'quiz-search':
-            return _quiz_search_results(
-                tx=tx,
-                searcher_person_id=s.person_id)
-
-        elif search_type == 'uncached-search':
+        if search_type == 'uncached-search':
             return _uncached_search_results(
                 tx=tx,
                 searcher_person_id=s.person_id,
@@ -129,7 +135,7 @@ def get_search(
                 searcher_person_id=s.person_id, no=no)
 
         else:
-            raise Exception('Unexpected quiz type')
+            raise Exception(f'Unexpected search type: {search_type}')
 
 
 def get_feed(s: t.SessionInfo, before: datetime):

@@ -228,38 +228,6 @@ def _has_gold(person_id: int) -> bool:
     return row.get('has_gold', False)
 
 
-def post_answer(req: t.PostAnswer, s: t.SessionInfo):
-    params_add_yes_no_count = dict(
-        question_id=req.question_id,
-        add_yes=1 if req.answer is True else 0,
-        add_no=1 if req.answer is False else 0,
-    )
-
-    params_update_answer = dict(
-        person_id=s.person_id,
-        question_id_to_delete=None,
-        question_id_to_insert=req.question_id,
-        answer=req.answer,
-        public=req.public,
-    )
-
-    with api_tx('READ COMMITTED') as tx:
-        tx.execute(Q_ADD_YES_NO_COUNT, params_add_yes_no_count)
-
-    with api_tx() as tx:
-        tx.execute(Q_UPDATE_ANSWER, params_update_answer)
-
-def delete_answer(req: t.DeleteAnswer, s: t.SessionInfo):
-    params = dict(
-        person_id=s.person_id,
-        question_id_to_delete=req.question_id,
-        question_id_to_insert=None,
-        answer=None,
-        public=None,
-    )
-
-    with api_tx() as tx:
-        tx.execute(Q_UPDATE_ANSWER, params)
 
 def _send_otp(email: str, otp: str):
     if email.endswith('@example.com'):
@@ -615,36 +583,43 @@ def get_me(
     person_id_as_int: int | None = None,
     person_id_as_str: str | None = None,
 ):
+    """Returns the current user's basic profile for the /me endpoint.
+
+    Task 0.3f (Q&A subsystem strip per audit) replaced the original
+    personality-trait-bearing implementation with a minimal name + person_id
+    response. The `personality` array is now empty; clients should not depend
+    on its contents (they shouldn't anyway, post Q&A strip).
+    """
     if person_id_as_int is None and person_id_as_str is None:
         raise ValueError('pass an arg, please')
 
     params = dict(
         person_id_as_int=person_id_as_int,
         person_id_as_str=person_id_as_str,
-        prospect_person_id=None,
-        topic=None,
     )
 
     with api_tx('READ COMMITTED') as tx:
-        personality = tx.execute(Q_SELECT_PERSONALITY, params).fetchall()
+        row = tx.execute(
+            """
+            SELECT id AS person_id, name AS person_name
+            FROM person
+            WHERE
+                (%(person_id_as_int)s::INT IS NOT NULL AND id = %(person_id_as_int)s::INT)
+                OR
+                (%(person_id_as_str)s::TEXT IS NOT NULL AND uuid::TEXT = %(person_id_as_str)s::TEXT)
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
 
-    try:
-        return {
-            'name': personality[0]['person_name'],
-            'person_id': personality[0]['person_id'],
-            'personality': [
-                {
-                    'trait_name': trait['trait_name'],
-                    'trait_min_label': trait['trait_min_label'],
-                    'trait_max_label': trait['trait_max_label'],
-                    'trait_description': trait['trait_description'],
-                    'person_percentage': trait['person_percentage'],
-                }
-                for trait in personality
-            ]
-        }
-    except:
+    if not row:
         return '', 404
+
+    return {
+        'name': row['person_name'],
+        'person_id': row['person_id'],
+        'personality': [],   # populated when matching system relands in Phase 1+
+    }
 
 def get_prospect_profile(s: Optional[t.SessionInfo], prospect_uuid):
     params = dict(
@@ -734,72 +709,7 @@ def post_unskip_by_uuid(s: t.SessionInfo, prospect_uuid: str):
     with api_tx() as tx:
         tx.execute(Q_DELETE_SKIPPED_BY_UUID, params)
 
-def get_compare_personalities(
-    s: t.SessionInfo,
-    prospect_person_id: int,
-    topic: str
-):
-    url_topic_to_db_topic = {
-        'mbti': 'MBTI',
-        'big5': 'Big 5',
-        'attachment': 'Attachment Style',
-        'politics': 'Politics',
-        'other': 'Other',
-    }
 
-    if topic not in url_topic_to_db_topic:
-        return 'Topic not found', 404
-
-    db_topic = url_topic_to_db_topic[topic]
-
-    params = dict(
-        person_id_as_int=s.person_id,
-        person_id_as_str=None,
-        prospect_person_id=prospect_person_id,
-        topic=db_topic,
-    )
-
-    with api_tx('READ COMMITTED') as tx:
-        return tx.execute(Q_SELECT_PERSONALITY, params).fetchall()
-
-def get_compare_answers(
-    s: t.SessionInfo,
-    prospect_person_id: int,
-    agreement: Optional[str],
-    topic: Optional[str],
-    n: Optional[str],
-    o: Optional[str],
-):
-    valid_agreements = ['all', 'agree', 'disagree', 'unanswered']
-    valid_topics = ['all', 'values', 'sex', 'interpersonal', 'other']
-
-    if agreement not in valid_agreements:
-        return 'Invalid agreement', 400
-
-    if topic not in valid_topics:
-        return 'Invalid topic', 400
-
-    try:
-        n_int = int(n)
-    except:
-        return 'Invalid n', 400
-
-    try:
-        o_int = int(o)
-    except:
-        return 'Invalid o', 400
-
-    params = dict(
-        person_id=s.person_id,
-        prospect_person_id=prospect_person_id,
-        agreement=agreement.capitalize(),
-        topic=topic.capitalize(),
-        n=n,
-        o=o,
-    )
-
-    with api_tx('READ COMMITTED') as tx:
-        return tx.execute(Q_ANSWER_COMPARISON, params).fetchall()
 
 def post_inbox_info(req: t.PostInboxInfo, s: t.SessionInfo):
     params = dict(
@@ -1651,114 +1561,6 @@ def post_search_filter(req: t.PostSearchFilter, s: t.SessionInfo):
         tx.execute(q1, params)
         tx.execute(q2, params)
 
-def post_search_filter_answer(req: t.PostSearchFilterAnswer, s: t.SessionInfo):
-    max_search_filter_answers = 20
-    error = f'You can’t set more than {max_search_filter_answers} Q&A filters'
-
-    params = dict(
-        person_id=s.person_id,
-        question_id=req.question_id,
-        answer=req.answer,
-        accept_unanswered=req.accept_unanswered,
-    )
-
-    if req.answer is None:
-        q = f"""
-        WITH deleted_answer AS (
-            DELETE FROM search_preference_answer
-            WHERE
-                person_id = %(person_id)s AND
-                question_id = %(question_id)s
-            RETURNING *
-        )
-        SELECT COALESCE(
-            array_agg(
-                json_build_object(
-                    'question_id', question_id,
-                    'question', question,
-                    'topic', topic,
-                    'answer', answer,
-                    'accept_unanswered', accept_unanswered
-                )
-                ORDER BY question_id
-            ),
-            ARRAY[]::JSON[]
-        ) AS j
-        FROM search_preference_answer
-        LEFT JOIN question
-        ON question.id = question_id
-        WHERE
-            person_id = %(person_id)s AND
-            question_id != (SELECT question_id FROM deleted_answer)
-        """
-    else:
-        q = f"""
-        WITH existing_search_preference_answer AS (
-            SELECT
-                person_id,
-                question_id,
-                answer,
-                accept_unanswered,
-                0 AS precedence
-            FROM search_preference_answer
-            WHERE person_id = %(person_id)s
-        ), new_search_preference_answer AS (
-            SELECT
-                %(person_id)s AS person_id,
-                %(question_id)s AS question_id,
-                %(answer)s AS answer,
-                %(accept_unanswered)s AS accept_unanswered,
-                1 AS precedence
-        ), updated_search_preference_answer AS (
-            SELECT DISTINCT ON (person_id, question_id)
-                person_id,
-                question_id,
-                answer,
-                accept_unanswered
-            FROM (
-                (SELECT * from existing_search_preference_answer)
-                UNION
-                (SELECT * from new_search_preference_answer)
-            ) AS t
-            ORDER BY person_id, question_id, precedence DESC
-        ), inserted_search_preference_answer AS (
-            INSERT INTO search_preference_answer (
-                person_id, question_id, answer, accept_unanswered
-            ) SELECT
-                person_id, question_id, answer, accept_unanswered
-            FROM
-                new_search_preference_answer
-            WHERE (
-                SELECT COUNT(*) FROM updated_search_preference_answer
-            ) <= {max_search_filter_answers}
-            ON CONFLICT (person_id, question_id) DO UPDATE SET
-                answer            = EXCLUDED.answer,
-                accept_unanswered = EXCLUDED.accept_unanswered
-        )
-        SELECT array_agg(
-            json_build_object(
-                'question_id', question_id,
-                'question', question,
-                'topic', topic,
-                'answer', answer,
-                'accept_unanswered', accept_unanswered
-            )
-            ORDER BY question_id
-        ) AS j
-        FROM updated_search_preference_answer
-        LEFT JOIN question
-        ON question.id = question_id
-        WHERE (
-            SELECT COUNT(*) FROM updated_search_preference_answer
-        ) <= {max_search_filter_answers}
-        """
-
-    with api_tx() as tx:
-        answer = tx.execute(q, params).fetchone().get('j')
-        if answer is None:
-            return dict(error=error), 400
-        else:
-            return dict(answer=answer)
 
 def get_search_clubs(
         s: Optional[t.SessionInfo],
