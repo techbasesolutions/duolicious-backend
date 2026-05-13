@@ -45,7 +45,7 @@ services:
       DUO_SMTP_USER: unused-in-dev-env
       DUO_SMTP_PASS: unused-in-dev-env
 
-      DUO_REPORT_EMAIL: duolicious@example.com 20 a@example.com 0
+      DUO_REPORT_EMAIL: ahavah@example.com 20 a@example.com 0
 
       DUO_DB_HOST: postgres
       DUO_DB_PORT: 5432
@@ -61,6 +61,17 @@ services:
       DUO_R2_ACCESS_KEY_SECRET: s3-mock-secret-access-key-secret
 
       DUO_BOTO_ENDPOINT_URL: http://s3mock:9090
+
+      # Ahavah branding (see service/config.py). Tests assert on the rendered
+      # email HTML in test/fixtures/, so these values must match what those
+      # fixtures expect.
+      AHAVAH_API_BASE_URL: https://api.ahavah.app
+      AHAVAH_WEB_BASE_URL: https://get.ahavah.app
+      AHAVAH_EMAIL_ASSETS_BASE_URL: https://email-assets.ahavah.app
+      AHAVAH_USER_IMAGES_BASE_URL: https://user-images.ahavah.app
+      AHAVAH_XMPP_DOMAIN: ahavah.app
+      AHAVAH_PRODUCT_NAME: Ahavah
+      AHAVAH_EMAIL_DOMAIN: ahavah.app
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
@@ -94,6 +105,9 @@ services:
 
       DUO_CHAT_PORTS: '5443'
 
+      # XMPP local domain used for JID building (see service.chat.chatutil).
+      AHAVAH_XMPP_DOMAIN: ahavah.app
+
   cron:
     build:
       context: .
@@ -113,7 +127,7 @@ services:
       DUO_SMTP_USER: unused-in-dev-env
       DUO_SMTP_PASS: unused-in-dev-env
 
-      DUO_REPORT_EMAIL: duolicious@example.com 20 a@example.com 0
+      DUO_REPORT_EMAIL: ahavah@example.com 20 a@example.com 0
 
       DUO_CRON_PROFILE_REPORTER_POLL_SECONDS: 1
 
@@ -151,6 +165,17 @@ services:
       DUO_CRON_GARBAGE_RECORDS_POLL_SECONDS: '1'
 
       DUO_CRON_MAX_RANDOM_START_DELAY: '0'
+
+      # Ahavah branding (see service/config.py). The cron container renders
+      # the same email templates as the api container so they need the same
+      # URL config.
+      AHAVAH_API_BASE_URL: https://api.ahavah.app
+      AHAVAH_WEB_BASE_URL: https://get.ahavah.app
+      AHAVAH_EMAIL_ASSETS_BASE_URL: https://email-assets.ahavah.app
+      AHAVAH_USER_IMAGES_BASE_URL: https://user-images.ahavah.app
+      AHAVAH_XMPP_DOMAIN: ahavah.app
+      AHAVAH_PRODUCT_NAME: Ahavah
+      AHAVAH_EMAIL_DOMAIN: ahavah.app
 
   s3mock:
     image: adobe/s3mock:3.12.0
