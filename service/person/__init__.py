@@ -28,7 +28,22 @@ from antiabuse.antispam.signupemail import (
 from antiabuse.lodgereport import (
     skip_by_uuid,
 )
-from antiabuse.firehol import firehol
+from antiabuse.firehol import firehol as _firehol_impl
+
+# Phase W staging: the FireHOL multiprocessing-based block-list helper
+# has a child-process fragility that intermittently kills /request-otp
+# and /check-otp under light staging load (the `_rpc` call gets EOFError
+# when the child dies, surfacing as 500s). Set `DUO_DISABLE_FIREHOL=true`
+# to skip the IP-blocklist check entirely — safe for staff-only staging,
+# NEVER for production where it's actual anti-abuse defence.
+import os as _os
+if _os.environ.get("DUO_DISABLE_FIREHOL", "false").lower() in ("true", "1", "yes"):
+    class _FireholBypass:
+        def matches(self, _ip):
+            return False
+    firehol = _FireholBypass()
+else:
+    firehol = _firehol_impl
 import blurhash
 import numpy
 import erlastic
@@ -602,7 +617,10 @@ def get_me(
     with api_tx('READ COMMITTED') as tx:
         row = tx.execute(
             """
-            SELECT id AS person_id, name AS person_name
+            SELECT
+                id AS person_id,
+                name AS person_name,
+                uuid::TEXT AS person_uuid
             FROM person
             WHERE
                 (%(person_id_as_int)s::INT IS NOT NULL AND id = %(person_id_as_int)s::INT)
@@ -619,6 +637,11 @@ def get_me(
     return {
         'name': row['person_name'],
         'person_id': row['person_id'],
+        # The chat WebSocket SASL flow needs the bare uuid; /check-otp only
+        # returns person_uuid for accounts that already had a person row at
+        # OTP time (i.e. NOT fresh onboardees). Returning it here lets the
+        # frontend backfill `ahavah.my-uuid` on first /me after graduation.
+        'person_uuid': row['person_uuid'],
         'personality': [],   # populated when matching system relands in Phase 1+
     }
 
