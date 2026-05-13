@@ -8,3 +8,9 @@ test/input
 test/output
 
 node_modules
+
+# Production secrets — never commit. Template lives at .env.production.template.
+.env
+.env.local
+.env.production
+.env.staging
