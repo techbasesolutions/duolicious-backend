@@ -1,3 +1,6 @@
+from service.config import EMAIL_ASSETS_BASE_URL, PRODUCT_NAME, WEB_BASE_URL
+
+
 def emailtemplate():
     return f"""
     <!DOCTYPE html>
@@ -14,7 +17,7 @@ def emailtemplate():
                     <table width="600" cellspacing="0" cellpadding="0" border="0" align="center">
                         <tr>
                             <td bgcolor="#70f" align="center">
-                                <img src="https://email-assets.duolicious.app/header-logo.png" alt="Duolicious Logo" width="108" height="50" />
+                                <img src="{EMAIL_ASSETS_BASE_URL}/header-logo.png" alt="{PRODUCT_NAME} Logo" width="108" height="50" />
                             </td>
                         </tr>
                         <tr>
@@ -24,7 +27,7 @@ def emailtemplate():
                             <td bgcolor="#f1e5ff" align="center" style="color: #70f; padding-left: 20px; padding-right: 20px; padding-bottom: 20px;">
                                 <p style="color: #70f; font-size: 24px; font-weight: 900;">Baby, come back!</p>
                                 <p style="color: #70f; font-size: 16px">
-                                  Because we only show active members, your profile was hidden for now. That means you won't get any more intros or chats until you get on Duolicious.
+                                  Because we only show active members, your profile was hidden for now. That means you won't get any more intros or chats until you get on {PRODUCT_NAME}.
                                 </p>
                             </td>
                         </tr>
@@ -33,10 +36,10 @@ def emailtemplate():
                             <table border="0" cellspacing="0" cellpadding="0">
                               <tbody><tr>
                                 <td style="border-radius:50px; border:3px solid #70f; font-size: 20px; line-height:26px; color: #70f; text-align:center; min-width:auto!important">
-                                  <a href="https://get.duolicious.app/" style="display:block;padding:11px 40px;text-decoration:none;color:#70f" target="_blank">
+                                  <a href="{WEB_BASE_URL}/" style="display:block;padding:11px 40px;text-decoration:none;color:#70f" target="_blank">
                                     <span style="text-decoration:none;color:#70f">
                                       <strong>
-                                        Get on Duolicious
+                                        Get on {PRODUCT_NAME}
                                       </strong>
                                     </span>
                                   </a>

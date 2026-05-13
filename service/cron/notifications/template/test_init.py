@@ -1,5 +1,8 @@
 import unittest
+
+from service.config import EMAIL_DOMAIN
 from service.cron.notifications.template import emailtemplate
+
 
 class TestEmailTemplate(unittest.TestCase):
 
@@ -12,7 +15,7 @@ class TestEmailTemplate(unittest.TestCase):
         self.assertIn('new messages', e1)
         self.assertIn('a new message', e2)
         self.assertIn('a new message', e3)
-        self.assertIn('support@duolicious.app', e4)
+        self.assertIn(f'support@{EMAIL_DOMAIN}', e4)
 
 if __name__ == '__main__':
     unittest.main()

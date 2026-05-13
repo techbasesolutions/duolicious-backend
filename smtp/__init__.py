@@ -10,6 +10,8 @@ from contextlib import suppress
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+from service.config import EMAIL_DOMAIN, PRODUCT_NAME
+
 SMTP_HOST: str = os.environ["DUO_SMTP_HOST"]
 SMTP_PORT: int = int(os.environ["DUO_SMTP_PORT"])
 SMTP_USER: str = os.environ["DUO_SMTP_USER"]
@@ -79,10 +81,10 @@ class Smtp:
         if self._smtp is None:
             raise Exception("Connection couldn't be established")
 
-        _from_addr: str = from_addr or "no-reply@duolicious.app"
+        _from_addr: str = from_addr or f"no-reply@{EMAIL_DOMAIN}"
 
         msg = MIMEMultipart("alternative")
-        msg["From"] = f"Duolicious <{_from_addr}>"
+        msg["From"] = f"{PRODUCT_NAME} <{_from_addr}>"
         msg["To"] = to_addr
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "html"))

@@ -1,5 +1,14 @@
 from urllib.parse import urlencode
 
+from service.config import (
+    API_BASE_URL,
+    EMAIL_ASSETS_BASE_URL,
+    EMAIL_DOMAIN,
+    PRODUCT_NAME,
+    WEB_BASE_URL,
+)
+
+
 def big_part(has_intro, has_chat):
     if has_intro and has_chat:
         return 'You have new messages in your chats and intros!'
@@ -9,7 +18,7 @@ def big_part(has_intro, has_chat):
         return 'You have a new message in your chats!'
     return (
         "Our notifier is broken 😵‍💫. Please report this "
-        "to support@duolicious.app")
+        f"to support@{EMAIL_DOMAIN}")
 
 def little_part(has_intro, has_chat):
     if has_intro and has_chat:
@@ -17,7 +26,7 @@ def little_part(has_intro, has_chat):
     return 'Open the app to read it'
 
 def frequency_url(email, type, frequency):
-    base_url = 'https://api.duolicious.app/update-notifications'
+    base_url = f'{API_BASE_URL}/update-notifications'
     params = {
         'email': email,
         'type': type,
@@ -42,7 +51,7 @@ def emailtemplate(email, has_intro, has_chat):
                 <table style="max-width: 600px; width: 100%;" cellspacing="0" cellpadding="0" border="0" align="center">
                     <tr>
                         <td bgcolor="#70f" align="center">
-                            <img src="https://email-assets.duolicious.app/header-logo.png" alt="Duolicious Logo" width="108" height="50" />
+                            <img src="{EMAIL_ASSETS_BASE_URL}/header-logo.png" alt="{PRODUCT_NAME} Logo" width="108" height="50" />
                         </td>
                     </tr>
                     <tr>
@@ -59,10 +68,10 @@ def emailtemplate(email, has_intro, has_chat):
                         <table border="0" cellspacing="0" cellpadding="0">
                           <tbody><tr>
                             <td style="border-radius:50px; border:3px solid #70f; font-size: 20px; line-height:26px; color: #70f; text-align:center; min-width:auto!important">
-                              <a href="https://get.duolicious.app/" style="display:block;padding:11px 40px;text-decoration:none;color:#70f" target="_blank">
+                              <a href="{WEB_BASE_URL}/" style="display:block;padding:11px 40px;text-decoration:none;color:#70f" target="_blank">
                                 <span style="text-decoration:none;color:#70f">
                                   <strong>
-                                    Open Duolicious
+                                    Open {PRODUCT_NAME}
                                   </strong>
                                 </span>
                               </a>

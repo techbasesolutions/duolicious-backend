@@ -5,6 +5,7 @@ from lxml import etree
 from service.chat.chatutil import (
     to_bare_jid,
 )
+from service.config import PRODUCT_NAME
 from constants import (
     MAX_NOTIFICATION_LENGTH,
 )
@@ -16,7 +17,7 @@ NON_BREAKING_SPACES = '\xa0' * MAX_NOTIFICATION_LENGTH
 AUDIO_MESSAGE_BODY = f"""
 Voice message
 {NON_BREAKING_SPACES}
-Upgrade to the latest version of Duolicious to hear this message
+Upgrade to the latest version of {PRODUCT_NAME} to hear this message
 """.strip()
 
 @dataclass(frozen=True)
