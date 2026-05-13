@@ -83,6 +83,7 @@ WITH searcher_prefs AS (
 prospect_pool AS (
     SELECT
         p.id,
+        p.uuid AS uuid_raw,
         p.uuid::text AS uuid,
         p.name,
         EXTRACT(YEAR FROM AGE(p.date_of_birth))::int AS age,
@@ -129,13 +130,22 @@ prospect_pool AS (
       )
 )
 INSERT INTO search_cache (
-    searcher_person_id, position, prospect_person_id, profile_photo_uuid
+    searcher_person_id, position, prospect_person_id, prospect_uuid,
+    profile_photo_uuid, name, match_percentage, personality
 )
 SELECT
     %(searcher_person_id)s,
-    ROW_NUMBER() OVER (ORDER BY p.verification_level_id DESC, p.last_online_time DESC, p.id) - 1,
+    (ROW_NUMBER() OVER (ORDER BY p.verification_level_id DESC, p.last_online_time DESC, p.id) - 1)::SMALLINT,
     p.id,
-    NULL
+    p.uuid_raw,
+    NULL,
+    p.name,
+    0,
+    -- Q&A subsystem was stripped (Task 0.3e); search_cache.personality is
+    -- still declared NOT NULL VECTOR(47) by the upstream fork schema. Insert
+    -- a zero vector so the constraint is satisfied; nothing reads this column
+    -- post-strip (Q_CACHED_SEARCH no longer references it).
+    ('[' || array_to_string(array_fill(0, ARRAY[47]), ',') || ']')::vector
 FROM prospect_pool p
 LIMIT 1000
 """
