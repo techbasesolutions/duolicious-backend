@@ -1,0 +1,8 @@
+# Ahavah test-only Python dependencies.
+# Installed inside the api container by tests/run.sh; not baked into the
+# production image. Add new test-only deps here, not to requirements.txt.
+
+pytest>=8.0
+pytest-mock>=3.12
+fakeredis>=2.20
+freezegun>=1.4
