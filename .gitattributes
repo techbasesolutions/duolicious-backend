@@ -1,1 +1,27 @@
+# Default: treat everything as text, normalize CRLF -> LF on commit, leave
+# working-tree as-is per developer's git core.autocrlf. Fixes the Windows
+# checkout phantom-diff issue documented during Phase W F.0 baseline.
+* text=auto eol=lf
+
+# Shell scripts must always be LF (matters for docker-compose containers).
+*.sh text eol=lf
+
+# Windows-only configs / scripts (none in this repo today, but locked in).
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Known binaries — never touch.
 *.onnx filter=lfs diff=lfs merge=lfs -text
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar.gz binary
+
+# Lockfiles + generated artefacts — keep verbatim.
+*.lock text eol=lf
+package-lock.json text eol=lf
