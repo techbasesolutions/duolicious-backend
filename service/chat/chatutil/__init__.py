@@ -3,9 +3,15 @@ from database.asyncdatabase import api_tx
 from lxml import etree
 from typing import Literal
 import datetime
+import os
 
 
-LSERVER = 'duolicious.app'
+# XMPP server local domain (MongooseIM LSERVER). Sourced from the env so
+# dev / staging / production can each point at their own chat host. The
+# default matches `service.config.XMPP_DOMAIN`; defined here as a plain
+# `os.environ.get(...)` to avoid pulling the `service` package into
+# `service.chat.chatutil` and creating an import-order surprise.
+LSERVER = os.environ.get("AHAVAH_XMPP_DOMAIN", "ahavah.app")
 
 
 Q_IS_SKIPPED = """
