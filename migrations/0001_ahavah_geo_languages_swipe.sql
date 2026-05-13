@@ -7,7 +7,7 @@
 --     (verification_level DESC, last_online_time DESC, optional country filter)
 --   - GIN index on `languages_spoken` for ANY-overlap queries
 --   - `swipe` table (left/right/super) — net-new; the existing `skipped` table
---     stays as duolicious left it (hide-and-block surface uses it)
+--     stays as the upstream Duolicious fork left it (hide-and-block surface uses it)
 --
 -- Q&A table drops (was Task 0.3d) are deliberately NOT in this migration —
 -- service/person/sql/__init__.py + antiabuse/sql/__init__.py still hold SQL
@@ -46,7 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_person_languages_spoken
 
 -- 3. Search-preference extensions -----------------------------------------
 
--- Existing duolicious search_preference_* tables stay; we add Ahavah-specific
+-- Existing upstream-Duolicious-fork search_preference_* tables stay; we add Ahavah-specific
 -- discovery prefs as additional optional rows.
 CREATE TABLE IF NOT EXISTS search_preference_country (
   person_id INT NOT NULL REFERENCES person(id) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS search_preference_open_to_long_distance (
   open_to_long_distance BOOLEAN NOT NULL DEFAULT TRUE
 );
 
--- 4. Swipe table (net-new — distinct from duolicious's `skipped`) ---------
+-- 4. Swipe table (net-new — distinct from the upstream Duolicious fork's `skipped`) ---------
 
 DO $$ BEGIN
   CREATE TYPE swipe_direction AS ENUM ('like', 'pass', 'super');

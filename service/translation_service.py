@@ -8,7 +8,7 @@ Wraps DeepL's REST API + a Redis hash cache. Both are opt-in:
                        This lets the rest of the pipeline (mark-read +
                        JSONB persistence) keep working in dev without
                        a paid DeepL account.
-  - REDIS_URL        — if unset, falls back to the duolicious-default
+  - REDIS_URL        — if unset, falls back to the upstream Duolicious fork's default
                        `redis://redis:6379` (the docker-compose redis service).
 
 Cache key: SHA-256 of `(target_lang_normalized, text)`. Source is auto-detected

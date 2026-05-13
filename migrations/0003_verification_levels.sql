@@ -1,7 +1,7 @@
 -- Phase 3 Task 3.1 — verification level enum + person columns.
 --
 -- Three tiers (Bumpy-style "self-select your trust level"):
---   bronze : duolicious's existing selfie+gender+age+ethnicity check
+--   bronze : the upstream Duolicious fork's existing selfie+gender+age+ethnicity check
 --   silver : AWS Amplify Face Liveness (anti-spoof, screen-color challenge)
 --   gold   : Stripe Identity (gov ID + face match)
 --

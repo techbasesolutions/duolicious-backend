@@ -1,4 +1,4 @@
--- Phase 4 Task 4.0 — photo moderation status tier on duolicious's photo table.
+-- Phase 4 Task 4.0 — photo moderation status tier on the upstream Duolicious fork's photo table.
 --
 -- Audit correction (Task 0.0): we extend the existing ONNX pipeline at
 -- antiabuse/antiporn/ rather than wiring AWS Rekognition. The ONNX scorer

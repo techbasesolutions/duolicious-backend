@@ -355,7 +355,7 @@ def post_inbox_info(req: t.PostInboxInfo, s: t.SessionInfo):
 
 @adelete('/account')
 def delete_account(s: t.SessionInfo):
-    # Task 0.7 note: this is duolicious's existing immediate hard-delete.
+    # Task 0.7 note: this is the upstream Duolicious fork's existing immediate hard-delete.
     # Plan Phase 5 enhancement: convert to soft-delete + 7-day grace +
     # cancel-link email (Resend). The user's deletion_requested_at gets set;
     # the cron worker hard-deletes after grace expires. Required for the

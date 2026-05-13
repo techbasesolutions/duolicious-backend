@@ -3,7 +3,7 @@ Phase 3 Task 3.1 — verification-tier promotion (Stripe Identity webhook +
 session-creation endpoint).
 
 Three tiers (per migration 0003):
-  bronze : duolicious's existing selfie+gender+age+ethnicity check (set
+  bronze : the upstream Duolicious fork's existing selfie+gender+age+ethnicity check (set
            elsewhere by service.person.post_verify when the legacy flow
            passes — this module does NOT touch bronze).
   silver : AWS Amplify Face Liveness (Phase 3 Task 3.2 Step 3 — separate

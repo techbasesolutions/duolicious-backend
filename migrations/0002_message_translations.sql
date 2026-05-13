@@ -1,6 +1,6 @@
 -- Phase 2 Task 2.2 — message-table additions for lazy translate-on-read.
 --
--- mam_message is duolicious's XMPP-archive table. `search_body` is the plain
+-- mam_message is the upstream Duolicious fork's XMPP-archive table. `search_body` is the plain
 -- text we translate; the binary `message` field carries the XMPP envelope
 -- and stays untouched. Translations land in JSONB so multiple target-lang
 -- variants can coexist on a single row (recipient A wants EN-US, recipient B

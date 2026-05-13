@@ -8,7 +8,7 @@ Endpoints exposed via service/api/__init__.py:
   POST /search-preference-language — replace the user's preferred-languages set
   POST /search-preference-long-distance — set the open-to-long-distance flag
 
-These are intentionally separate from duolicious's `patch_profile_info`
+These are intentionally separate from the upstream Duolicious fork's `patch_profile_info`
 (which is field-driven via a Pydantic union type and would require touching
 duotypes for every new field). Self-contained dict-driven handlers keep the
 Q&A-removal blast radius minimal.

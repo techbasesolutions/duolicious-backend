@@ -1,7 +1,7 @@
 """
 Phase 4 Task 4.0 — photo moderation tier mapping.
 
-Audit correction (Task 0.0): duolicious already ships a 210MB on-device
+Audit correction (Task 0.0): the upstream Duolicious fork already ships a 210MB on-device
 ONNX NSFW classifier at `antiabuse/antiporn/` exposing `predict_nsfw()`.
 That function returns a single 0..1 float per image (a NSFW probability),
 which existing code stores in `photo.nsfw_score` and uses as a binary
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # Thresholds
 # ---------------------------------------------------------------------------
 #
-# The ONNX model returns a NSFW probability in [0, 1]. The duolicious
+# The ONNX model returns a NSFW probability in [0, 1]. The upstream Duolicious fork's
 # reference threshold (per `antiabuse/antiporn/README.md` history) is
 # typically a single binary cut around ~0.6 — we layer a manual-review
 # band on top so we never silently auto-reject borderline content.

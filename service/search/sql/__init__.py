@@ -2,7 +2,7 @@
 service.search.sql — SQL fragments for the search service.
 
 Task 0.3e (Q&A subsystem strip per audit) replaced the Q&A-driven SQL with
-minimal stubs. The original duolicious SQL relied on a `personality` vector
+minimal stubs. The upstream Duolicious fork's SQL relied on a `personality` vector
 column, `count_answers`, and JOINs against the `answer` /
 `search_preference_answer` tables — all of which are dropped in Task 0.3d.
 
@@ -121,7 +121,7 @@ prospect_pool AS (
             AND s.swiped_person_id = p.id
       )
 
-      -- Blocked exclusion (duolicious's existing skipped table — both directions)
+      -- Blocked exclusion (the upstream Duolicious fork's existing skipped table — both directions)
       AND NOT EXISTS (
           SELECT 1 FROM skipped sk
           WHERE (sk.subject_person_id = %(searcher_person_id)s AND sk.object_person_id = p.id)

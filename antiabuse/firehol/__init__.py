@@ -42,7 +42,7 @@ IPvXAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
 # Cache directory (shared by all processes)
 # ---------------------------------------------------------------------------
 
-cache_dir = Path("/tmp/duolicious-firehol")
+cache_dir = Path("/tmp/ahavah-firehol")
 cache_dir.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
