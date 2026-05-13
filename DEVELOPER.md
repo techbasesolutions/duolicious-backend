@@ -1,5 +1,7 @@
 # Developer instructions
 
+Ahavah's backend is forked from [Duolicious](https://github.com/duolicious/duolicious-backend); see the README for fork heritage. Internal `DUO_*` env vars and `duo_*` Postgres identifiers are kept verbatim; Ahavah-specific public URLs and branding live behind `AHAVAH_*` env vars (see `service/config.py`).
+
 ## Local development
 
 You can run everything with Docker, or run the Python services locally with hot reload against Dockerized infrastructure.
@@ -37,6 +39,10 @@ export DUO_R2_ACCESS_KEY_SECRET=s3-mock-secret-access-key-secret
 export DUO_BOTO_ENDPOINT_URL=http://localhost:9090
 export DUO_SMTP_HOST=localhost
 export DUO_SMTP_PORT=1025
+# Ahavah branding + public URLs (defaults are baked into service/config.py;
+# overriding here only matters if you want to render against prod-looking URLs).
+export AHAVAH_API_BASE_URL=http://localhost:5000
+export AHAVAH_WEB_BASE_URL=http://localhost:3000
 ./api.main.sh
 ```
 
@@ -54,6 +60,8 @@ export DUO_R2_ACCESS_KEY_ID=s3-mock-access-key-id
 export DUO_R2_ACCESS_KEY_SECRET=s3-mock-secret-access-key-secret
 export DUO_BOTO_ENDPOINT_URL=http://localhost:9090
 export DUO_CHAT_PORTS=5443
+# Match whatever LSERVER MongooseIM is configured for.
+export AHAVAH_XMPP_DOMAIN=ahavah.app
 ./chat.main.sh
 ```
 
@@ -92,6 +100,11 @@ Notes:
 
 ### Environment variables
 
+Two prefixes are in use:
+
+- `DUO_*` — internal, inherited from the upstream Duolicious fork. These configure the database, SMTP, R2/S3 buckets, and other infra wiring.
+- `AHAVAH_*` — user-visible product config (public URLs, product name, email domain, XMPP local domain). All are read by `service/config.py` with dev defaults so a fresh `docker compose up` works out of the box; production deployments override them.
+
 #### `api` container
 
 * `DUO_ENV` - Should be set to `prod` for production deployments. Setting this to `prod` disables the ability to sign up with an OTP of 000000 by using an @example.com email address.
@@ -127,6 +140,15 @@ These environment variables specify where user-uploaded content is stored:
 
 These env vars get passed to the `boto3` library, so they're compatible with AWS S3 despite containing `R2` in their names. The `api` container needs to have permissions to upload files to these buckets. Deletion is handled by the `cron` container.
 
+Ahavah public-URL config (all optional; sensible defaults in `service/config.py`):
+
+* `AHAVAH_API_BASE_URL` - Public REST API base URL (used in moderator emails that embed admin ban / delete-photo links). Default: `http://localhost:5000`.
+* `AHAVAH_WEB_BASE_URL` - Public web-app base URL (used as the "Open Ahavah" CTA target). Default: `http://localhost:3000`.
+* `AHAVAH_EMAIL_ASSETS_BASE_URL` - Email-asset CDN (header logo, etc.). Default: `https://email-assets.ahavah.app`.
+* `AHAVAH_USER_IMAGES_BASE_URL` - User-image CDN base URL. Default: `https://user-images.ahavah.app`.
+* `AHAVAH_PRODUCT_NAME` - Display name in email subjects + SMTP `From:` header. Default: `Ahavah`.
+* `AHAVAH_EMAIL_DOMAIN` - Domain used to build default sender addresses (`noreply-otp@<domain>`, `support@<domain>`, `no-reply@<domain>`). Default: `ahavah.app`.
+
 #### `chat` container
 
 These environment variables let the `chat` container know where your PostgreSQL database is:
@@ -141,6 +163,8 @@ This environment variable determines which port, or ports, workers operate on:
 * `DUO_CHAT_PORTS` - This could be a single number (e.g. `5443`) or a range (e.g. `5443-5447`). Specifying a range starts a worker for each port.
 
 If you use more than one worker, you need to place a load balancer between the `chat` container and clients.
+
+* `AHAVAH_XMPP_DOMAIN` - The MongooseIM LSERVER (the part after `@` in JIDs). Default: `ahavah.app`. Must match whatever your chat server is configured for.
 
 #### `cron` container
 
@@ -173,21 +197,19 @@ These env vars get passed to the `boto3` library, so they're compatible with AWS
 
 * `OPENAI_API_KEY` - The OpenAI API key used to query ChatGPT while verifying accounts.
 
+The cron container also renders email templates, so it accepts the same `AHAVAH_*` URL config as the api container — keep both in sync so emails dispatched by cron point at the same URLs as emails dispatched by api.
+
 #### Redis
 
-The `api` container requires a Redis instance accessible via `redis://redis:6379`. This address is currently hardcoded, [here](https://github.com/duolicious/duolicious-backend/blob/bb9d811df24fb06ee496e763a1b401f44aa4dd2e/service/application/decorators.py#L78).
+The `api` container requires a Redis instance accessible via `redis://redis:6379`. This address is currently hardcoded inside `service/application/decorators.py` (legacy from the upstream fork; refactor pending).
 
 ### Proxies
 
-Note also that `X-Forwarded-For` headers are treated as the user's real IP by
-Duolicious, which assumes that there's a proxy between it and users.
+Note also that `X-Forwarded-For` headers are treated as the user's real IP, on the assumption that there's a proxy between Ahavah and end-users.
 
-If there's no proxy, `X-Forwarded-For` headers can be spoofed by users. This
-will allow malicious users to partially bypass rate limits and bans.
+If there's no proxy, `X-Forwarded-For` headers can be spoofed by users. This will allow malicious users to partially bypass rate limits and bans.
 
-Whether `X-Forwarded-For` is used or not should probably be configurable in
-Duolicious, but it's currently not. Although hardcoding the solution isn't too
-hard: Simply remove the use of `werkzeug.middleware.proxy_fix.ProxyFix`.
+Whether `X-Forwarded-For` is used or not should probably be configurable, but it currently is not. Hardcoding the alternative isn't too hard: simply remove the use of `werkzeug.middleware.proxy_fix.ProxyFix`.
 
 ## Running the tests
 
@@ -218,10 +240,10 @@ docker compose up
 DUO_DB_PORT=5432 ./test/functionality${n}.sh
 ```
 
-## Using pg_stat_statements:
+## Using pg_stat_statements
 
 ```
-~/duolicious-backend % sudo docker exec -it $(sudo docker ps | grep duolicious-backend-postgres | cut -d ' ' -f 1) psql -U postgres -d duo_api
+sudo docker exec -it $(sudo docker ps | grep ahavah-api-postgres | cut -d ' ' -f 1) psql -U postgres -d duo_api
 [sudo] password for user:
 psql (15.3 (Debian 15.3-1.pgdg120+1))
 Type "help" for help.
@@ -232,6 +254,8 @@ duo_api=# select left(query, 100), mean_exec_time, calls from pg_stat_statements
 
 duo_api=# select pg_stat_statements_reset();
 ```
+
+(The `duo_api` and `duo_chat` database names are inherited from the upstream fork and kept verbatim — see the README's "Fork heritage" section.)
 
 ## Restoring a dumped database
 

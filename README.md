@@ -1,23 +1,16 @@
-<p align="center">
-<img src="https://avatars.githubusercontent.com/u/134650848?s=100&v=4" alt="Duolicious Hearts Logo" >
-<h3 align="center">Duolicious Backend</h3>
-<p align="center">
-The backend of the world's most popular open-source dating app.</p>
-</p>
+# Ahavah Backend
 
-<p align="center">
-<a href="https://github.com/duolicious/duolicious-backend/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/duolicious/duolicious-backend/.github%2Fworkflows%2Ftest.yml?label=Tests" alt="Build status"/></a>
-<a href="https://duolicious.app/"><img src="https://img.shields.io/badge/Based-True--love_pilled-7700ff" alt="Based and true-love pilled"/></a>
-</p>
+Ahavah is a Bumpy-style Torah-observant international dating PWA. The backend is forked from [Duolicious](https://github.com/duolicious/duolicious-backend) and extended for Ahavah's Phase 1-5 features (international discovery, message translation, verification levels, photo moderation, IAP entitlements). The Duolicious license and contributor history are preserved; see LICENSE.
 
-<p align="center">
-<a href="https://x.com/duoliciousapp"><img src="https://img.shields.io/twitter/follow/duoliciousapp" alt="Duolicious Twitter"/></a>
-<a href="https://www.reddit.com/r/duolicious/"><img src="https://img.shields.io/reddit/subreddit-subscribers/duolicious" alt="Duolicious Reddit"/></a>
-</p>
+## Fork heritage
 
-## Screenshots
+This repository keeps a number of internal identifiers from the upstream project verbatim because renaming them would force database migrations or break the codebase for no user-facing benefit:
 
-There's screenshots of the app at https://github.com/duolicious.
+- Python env-var prefix `DUO_*` (e.g. `DUO_ENV`, `DUO_DB_HOST`, `DUO_R2_*`, `DUO_SMTP_*`)
+- Postgres schema/table names beginning with `duo_*` (`duo_api`, `duo_session`, …)
+- Internal Python helper / variable names containing `duo`
+
+User-visible strings (email subjects, body copy, sender display name, public URLs) are Ahavah-branded and driven by the env vars described in [DEVELOPER.md](DEVELOPER.md). The new `service/config.py` module centralises every public URL behind an `AHAVAH_*` environment variable so the same code runs in dev, staging, and production.
 
 ## Quickstart (copy & paste)
 
@@ -25,8 +18,8 @@ Requirements: Docker (with Compose), jq, curl, ffmpeg, zstd
 
 ```bash
 # 1) Clone and start the full dev stack
-git clone https://github.com/duolicious/duolicious-backend
-cd duolicious-backend
+git clone <your fork-of-ahavah-api remote>
+cd ahavah-api
 docker compose up -d
 
 # 2) Wait for the API to be healthy
@@ -71,8 +64,4 @@ Prefer running the services from source (hot reload)? See the "Local development
 
 ## Contributing
 
-Want to help strangers on the internet find love? There's three ways you can contribute!
-
-1. Tell your friends about Duolicious and share on social media! This is the best way to make it grow.
-2. Raise a pull request. Developer instructions can be found at [DEVELOPER.md](DEVELOPER.md).
-3. Read our [CONTRIBUTING guide](CONTRIBUTING.md) for coding standards, how to run tests, and what makes a great PR.
+Want to help build a Torah-observant dating community? Read our [CONTRIBUTING guide](CONTRIBUTING.md) for coding standards, how to run tests, and what makes a great PR. Developer setup steps live in [DEVELOPER.md](DEVELOPER.md).
