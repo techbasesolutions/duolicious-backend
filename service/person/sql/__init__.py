@@ -1,5 +1,6 @@
 import constants
 from commonsql import Q_IS_ALLOWED_CLUB_NAME, Q_COMPUTED_FLAIR
+from service.config import USER_IMAGES_BASE_URL
 
 MAX_CLUB_SEARCH_RESULTS = 20
 
@@ -2603,7 +2604,7 @@ ON
     deleted_export_data_token.person_id = person.id
 """
 
-Q_EXPORT_API_DATA = """
+Q_EXPORT_API_DATA = f"""
 SELECT json_build_object(
     'person', (
         SELECT
@@ -2718,7 +2719,7 @@ SELECT json_build_object(
             SELECT
                 *,
 
-                'https://user-images.duolicious.app/original-' ||
+                '{USER_IMAGES_BASE_URL}/original-' ||
                     uuid ||
                     '.jpg' AS photo_url
 
@@ -2758,7 +2759,7 @@ SELECT json_build_object(
             SELECT
                 *,
 
-                'https://user-images.duolicious.app/450-' ||
+                '{USER_IMAGES_BASE_URL}/450-' ||
                     photo_uuid ||
                     '.jpg' AS photo_url
             FROM

@@ -6,6 +6,7 @@ from antiabuse.sql import (
 )
 from typing import Any
 import os
+from service.config import API_BASE_URL
 from smtp import aws_smtp
 import traceback
 import threading
@@ -133,16 +134,16 @@ def report_template(
 
 
 <p><b>Ban REPORTING user for one month:</b></p>
-<a href="https://api.duolicious.app/admin/ban-link/{reporter_token}">
-         https://api.duolicious.app/admin/ban-link/{reporter_token}
+<a href="{API_BASE_URL}/admin/ban-link/{reporter_token}">
+         {API_BASE_URL}/admin/ban-link/{reporter_token}
 </a>
 
 <br/>
 <br/>
 
 <p><b>Ban ACCUSED user for one month:</b></p>
-<a href="https://api.duolicious.app/admin/ban-link/{accused_token}">
-         https://api.duolicious.app/admin/ban-link/{accused_token}
+<a href="{API_BASE_URL}/admin/ban-link/{accused_token}">
+         {API_BASE_URL}/admin/ban-link/{accused_token}
 </a>
 
 </body>

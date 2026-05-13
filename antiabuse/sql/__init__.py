@@ -1,3 +1,6 @@
+from service.config import API_BASE_URL, USER_IMAGES_BASE_URL
+
+
 Q_LAST_MESSAGES = """
 WITH last_messages AS (
     SELECT
@@ -36,7 +39,7 @@ ORDER BY
     id
 """
 
-Q_MAKE_REPORT = """
+Q_MAKE_REPORT = f"""
 WITH object_person_id AS (
     SELECT
         id
@@ -108,14 +111,14 @@ SELECT
     count_answers,
     ARRAY(
         SELECT
-            'https://user-images.duolicious.app/original-' || uuid || '.jpg'
+            '{USER_IMAGES_BASE_URL}/original-' || uuid || '.jpg'
         FROM photo
         WHERE photo.person_id = p.id
         ORDER BY position
     ) AS photo_links,
     ARRAY(
         SELECT
-            uuid || ': https://api.duolicious.app/admin/delete-photo-link/' || photo_ban_with_id.token
+            uuid || ': {API_BASE_URL}/admin/delete-photo-link/' || photo_ban_with_id.token
         FROM photo_ban_with_id
         WHERE photo_ban_with_id.person_id = p.id
         ORDER BY position

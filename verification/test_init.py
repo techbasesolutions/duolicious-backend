@@ -1,4 +1,5 @@
 import unittest
+from service.config import USER_IMAGES_BASE_URL
 from verification import (
     get_messages,
     process_response,
@@ -327,7 +328,7 @@ You have been given one or more image(s) by a user attempting to verify their id
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": 'https://user-images.duolicious.app/450-u1.jpg',
+                                "url": f'{USER_IMAGES_BASE_URL}/450-u1.jpg',
                                 "detail": "high"
                             }
                         },
@@ -420,7 +421,7 @@ You have been given one or more image(s) by a user attempting to verify their id
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": 'https://user-images.duolicious.app/450-u1.jpg',
+                                "url": f'{USER_IMAGES_BASE_URL}/450-u1.jpg',
                                 "detail": "high"
                             }
                         },
@@ -431,7 +432,7 @@ You have been given one or more image(s) by a user attempting to verify their id
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f'https://user-images.duolicious.app/450-u2.jpg',
+                                "url": f'{USER_IMAGES_BASE_URL}/450-u2.jpg',
                                 "detail": "low"
                             }
                         },
@@ -442,7 +443,7 @@ You have been given one or more image(s) by a user attempting to verify their id
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": 'https://user-images.duolicious.app/450-u3.jpg',
+                                "url": f'{USER_IMAGES_BASE_URL}/450-u3.jpg',
                                 "detail": "low"
                             }
                         },

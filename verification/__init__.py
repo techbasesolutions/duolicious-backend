@@ -8,6 +8,7 @@ import base64
 import urllib.request
 import traceback
 from pathlib import Path
+from service.config import USER_IMAGES_BASE_URL
 from verification.messages import *
 
 VERIFICATION_IMAGE_BASE_URL = os.getenv('DUO_VERIFICATION_IMAGE_BASE_URL')
@@ -310,7 +311,7 @@ def process_response(
 
 def get_image_url(uuid: str) -> str:
     if not VERIFICATION_IMAGE_BASE_URL:
-        return f"https://user-images.duolicious.app/450-{uuid}.jpg"
+        return f"{USER_IMAGES_BASE_URL}/450-{uuid}.jpg"
 
     # Everything after this point is only intended for use in development.
     # This shouldn't be used in production.
