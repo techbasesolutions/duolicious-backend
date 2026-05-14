@@ -160,7 +160,8 @@ SELECT
     NULL::text AS profile_photo_uuid,
     0 AS match_percentage,
     NULL::text AS verification_required,
-    NULL::text AS location
+    p.location_short_friendly AS location,
+    p.country AS country
 FROM search_cache sc
 JOIN person p ON p.id = sc.prospect_person_id
 WHERE sc.searcher_person_id = %(searcher_person_id)s
