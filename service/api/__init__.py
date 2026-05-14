@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Optional
-from flask import request
+from flask import request, Response, abort
 import duotypes as t
 
 # Task 0.5 telemetry: init Sentry as early as possible so import-time errors
@@ -9,6 +9,7 @@ from util.analytics import init_sentry as _init_sentry
 _init_sentry()
 
 from service import (
+    decisions,
     discovery,
     identity_verification,
     location,
@@ -294,6 +295,36 @@ def get_search(s: t.SessionInfo):
 def get_health():
     return 'status: ok'
 
+# Image proxy — streams photos from the private S3-compatible bucket.
+# Filename pattern matches the keys put_object writes:
+#   `${size}-${uuid}.jpg` for the rendered variants (450 / 900 / original)
+# Auth-free by design: photo UUIDs are unguessable v4s and the typical
+# CDN pattern is unauth. This is the same pattern as the upstream
+# Duolicious frontend uses against its CDN bucket. We re-use the
+# `bucket` resource configured at module import time in service/person.
+@get('/image/<filename>', limiter=limiter.exempt)
+def get_image(filename: str):
+    # Defensive: only allow safe key patterns (no path traversal, no
+    # arbitrary keys). Filenames look like "450-<uuid>.jpg" / "900-<uuid>.jpg"
+    # / "original-<uuid>.jpg" / "<uuid>.gif" — alnum + dashes + dots only.
+    if '/' in filename or '..' in filename or len(filename) > 128:
+        abort(400)
+    try:
+        obj = person.bucket.Object(filename).get()
+    except Exception:
+        abort(404)
+    body = obj['Body'].read()
+    content_type = obj.get('ContentType') or 'image/jpeg'
+    # Cache aggressively — UUIDs make these immutable. 1 year + immutable.
+    return Response(
+        body,
+        status=200,
+        headers={
+            'Content-Type': content_type,
+            'Cache-Control': 'public, max-age=31536000, immutable',
+        },
+    )
+
 @aget('/me')
 def get_me_by_session(s: t.SessionInfo):
     return person.get_me(person_id_as_int=s.person_id)
@@ -347,6 +378,21 @@ def post_unskip_by_uuid(s: t.SessionInfo, prospect_uuid: str):
 # /compare-personalities and /compare-answers/<id> routes removed in Task 0.3c.
 # The `person.get_compare_personalities` / `person.get_compare_answers` methods
 # will be removed in Task 0.3f.
+
+# Phase W match loop — record likes / list matches / fetch one match.
+# See service/decisions/__init__.py + migrations/0006_match_loop.sql.
+@apost('/decisions')
+@validate(t.PostDecision)
+def post_decisions(req: t.PostDecision, s: t.SessionInfo):
+    return decisions.post_decisions(req, s)
+
+@aget('/matches')
+def get_matches(s: t.SessionInfo):
+    return decisions.get_matches(s)
+
+@aget('/matches/<match_id>')
+def get_match(s: t.SessionInfo, match_id: str):
+    return decisions.get_match(s, match_id)
 
 @apost('/inbox-info')
 @validate(t.PostInboxInfo)
