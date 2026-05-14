@@ -294,6 +294,12 @@ class PostChangeEmailVerify(BaseModel):
     otp: str = Field(pattern=r"^[0-9A-Fa-f]{6}$")
 
 
+class PostCheckoutWeb(BaseModel):
+    """POST /checkout/web body — frontend sends the tier key
+    ('month' | 'quart' | 'year') matching the paywall TIERS array."""
+    tier_key: str = Field(pattern=r"^(month|quart|year)$")
+
+
 class PatchOnboardeeInfo(BaseModel):
     name: Optional[str] = Field(
         default=None,

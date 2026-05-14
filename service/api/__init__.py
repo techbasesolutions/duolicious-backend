@@ -9,6 +9,7 @@ from util.analytics import init_sentry as _init_sentry
 _init_sentry()
 
 from service import (
+    checkout,
     decisions,
     discovery,
     identity_verification,
@@ -489,6 +490,13 @@ def post_translate_preview(s: t.SessionInfo):
 @apost('/verification/start-id-flow')
 def post_start_id_flow(s: t.SessionInfo):
     return identity_verification.post_start_id_flow(s)
+
+@apost('/checkout/web')
+@validate(t.PostCheckoutWeb)
+def post_checkout_web(req: t.PostCheckoutWeb, s: t.SessionInfo):
+    """Create a Stripe Checkout session for the requested premium tier
+    and return the hosted URL the frontend redirects to. Phase W cutover."""
+    return checkout.post_checkout_web(s, req)
 
 @post('/webhooks/stripe-identity')
 def post_stripe_identity_webhook():
