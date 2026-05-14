@@ -1667,6 +1667,11 @@ WITH photo_ AS (
 ), date_of_birth AS (
     SELECT to_char(date_of_birth, 'YYYY-MM-DD') AS j
     FROM person WHERE id = %(person_id)s
+), has_gold AS (
+    -- Premium flag from upstream Duolicious. /profile (frontend)
+    -- reads this to swap the Subscription row CTA from "Upgrade to
+    -- Premium" to "Manage subscription" for paid users.
+    SELECT has_gold AS j FROM person WHERE id = %(person_id)s
 ), gender AS (
     SELECT gender.name AS j
     FROM gender JOIN person ON gender_id = gender.id
@@ -1822,6 +1827,7 @@ SELECT
         'name',                   (SELECT j FROM name),
         'age',                    (SELECT j FROM age),
         'date_of_birth',          (SELECT j FROM date_of_birth),
+        'has_gold',               (SELECT j FROM has_gold),
         'about',                  (SELECT j FROM about),
         'gender',                 (SELECT j FROM gender),
         'orientation',            (SELECT j FROM orientation),
