@@ -454,7 +454,8 @@ WITH onboardee_location AS (
         intros_notification,
         verification_required,
         location_short_friendly,
-        location_long_friendly
+        location_long_friendly,
+        ahavah_extra
     ) SELECT
         email,
         %(normalized_email)s,
@@ -482,7 +483,11 @@ WITH onboardee_location AS (
         2 AS intros_notification,
         verification_required,
         short_friendly,
-        long_friendly
+        long_friendly,
+        -- Carry the Torah-observant fields from the onboardee row onto
+        -- the new person row. Without this copy, every wizard answer
+        -- that lived only in ahavah_extra would vanish at graduation.
+        ahavah_extra
     FROM
         onboardee,
         onboardee_location
@@ -1087,6 +1092,7 @@ SELECT
         'audio_bio_uuid',            (SELECT j                         FROM audio_bio_uuid),
         'name',                      (SELECT name                      FROM prospect),
         'age',                       (SELECT age                       FROM prospect),
+        'ahavah_extra',              (SELECT ahavah_extra              FROM prospect),
         'location',                  (SELECT location                  FROM prospect),
         'match_percentage',          (SELECT j                         FROM match_percentage),
         'about',                     (SELECT about                     FROM prospect),
@@ -1672,6 +1678,13 @@ WITH photo_ AS (
     -- reads this to swap the Subscription row CTA from "Upgrade to
     -- Premium" to "Manage subscription" for paid users.
     SELECT has_gold AS j FROM person WHERE id = %(person_id)s
+), ahavah_extra AS (
+    -- Ahavah-specific profile fields (assembly / torahLevel / shabbat
+    -- / feastDays / polygyny / headCovering / tzitzit / calendar /
+    -- familyViews / livingPreferences / healthTags / interests /
+    -- personalityTraits / relocation / intent). Duolicious doesn't
+    -- model these as columns; we round-trip the JSONB blob unchanged.
+    SELECT ahavah_extra AS j FROM person WHERE id = %(person_id)s
 ), gender AS (
     SELECT gender.name AS j
     FROM gender JOIN person ON gender_id = gender.id
@@ -1828,6 +1841,7 @@ SELECT
         'age',                    (SELECT j FROM age),
         'date_of_birth',          (SELECT j FROM date_of_birth),
         'has_gold',               (SELECT j FROM has_gold),
+        'ahavah_extra',           (SELECT j FROM ahavah_extra),
         'about',                  (SELECT j FROM about),
         'gender',                 (SELECT j FROM gender),
         'orientation',            (SELECT j FROM orientation),

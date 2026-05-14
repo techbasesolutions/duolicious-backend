@@ -473,6 +473,24 @@ def patch_onboardee_info(req: t.PatchOnboardeeInfo, s: t.SessionInfo):
 
         with api_tx() as tx:
             tx.execute(q_set_onboardee_field, params)
+    elif field_name == 'ahavah_extra':
+        # Merge partial JSONB patch into onboardee.ahavah_extra. The
+        # wizard fires one PATCH per Ahavah-specific field (assembly,
+        # torahLevel, etc.) so the merge accumulates the user's
+        # answers; /finish-onboarding then copies the resulting blob
+        # onto the new person row.
+        params = dict(
+            email=s.email,
+            field_value=json.dumps(field_value),
+        )
+        q_set_onboardee_field = """
+            INSERT INTO onboardee (email, ahavah_extra)
+            VALUES (%(email)s, %(field_value)s::jsonb)
+            ON CONFLICT (email) DO UPDATE SET
+                ahavah_extra = onboardee.ahavah_extra || EXCLUDED.ahavah_extra
+            """
+        with api_tx() as tx:
+            tx.execute(q_set_onboardee_field, params)
     elif field_name == 'base64_file':
         base64_file = t.Base64File(**field_value)
 
@@ -1245,6 +1263,24 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
         SELECT %(person_id)s, gender.id
         FROM gender
         WHERE gender.name = ANY(%(field_value)s)
+        """
+    elif field_name == 'ahavah_extra':
+        # Merge the incoming JSON object into the stored blob — the
+        # client sends partial patches (e.g. {assembly: "natsarim"})
+        # and we keep every prior field intact. `||` is Postgres's
+        # JSONB shallow-merge operator: right-hand keys overwrite.
+        # field_value is already a python dict from pydantic; psycopg
+        # adapts dict -> jsonb automatically when cast via Jsonb().
+        # We use json.dumps + ::jsonb cast for portability across the
+        # psycopg version pinned in the container.
+        params = dict(
+            person_id=s.person_id,
+            field_value=json.dumps(field_value),
+        )
+        q1 = """
+        UPDATE person
+        SET ahavah_extra = ahavah_extra || %(field_value)s::jsonb
+        WHERE id = %(person_id)s
         """
     elif field_name == 'orientation':
         q1 = """

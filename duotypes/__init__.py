@@ -310,6 +310,13 @@ class PatchOnboardeeInfo(BaseModel):
     location: Optional[str] = Field(default=None, min_length=1)
     gender: Optional[str] = Field(default=None, min_length=1)
     other_peoples_genders: Optional[List[str]] = Field(default=None, min_length=1)
+    # Ahavah: Torah-observant fields (assembly, torahLevel, shabbat,
+    # feastDays, polygyny, headCovering, tzitzit, calendar, interests,
+    # personalityTraits, relocation, intent, etc.) round-trip as a
+    # single JSONB blob. PatchOnboardeeInfo accepts the same shape so
+    # the wizard can persist mid-onboarding; /finish-onboarding copies
+    # onboardee.ahavah_extra into the new person.ahavah_extra.
+    ahavah_extra: Optional[Dict[str, Any]] = None
     base64_file: Optional[Base64File] = None
 
     @field_validator('name', mode='before')
@@ -429,6 +436,14 @@ class PatchProfileInfo(BaseModel):
     # to {gender, other_peoples_genders}). Upstream only exposes this on
     # /onboardee-info — adding it here so it round-trips after onboarding.
     other_peoples_genders: Optional[List[str]] = Field(default=None, min_length=1)
+    # Ahavah change: round-trip a JSON blob of Torah-observant profile
+    # fields (assembly, torahLevel, shabbat, feastDays, polygyny, head
+    # covering, tzitzit, interests, personalityTraits, etc.) that the
+    # Duolicious schema doesn't model as columns. Validation lives on
+    # the frontend's TypeScript enums in profile-schema.ts; the backend
+    # just persists whatever shape the client sends, merged into the
+    # existing ahavah_extra JSONB on the person row.
+    ahavah_extra: Optional[Dict[str, Any]] = None
     name: Optional[str] = Field(
         default=None,
         min_length=MIN_NAME_LEN,
