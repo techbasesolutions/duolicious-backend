@@ -411,6 +411,28 @@ def post_unskip_by_uuid(s: t.SessionInfo, prospect_uuid: str):
 
 # Phase W match loop — record likes / list matches / fetch one match.
 # See service/decisions/__init__.py + migrations/0006_match_loop.sql.
+@apost('/decisions/reset')
+def post_decisions_reset(s: t.SessionInfo):
+    """Wipe the current user's swipe history (both liked + skipped).
+    Phase W cutover testing convenience — lets a developer / seed
+    account exhaust the candidate pool, then reset to re-test the
+    full /discover loop without manual DB intervention."""
+    with api_tx() as tx:
+        tx.execute(
+            "DELETE FROM skipped WHERE subject_person_id = %(p)s",
+            dict(p=s.person_id),
+        )
+        tx.execute(
+            "DELETE FROM liked WHERE liker_id = %(p)s",
+            dict(p=s.person_id),
+        )
+        # Also clear the search_cache so the next /search recomputes.
+        tx.execute(
+            "DELETE FROM search_cache WHERE searcher_person_id = %(p)s",
+            dict(p=s.person_id),
+        )
+    return {'ok': True}
+
 @apost('/decisions')
 @validate(t.PostDecision)
 def post_decisions(req: t.PostDecision, s: t.SessionInfo):
