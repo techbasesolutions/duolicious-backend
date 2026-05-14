@@ -1657,6 +1657,16 @@ WITH photo_ AS (
     SELECT name AS j FROM person WHERE id = %(person_id)s
 ), about AS (
     SELECT about AS j FROM person WHERE id = %(person_id)s
+), age AS (
+    -- Ahavah: ship age + date_of_birth so the frontend's
+    -- /discover-eligibility gate doesn't redirect to /onboarding/dob
+    -- for fully-onboarded users (DOB lived only on `person` and was
+    -- never serialised back to the client post-onboarding).
+    SELECT EXTRACT(YEAR FROM AGE(date_of_birth))::int AS j
+    FROM person WHERE id = %(person_id)s
+), date_of_birth AS (
+    SELECT to_char(date_of_birth, 'YYYY-MM-DD') AS j
+    FROM person WHERE id = %(person_id)s
 ), gender AS (
     SELECT gender.name AS j
     FROM gender JOIN person ON gender_id = gender.id
@@ -1810,6 +1820,8 @@ SELECT
         'audio_bio_max_seconds',  {constants.MAX_AUDIO_SECONDS},
         'audio_bio',              (SELECT j FROM audio_bio),
         'name',                   (SELECT j FROM name),
+        'age',                    (SELECT j FROM age),
+        'date_of_birth',          (SELECT j FROM date_of_birth),
         'about',                  (SELECT j FROM about),
         'gender',                 (SELECT j FROM gender),
         'orientation',            (SELECT j FROM orientation),
