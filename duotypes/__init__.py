@@ -424,6 +424,11 @@ class PatchProfileInfo(BaseModel):
     base64_file: Optional[Base64File] = None
     base64_audio_file: Optional[Base64AudioFile] = None
     photo_assignments: Optional[PhotoAssignments] = None
+    # Ahavah change: post-onboarded users need to be able to change their
+    # search preferences (e.g. switching `sex` on /profile/edit fans out
+    # to {gender, other_peoples_genders}). Upstream only exposes this on
+    # /onboardee-info — adding it here so it round-trips after onboarding.
+    other_peoples_genders: Optional[List[str]] = Field(default=None, min_length=1)
     name: Optional[str] = Field(
         default=None,
         min_length=MIN_NAME_LEN,

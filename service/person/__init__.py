@@ -1207,9 +1207,11 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
             person_id = %(person_id)s
         """
     elif field_name == 'name':
-        if not _has_gold(person_id=s.person_id):
-            return 'Requires gold', 403
-
+        # Ahavah change: removed the upstream Duolicious "Requires gold"
+        # gate on display-name changes. The Torah-observant audience is
+        # small + heavily vetted; rename-abuse is not a problem we have
+        # AND blocking the rename made the optimistic UI on /profile/edit
+        # silently revert (user reported it as a broken control).
         q1 = """
         UPDATE person
         SET name = %(field_value)s
@@ -1228,6 +1230,22 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
         """
 
         q2 = Q_UPDATE_VERIFICATION_LEVEL
+    elif field_name == 'other_peoples_genders':
+        # Ahavah change: replace the upstream "only on /onboardee-info"
+        # restriction. Post-onboarded users can change their search
+        # preference (e.g. via /profile/edit sex toggle fanning out to
+        # {gender, other_peoples_genders}). DELETE+INSERT is the same
+        # shape post_search_filter uses for its 'gender' branch.
+        q1 = """
+        DELETE FROM search_preference_gender
+        WHERE person_id = %(person_id)s
+        """
+        q2 = """
+        INSERT INTO search_preference_gender (person_id, gender_id)
+        SELECT %(person_id)s, gender.id
+        FROM gender
+        WHERE gender.name = ANY(%(field_value)s)
+        """
     elif field_name == 'orientation':
         q1 = """
         UPDATE person SET orientation_id = orientation.id

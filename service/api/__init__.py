@@ -426,6 +426,14 @@ def post_decisions_reset(s: t.SessionInfo):
             "DELETE FROM liked WHERE liker_id = %(p)s",
             dict(p=s.person_id),
         )
+        # `swipe` is the upstream Duolicious swipe-history table that
+        # Q_UNCACHED_SEARCH_2 also excludes against. Without this delete,
+        # /discover stayed empty after a reset because every prospect was
+        # still marked as "already swiped".
+        tx.execute(
+            "DELETE FROM swipe WHERE swiper_person_id = %(p)s",
+            dict(p=s.person_id),
+        )
         # Also clear the search_cache so the next /search recomputes.
         tx.execute(
             "DELETE FROM search_cache WHERE searcher_person_id = %(p)s",
