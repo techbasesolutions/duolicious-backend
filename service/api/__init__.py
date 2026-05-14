@@ -344,6 +344,35 @@ def get_prospect_profile(
 def get_conversation_prospect(s: t.SessionInfo, prospect_uuid: str):
     return person.get_conversation_prospect(s, prospect_uuid)
 
+@aget('/blocked')
+def get_blocked(s: t.SessionInfo):
+    """List the people the current user has blocked (skipped + reported).
+    Frontend renders this on /settings/blocked. Each row has uuid, name,
+    and a `blocked_at` ISO timestamp the UI formats as 'X days ago'."""
+    with api_tx('READ COMMITTED') as tx:
+        rows = tx.execute(
+            """
+            SELECT
+                p.uuid::text AS uuid,
+                p.name AS name,
+                sk.created_at AS blocked_at
+            FROM skipped sk
+            JOIN person p ON p.id = sk.object_person_id
+            WHERE sk.subject_person_id = %(person_id)s
+              AND sk.reported = TRUE
+            ORDER BY sk.created_at DESC
+            """,
+            dict(person_id=s.person_id),
+        ).fetchall()
+    return [
+        {
+            'uuid': r['uuid'],
+            'name': r['name'],
+            'blocked_at': r['blocked_at'].isoformat() if r.get('blocked_at') else None,
+        }
+        for r in rows
+    ]
+
 @apost('/skip/by-uuid/<prospect_uuid>')
 @validate(t.PostSkip)
 def post_skip_by_uuid(req: t.PostSkip, s: t.SessionInfo, prospect_uuid: str):
