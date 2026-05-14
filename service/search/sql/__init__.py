@@ -156,8 +156,29 @@ SELECT
     p.uuid::text AS prospect_uuid,
     p.name,
     EXTRACT(YEAR FROM AGE(p.date_of_birth))::int AS age,
-    NULL::jsonb AS photo_uuids,
-    NULL::text AS profile_photo_uuid,
+    -- photo_uuids: ordered JSON array of photo UUIDs (position ASC). The
+    -- frontend's use-discover-deck adapter maps each entry through
+    -- cdnUrlFor() to build the CDN URL. Empty array `[]` when the
+    -- prospect has not uploaded any photos yet (e.g. signed up via OTP
+    -- but bailed before /onboarding/photos).
+    COALESCE(
+        (
+            SELECT json_agg(ph.uuid ORDER BY ph.position)
+            FROM photo ph
+            WHERE ph.person_id = p.id
+        ),
+        '[]'::json
+    )::jsonb AS photo_uuids,
+    -- profile_photo_uuid: the position=1 photo (or first by position if
+    -- 1 is empty). Kept for backwards-compat with any consumer that
+    -- expects the single-photo wire field; the carousel uses photo_uuids.
+    (
+        SELECT ph.uuid
+        FROM photo ph
+        WHERE ph.person_id = p.id
+        ORDER BY ph.position
+        LIMIT 1
+    ) AS profile_photo_uuid,
     0 AS match_percentage,
     NULL::text AS verification_required,
     p.location_short_friendly AS location,
