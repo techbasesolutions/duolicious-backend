@@ -620,7 +620,9 @@ def get_me(
             SELECT
                 id AS person_id,
                 name AS person_name,
-                uuid::TEXT AS person_uuid
+                uuid::TEXT AS person_uuid,
+                email,
+                primary_language
             FROM person
             WHERE
                 (%(person_id_as_int)s::INT IS NOT NULL AND id = %(person_id_as_int)s::INT)
@@ -642,6 +644,11 @@ def get_me(
         # OTP time (i.e. NOT fresh onboardees). Returning it here lets the
         # frontend backfill `ahavah.my-uuid` on first /me after graduation.
         'person_uuid': row['person_uuid'],
+        # Account-management surface fields. The frontend's
+        # /settings/account renders these as the current values; without
+        # them we showed hardcoded fakes ("ehud@example.com", etc.).
+        'email': row['email'],
+        'primary_language': row.get('primary_language'),
         'personality': [],   # populated when matching system relands in Phase 1+
     }
 
