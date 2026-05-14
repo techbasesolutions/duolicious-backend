@@ -278,6 +278,22 @@ class PostCheckOtp(BaseModel):
     otp: str = Field(pattern=r"^\d{6}$")
 
 
+class PostChangeEmailRequest(BaseModel):
+    """POST /account/change-email-request body."""
+    new_email: EmailStr
+
+    @field_validator('new_email', mode='before')
+    def validate_new_email(cls, value):
+        return EmailStr._validate(value.lower().strip())
+
+
+class PostChangeEmailVerify(BaseModel):
+    """POST /account/change-email-verify body — OTP is 6 hex chars
+    (uppercase) per the change_email_request implementation.
+    Looser pattern than the digits-only signup OTP."""
+    otp: str = Field(pattern=r"^[0-9A-Fa-f]{6}$")
+
+
 class PatchOnboardeeInfo(BaseModel):
     name: Optional[str] = Field(
         default=None,
@@ -689,3 +705,16 @@ class PostRevenuecat(BaseModel):
 
 class PostMarkVisitorsChecked(BaseModel):
     time: Optional[datetime] = None
+
+
+class PostDecision(BaseModel):
+    """
+    Phase W: record a like/pass against a prospect's profile.
+
+    Frontend POSTs { profile_uuid, decision } to /decisions. On
+    `like`, /decisions inserts into `liked` and creates an `ahavah_match`
+    row when the reverse `liked` exists. On `nope`, it delegates to the
+    existing /skip/by-uuid path (rate-limit + report semantics reused).
+    """
+    profile_uuid: str = Field(min_length=1, max_length=64)
+    decision: Literal['like', 'nope']

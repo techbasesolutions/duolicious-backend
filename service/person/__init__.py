@@ -783,6 +783,141 @@ def post_deactivate(s: t.SessionInfo):
     with api_tx() as tx:
         tx.execute(Q_POST_DEACTIVATE, params)
 
+# ---------------------------------------------------------------------------
+# Change-email flow (Phase W cutover, migration 0007)
+# ---------------------------------------------------------------------------
+#
+# Two-step OTP-to-new-email pattern. Step 1 stages the change on the
+# person row + sends an OTP to the new address. Step 2 verifies the OTP
+# and swaps. The user's existing session_token stays valid throughout
+# (we don't sign them out), but a fresh OTP must be requested to confirm.
+#
+# Anti-abuse: 15-minute OTP expiry; a new request overwrites any prior
+# pending change; uniqueness on pending_email so two users can't race
+# for the same address.
+
+CHANGE_EMAIL_OTP_TTL_MINUTES = 15
+
+def change_email_request(s: t.SessionInfo, new_email: str):
+    new_email = new_email.strip().lower()
+    if not new_email or '@' not in new_email or len(new_email) > 320:
+        return 'Invalid email address', 400
+
+    # Block disposable / known-bad domains using the same filter as signup.
+    if not check_and_update_bad_domains(new_email):
+        return 'This email provider is not supported', 400
+
+    # Reject if the new email is already someone's primary OR pending.
+    with api_tx() as tx:
+        existing = tx.execute(
+            """
+            SELECT 1 FROM person
+            WHERE (email = %(e)s OR pending_email = %(e)s)
+              AND id <> %(person_id)s
+            LIMIT 1
+            """,
+            dict(e=new_email, person_id=s.person_id),
+        ).fetchone()
+    if existing:
+        return 'This email is already in use', 409
+
+    # Reject "no-op" change.
+    if s.email and new_email == s.email.strip().lower():
+        return 'New email matches your current email', 400
+
+    otp = secrets.token_hex(3).upper()[:6]  # 6 hex chars, matches /request-otp UX
+    otp_hash = sha512(otp)
+
+    with api_tx() as tx:
+        tx.execute(
+            """
+            UPDATE person
+               SET pending_email = %(new_email)s,
+                   pending_email_otp_hash = %(otp_hash)s,
+                   pending_email_otp_expiry = NOW() + INTERVAL '%(ttl)s minutes'
+             WHERE id = %(person_id)s
+            """,
+            dict(
+                new_email=new_email,
+                otp_hash=otp_hash,
+                ttl=CHANGE_EMAIL_OTP_TTL_MINUTES,
+                person_id=s.person_id,
+            ),
+        )
+
+    _send_otp(new_email, otp)
+    return dict(pending_email=new_email)
+
+def change_email_verify(s: t.SessionInfo, otp: str):
+    otp = otp.strip().upper()
+    if not otp or len(otp) > 12:
+        return 'Invalid code', 400
+
+    otp_hash = sha512(otp)
+
+    with api_tx() as tx:
+        row = tx.execute(
+            """
+            SELECT pending_email, pending_email_otp_hash, pending_email_otp_expiry
+            FROM person
+            WHERE id = %(person_id)s
+            """,
+            dict(person_id=s.person_id),
+        ).fetchone()
+
+        if not row or not row.get('pending_email') or not row.get('pending_email_otp_hash'):
+            return 'No pending email change', 400
+
+        if row['pending_email_otp_hash'] != otp_hash:
+            return 'Incorrect code', 400
+
+        expiry = row.get('pending_email_otp_expiry')
+        if expiry is None:
+            return 'No pending email change', 400
+        # psycopg returns datetime; compare against NOW() in SQL to avoid
+        # timezone-aware/naive mismatches.
+        expired = tx.execute(
+            """SELECT NOW() > %(expiry)s AS expired""",
+            dict(expiry=expiry),
+        ).fetchone()
+        if expired and expired.get('expired'):
+            tx.execute(
+                """
+                UPDATE person SET
+                  pending_email = NULL,
+                  pending_email_otp_hash = NULL,
+                  pending_email_otp_expiry = NULL
+                WHERE id = %(person_id)s
+                """,
+                dict(person_id=s.person_id),
+            )
+            return 'Code expired — request a new one', 400
+
+        new_email = row['pending_email']
+
+        # Atomic swap: set email to pending_email, clear pending fields.
+        # ON CONFLICT shouldn't fire because change_email_request already
+        # checked uniqueness, but the unique index on person.email
+        # protects us if two requests race.
+        tx.execute(
+            """
+            UPDATE person SET
+              email = %(new_email)s,
+              normalized_email = %(normalized_email)s,
+              pending_email = NULL,
+              pending_email_otp_hash = NULL,
+              pending_email_otp_expiry = NULL
+            WHERE id = %(person_id)s
+            """,
+            dict(
+                new_email=new_email,
+                normalized_email=normalize_email(new_email),
+                person_id=s.person_id,
+            ),
+        )
+
+    return dict(email=new_email)
+
 def get_profile_info(s: t.SessionInfo):
     params = dict(person_id=s.person_id)
 

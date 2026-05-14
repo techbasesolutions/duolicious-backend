@@ -399,6 +399,20 @@ def get_match(s: t.SessionInfo, match_id: str):
 def post_inbox_info(req: t.PostInboxInfo, s: t.SessionInfo):
     return person.post_inbox_info(req, s)
 
+@apost('/account/change-email-request')
+@validate(t.PostChangeEmailRequest)
+def post_change_email_request(req: t.PostChangeEmailRequest, s: t.SessionInfo):
+    """Stage an email change. Sends an OTP to the new address; the
+    user submits it via /account/change-email-verify to complete the swap."""
+    return person.change_email_request(s, req.new_email)
+
+@apost('/account/change-email-verify')
+@validate(t.PostChangeEmailVerify)
+def post_change_email_verify(req: t.PostChangeEmailVerify, s: t.SessionInfo):
+    """Verify the OTP sent by /account/change-email-request and swap
+    the email on the person row."""
+    return person.change_email_verify(s, req.otp)
+
 @adelete('/account')
 def delete_account(s: t.SessionInfo):
     # Task 0.7 note: this is the upstream Duolicious fork's existing immediate hard-delete.
