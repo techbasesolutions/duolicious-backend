@@ -3,6 +3,7 @@ from service.cron.checkphotos import check_photos_forever
 from service.cron.garbagerecords import delete_garbage_records_forever
 from service.cron.notifications import send_notifications_forever
 from service.cron.nsfwphotorunner import predict_nsfw_photos_forever
+from service.cron.pendingdeletion import hard_delete_expired_forever
 from service.cron.photocleaner import clean_photos_forever
 from service.cron.audiocleaner import clean_audio_forever
 from service.cron.verificationjobrunner import verify_forever
@@ -53,6 +54,10 @@ async def main():
         verify_forever(),
 
         report_profiles_forever(),
+
+        # Phase W: hard-delete pending-deletion person rows past the
+        # 7-day grace window. Runs hourly.
+        hard_delete_expired_forever(),
 
         check_connections_forever(),
 

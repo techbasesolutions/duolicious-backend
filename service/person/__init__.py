@@ -755,6 +755,18 @@ def delete_or_ban_account(
     s: Optional[t.SessionInfo],
     admin_ban_token: Optional[str] = None,
 ):
+    """Soft-delete with 7-day grace (Phase W cutover, migration 0008).
+
+    For self-initiated deletes (`s` provided, no `admin_ban_token`): we
+    flip `activated=false` and stamp `deletion_requested_at = NOW()`.
+    The user vanishes from /search + /matches + /profile/[uuid]
+    immediately (those queries filter by activated=true). The
+    `pendingdeletion` cron hard-deletes after 7 days.
+
+    For admin bans (`admin_ban_token` set): we still hard-delete via
+    Q_ADMIN_BAN — admins act on policy violations and shouldn't have a
+    grace window.
+    """
     with api_tx() as tx:
         tx.execute('SET LOCAL statement_timeout = 30_000')  # 30 seconds
 
@@ -763,6 +775,8 @@ def delete_or_ban_account(
                 Q_ADMIN_BAN,
                 params=dict(token=admin_ban_token)
             ).fetchall()
+            # Admin path: immediate hard-delete, no grace.
+            tx.executemany(Q_DELETE_ACCOUNT, params_seq=rows)
         elif s:
             rows = [
                 dict(
@@ -770,10 +784,19 @@ def delete_or_ban_account(
                     person_uuid=s.person_uuid
                 )
             ]
+            # User-initiated: soft-delete only. Cron will hard-delete
+            # after the 7-day grace window expires.
+            tx.execute(
+                """
+                UPDATE person
+                   SET activated = FALSE,
+                       deletion_requested_at = NOW()
+                 WHERE id = %(person_id)s
+                """,
+                dict(person_id=s.person_id),
+            )
         else:
             raise ValueError('At least one parameter must not be None')
-
-        tx.executemany(Q_DELETE_ACCOUNT, params_seq=rows)
 
     return rows
 
