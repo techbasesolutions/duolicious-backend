@@ -1,0 +1,113 @@
+name: Deploy ahavah/main → droplet
+
+# Auto-deploys the Ahavah backend to the production DigitalOcean droplet
+# (167.71.93.27 / 2604:a880:800:14:0:2:f28f:5000) on every push to the
+# `ahavah/main` branch. Replaces the manual `git pull && docker compose
+# build && up -d` workflow we'd otherwise have to run from a laptop.
+#
+# Why IPv6: the droplet's UFW has `22/tcp LIMIT IN` for IPv4 — a
+# multi-step deploy that opens 6+ SSH connections in 30s permanently
+# bans the source IP via xt_recent. IPv6 isn't subject to the same
+# practical rate-limit + GitHub Actions runners have IPv6.
+#
+# Required GitHub Secrets (set via `gh secret set` in this repo):
+#   DEPLOY_SSH_KEY  — contents of the `ahavah-deploy` private key
+#                     (matches /root/.ssh/authorized_keys on droplet)
+#   DEPLOY_HOST     — droplet's IPv6 address
+#   DEPLOY_USER     — `root`
+#
+# Migrations: any new file in `migrations/*.sql` is applied via
+# `docker exec ... psql -f` BEFORE the api rebuild. All migrations in
+# this repo use `IF NOT EXISTS` patterns so they're safe to re-run on
+# every deploy.
+#
+# Rollback: `ssh root@droplet "cd /opt/ahavah-api && git reset --hard
+# <previous-sha> && docker compose -f docker-compose.yml -f docker-compose
+# .production.yml --env-file .env.production up -d --build api chat"`.
+
+on:
+  push:
+    branches:
+      - ahavah/main
+  workflow_dispatch:  # allow manual re-run from the Actions tab
+
+concurrency:
+  # If a second push arrives before the first finishes, cancel the
+  # in-flight deploy and run the newer commit. Avoids racing two
+  # docker builds against the same daemon.
+  group: deploy-ahavah-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Pull + rebuild api/chat
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install SSH key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519_ahavah
+          chmod 600 ~/.ssh/id_ed25519_ahavah
+
+      - name: Deploy via SSH
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519_ahavah \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=30 \
+              "${SSH_USER}@${SSH_HOST}" \
+              'bash -s' <<'REMOTE_SCRIPT'
+            set -euo pipefail
+
+            cd /opt/ahavah-api
+
+            echo "::group::git fetch + reset"
+            git fetch origin ahavah/main
+            git reset --hard origin/ahavah/main
+            git log --oneline -1
+            echo "::endgroup::"
+
+            echo "::group::apply migrations (idempotent)"
+            for f in $(ls migrations/*.sql 2>/dev/null | sort); do
+              echo "applying $f"
+              docker cp "$f" ahavah-api-postgres-1:/tmp/migration.sql
+              docker exec ahavah-api-postgres-1 \
+                psql -U postgres -d duo_api -f /tmp/migration.sql 2>&1 \
+                | tail -3
+            done
+            echo "::endgroup::"
+
+            echo "::group::docker build"
+            docker compose -f docker-compose.yml \
+                           -f docker-compose.production.yml \
+                           --env-file .env.production \
+                           build api chat
+            echo "::endgroup::"
+
+            echo "::group::recreate api+chat"
+            docker compose -f docker-compose.yml \
+                           -f docker-compose.production.yml \
+                           --env-file .env.production \
+                           up -d api chat
+            echo "::endgroup::"
+
+            echo "::group::health check"
+            sleep 5
+            for i in $(seq 1 24); do
+              if curl -fsS http://localhost:5000/health >/dev/null; then
+                echo "  api healthy after ${i}x5s"
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "  api FAILED to come up healthy in 120s"
+            docker logs --tail 60 ahavah-api-api-1 || true
+            exit 1
+          REMOTE_SCRIPT
