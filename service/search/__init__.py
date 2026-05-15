@@ -37,6 +37,7 @@ def _uncached_search_results(
     searcher_person_id: int,
     no: Tuple[int, int],
     gender_preference: list[int],
+    verified_only: bool = False,
 ):
     n, o = no
 
@@ -45,6 +46,7 @@ def _uncached_search_results(
         n=n,
         o=o,
         gender_preference=gender_preference,
+        verified_only=verified_only,
     )
 
     try:
@@ -100,6 +102,7 @@ def get_search(
     n: str | None,
     o: str | None,
     club: ClubHttpArg | None,
+    verified_only: bool = False,
 ):
     search_type, no = get_search_type(n, o)
 
@@ -127,7 +130,8 @@ def get_search(
                 tx=tx,
                 searcher_person_id=s.person_id,
                 no=no,
-                gender_preference=gender_preference)
+                gender_preference=gender_preference,
+                verified_only=verified_only)
 
         elif search_type == 'cached-search':
             return _cached_search_results(

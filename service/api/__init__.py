@@ -271,10 +271,15 @@ def get_search(s: t.SessionInfo):
         else None
     )
 
+    # Phase W: client-side "Verified only" filter (discover sheet +
+    # "Require my matches to be verified" privacy toggle). Either path
+    # flips this param; backend just needs the boolean.
+    verified_only = request.args.get('verified_only') in ('1', 'true', 'yes')
+
     search_type, _ = search.get_search_type(n, o)
 
     limit = "15 per 2 minutes"
-    scope = json.dumps([search_type, lowerClub])
+    scope = json.dumps([search_type, lowerClub, verified_only])
 
     if search_type == 'uncached-search':
         with (
@@ -288,9 +293,11 @@ def get_search(s: t.SessionInfo):
                 key_func=limiter_account,
                 exempt_when=disable_account_rate_limit)
         ):
-            return search.get_search(s=s, n=n, o=o, club=club)
+            return search.get_search(
+                s=s, n=n, o=o, club=club, verified_only=verified_only)
     else:
-        return search.get_search(s=s, n=n, o=o, club=club)
+        return search.get_search(
+            s=s, n=n, o=o, club=club, verified_only=verified_only)
 
 @get('/health', limiter=limiter.exempt)
 def get_health():

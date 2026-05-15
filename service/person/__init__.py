@@ -1507,6 +1507,18 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
            SET primary_language = %(field_value)s
          WHERE id = %(person_id)s
         """
+    elif field_name == 'verification_required':
+        # Phase W cutover: drives the discover/search filter that excludes
+        # unverified prospects from this user's feed. Value is "Yes"/"No"
+        # (matching show_my_age + sibling toggles); stored as BOOLEAN on
+        # the column. Free for any user — verification gating is opt-in
+        # and doesn't require a paid tier.
+        q1 = """
+        UPDATE person
+           SET verification_required = (
+               CASE WHEN %(field_value)s = 'Yes' THEN TRUE ELSE FALSE END)
+         WHERE id = %(person_id)s
+        """
     elif field_name == 'smoking':
         q1 = """
         UPDATE person SET smoking_id = yes_no_optional.id

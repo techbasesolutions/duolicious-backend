@@ -132,6 +132,7 @@ def _push_chat_message(from_id: int, to_id: int, body: str, is_audio: bool):
         body=push_body,
         url=f'/chat/{sender_uuid}',
         tag=f'chat:{sender_uuid}',
+        event_kind="message",
     )
 
 

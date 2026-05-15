@@ -512,6 +512,13 @@ class PatchProfileInfo(BaseModel):
     # Phase W: primary_language (TEXT) — single ISO code marking the user's
     # preferred language for translation. NULL when unset.
     primary_language: Optional[str] = Field(default=None, min_length=2, max_length=64)
+    # Phase W cutover (2026-05-15) — "Require my matches to be verified".
+    # Boolean stored as "Yes"/"No" string to match the rest of
+    # PatchProfileInfo (show_my_age, hide_me_from_strangers, etc. follow
+    # the same Yes/No convention). When set to "Yes" the discover query
+    # excludes any candidate whose ahavah_verification_tier = 'none' AND
+    # verification_level_id <= 1.
+    verification_required: Optional[str] = None
 
     @model_validator(mode='after')
     def check_exactly_one(self):
@@ -688,6 +695,20 @@ class PostSkip(BaseModel):
 
 class PostVerificationSelfie(BaseModel):
     base64_file: Base64File
+
+
+class PatchNotificationPreferences(BaseModel):
+    """Per-event push notification preferences. Mig 0013 adds the
+    notification_preference table. Each field is optional so the
+    client can PATCH a single toggle without resetting the others.
+    Unlike PatchProfileInfo the "exactly one field" constraint does
+    NOT apply — the /settings/notifications page may flip several
+    toggles in one request when the user mass-disables push.
+    """
+    push_matches: Optional[bool] = None
+    push_messages: Optional[bool] = None
+    push_likes: Optional[bool] = None
+    push_weekly_digest: Optional[bool] = None
 
 
 class PostVerificationMultiSelfie(BaseModel):

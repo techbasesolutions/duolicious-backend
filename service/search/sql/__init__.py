@@ -128,6 +128,19 @@ prospect_pool AS (
           WHERE (sk.subject_person_id = %(searcher_person_id)s AND sk.object_person_id = p.id)
              OR (sk.subject_person_id = p.id AND sk.object_person_id = %(searcher_person_id)s)
       )
+
+      -- Phase W: "Verified only" filter. Triggered either by the
+      -- discover sheet's verifiedOnly toggle OR the privacy setting
+      -- "Require my matches to be verified". Either path passes
+      -- verified_only=TRUE to the search service, and the backend
+      -- excludes prospects who are at 'none' on the new tier ENUM AND
+      -- below 'Photos' on the legacy lookup. Verified = Bronze or
+      -- better (any tier ladder entry that proves identity).
+      AND (
+          NOT %(verified_only)s::boolean
+          OR p.ahavah_verification_tier <> 'none'::ahavah_verification_tier
+          OR p.verification_level_id > 1
+      )
 )
 INSERT INTO search_cache (
     searcher_person_id, position, prospect_person_id, prospect_uuid,

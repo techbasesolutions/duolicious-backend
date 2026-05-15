@@ -18,6 +18,8 @@ dependency is missing.
 import duotypes as t
 
 from service.api.decorators import (
+    aget,
+    apatch,
     apost,
     adelete,
     validate,
@@ -41,3 +43,23 @@ def delete_notifications_subscribe(req: t.DeleteNotificationsSubscribe, s: t.Ses
     user opt-out + on swReg.pushManager.subscription.unsubscribe()."""
     from service import notifications
     return notifications.delete_subscribe(s, req)
+
+
+@aget('/notifications/preferences')
+def get_notifications_preferences(s: t.SessionInfo):
+    """Return the signed-in user's per-event push preferences (mig 0013).
+    Lazy default if the row doesn't exist yet."""
+    from service import notifications
+    return notifications.get_notification_preferences(s)
+
+
+@apatch('/notifications/preferences')
+@validate(t.PatchNotificationPreferences)
+def patch_notifications_preferences(
+    req: t.PatchNotificationPreferences,
+    s: t.SessionInfo,
+):
+    """Upsert any subset of the four event toggles. Body fields are all
+    optional so the client can flip one without resetting the others."""
+    from service import notifications
+    return notifications.patch_notification_preferences(req, s)

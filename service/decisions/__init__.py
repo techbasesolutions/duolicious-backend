@@ -239,6 +239,7 @@ def post_decisions(req: t.PostDecision, s: t.SessionInfo):
             body=f"{my_name} likes you back",
             url="/matches",
             tag=f"match:{row['match_id']}",
+            event_kind="match",
         )
     except Exception:
         import traceback

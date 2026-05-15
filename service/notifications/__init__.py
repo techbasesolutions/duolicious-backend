@@ -29,7 +29,29 @@ import json
 import os
 import threading
 import traceback
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
+
+
+EventKind = Literal["match", "message", "like", "weekly"]
+
+# Map each event kind to the column on notification_preference that
+# gates it. Keeping the mapping in one place means the cron + handlers
+# don't have to know column names.
+_EVENT_COLUMN: Dict[EventKind, str] = {
+    "match":   "push_matches",
+    "message": "push_messages",
+    "like":    "push_likes",
+    "weekly":  "push_weekly_digest",
+}
+
+# Defaults that apply when notification_preference has no row for the
+# user. Lazy-insert pattern: the row is only created on first PATCH.
+_EVENT_DEFAULTS: Dict[EventKind, bool] = {
+    "match":   True,
+    "message": True,
+    "like":    False,
+    "weekly":  False,
+}
 
 
 VAPID_PUBLIC_KEY = os.environ.get('VAPID_PUBLIC_KEY', '')
@@ -151,17 +173,47 @@ def _send_to_user_blocking(person_id: int, payload: Dict[str, Any]):
             )
 
 
+def _allowed_for_event(person_id: int, event_kind: EventKind) -> bool:
+    """Query notification_preference and return whether this kind of
+    event is allowed for the user. Missing row → documented default."""
+    column = _EVENT_COLUMN[event_kind]
+    from database import api_tx
+    with api_tx() as tx:
+        row = tx.execute(
+            f"""
+            SELECT {column} AS allowed
+              FROM notification_preference
+             WHERE person_id = %(person_id)s
+            """,
+            dict(person_id=person_id),
+        ).fetchone()
+    if row is None:
+        return _EVENT_DEFAULTS[event_kind]
+    return bool(row['allowed'])
+
+
 def send_to_user_safe(
     person_id: int,
     title: str,
     body: str,
     url: str = '/',
     tag: Optional[str] = None,
+    *,
+    event_kind: Optional[EventKind] = None,
 ):
     """Fire-and-forget push. Always returns immediately; the actual
     network I/O happens on a background thread so callers (request
-    handlers, decision endpoints) don't pay the latency."""
+    handlers, decision endpoints) don't pay the latency.
+
+    Phase W cutover (mig 0013): when `event_kind` is provided the
+    function short-circuits if the user's notification_preference row
+    has the corresponding column = FALSE. Missing row → documented
+    default per `_EVENT_DEFAULTS`. event_kind=None preserves the
+    legacy unconditional send (only the helper test harness should
+    rely on this)."""
     if not PUSH_ENABLED:
+        return
+    if event_kind is not None and not _allowed_for_event(person_id, event_kind):
         return
 
     payload: Dict[str, Any] = {
@@ -177,3 +229,71 @@ def send_to_user_safe(
         kwargs=dict(person_id=person_id, payload=payload),
         daemon=True,
     ).start()
+
+
+def get_notification_preferences(s):
+    """Return the user's per-event push preferences. If the row
+    doesn't exist yet (legacy user, never PATCHed), return the
+    documented defaults — matches + messages ON, likes + weekly OFF —
+    so the UI can render the toggles without an extra mount-time write."""
+    if s.person_id is None:
+        return 'Not signed in', 401
+
+    from database import api_tx
+    with api_tx() as tx:
+        row = tx.execute(
+            """
+            SELECT push_matches, push_messages, push_likes, push_weekly_digest
+              FROM notification_preference
+             WHERE person_id = %(person_id)s
+            """,
+            dict(person_id=s.person_id),
+        ).fetchone()
+    if row is None:
+        return dict(
+            push_matches=_EVENT_DEFAULTS['match'],
+            push_messages=_EVENT_DEFAULTS['message'],
+            push_likes=_EVENT_DEFAULTS['like'],
+            push_weekly_digest=_EVENT_DEFAULTS['weekly'],
+        )
+    return dict(
+        push_matches=row['push_matches'],
+        push_messages=row['push_messages'],
+        push_likes=row['push_likes'],
+        push_weekly_digest=row['push_weekly_digest'],
+    )
+
+
+def patch_notification_preferences(req, s):
+    """Upsert any subset of the four toggles. Uses INSERT … ON CONFLICT
+    so the row is created on first write with whatever defaults the
+    client didn't override. Subsequent writes only touch the columns
+    the client explicitly included."""
+    if s.person_id is None:
+        return 'Not signed in', 401
+
+    # Build the SET clause from non-None fields only. Pydantic gives us
+    # `__pydantic_fields_set__` listing what the client actually sent.
+    updates = {
+        k: getattr(req, k)
+        for k in req.__pydantic_fields_set__
+        if getattr(req, k) is not None
+    }
+    if not updates:
+        return '', 204
+
+    cols = list(updates.keys())
+    params = dict(person_id=s.person_id, **updates)
+    set_clause = ', '.join(f'{c} = %({c})s' for c in cols)
+    insert_cols = ', '.join(['person_id'] + cols)
+    insert_vals = ', '.join(['%(person_id)s'] + [f'%({c})s' for c in cols])
+    q = f"""
+    INSERT INTO notification_preference ({insert_cols}, updated_at)
+    VALUES ({insert_vals}, NOW())
+    ON CONFLICT (person_id) DO UPDATE
+       SET {set_clause}, updated_at = NOW()
+    """
+    from database import api_tx
+    with api_tx() as tx:
+        tx.execute(q, params)
+    return '', 204
