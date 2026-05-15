@@ -280,14 +280,34 @@ def get_matches(s: t.SessionInfo):
 
 def get_incoming_likes(s: t.SessionInfo):
     """Users who liked the session user but for whom the session user
-    has not yet decided. Powers the /matches 'Liked you' tab. Same
-    response shape as get_matches with `with_profile` for frontend
-    parity, plus `liked_at` so the UI can sort by recency."""
+    has not yet decided. Powers the /matches 'Liked you' tab.
+
+    Premium gate (Phase W cutover, 2026-05-15): the FULL list (names,
+    ages, photo UUIDs) requires the 'premium' entitlement. Free users
+    get only the COUNT — frontend renders blurred placeholders + an
+    upgrade CTA. This is the canonical dating-app paywall and the
+    primary purchase driver for Ahavah Premium.
+
+    Response shape:
+      Premium:   { "count": N, "likes": [...full records], "premium": true }
+      Free tier: { "count": N, "likes": [],               "premium": false }
+    """
     if s.person_id is None:
         return "Not signed in", 401
 
+    from service.entitlements import has_entitlement
+    is_premium = has_entitlement(s.person_id, 'premium')
+
     with api_tx() as tx:
         rows = tx.execute(Q_LIST_INCOMING_LIKES, dict(me_id=s.person_id)).fetchall()
+
+    count = len(rows)
+
+    if not is_premium:
+        # Don't ship name/age/photos — Browser DevTools-savvy users
+        # could otherwise read past the paywall. Count alone is
+        # enough for the upgrade CTA copy ("3 people like you").
+        return {"count": count, "likes": [], "premium": False}
 
     likes = [
         {
@@ -302,7 +322,7 @@ def get_incoming_likes(s: t.SessionInfo):
         }
         for r in rows
     ]
-    return {"likes": likes}
+    return {"count": count, "likes": likes, "premium": True}
 
 
 def get_match(s: t.SessionInfo, match_id: str):

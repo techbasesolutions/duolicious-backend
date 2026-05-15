@@ -1678,6 +1678,23 @@ WITH photo_ AS (
     -- reads this to swap the Subscription row CTA from "Upgrade to
     -- Premium" to "Manage subscription" for paid users.
     SELECT has_gold AS j FROM person WHERE id = %(person_id)s
+), entitlements_ AS (
+    -- Active entitlement names (TEXT[]) — populated by the Stripe
+    -- Checkout webhook (service/checkout/__init__.py) and the
+    -- RevenueCat IAP webhook. Frontend gates premium-only surfaces
+    -- ('Liked you' visibility, advanced filters, etc.) on
+    -- 'premium' ∈ entitlements via lib/use-profile.ts isPremium().
+    -- Empty array (NOT null) for free users so client code can
+    -- treat the field as a guaranteed list.
+    SELECT COALESCE(entitlements, '{{}}'::TEXT[]) AS j
+    FROM person WHERE id = %(person_id)s
+), subscription_expires_at_ AS (
+    -- ISO 8601 stamp when the active subscription auto-revokes.
+    -- NULL for free users. Frontend uses this for the 'manage
+    -- subscription / renew on …' line on /paywall.
+    SELECT to_char(subscription_expires_at AT TIME ZONE 'UTC',
+                   'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS j
+    FROM person WHERE id = %(person_id)s
 ), ahavah_extra AS (
     -- Ahavah-specific profile fields (assembly / torahLevel / shabbat
     -- / feastDays / polygyny / headCovering / tzitzit / calendar /
@@ -1841,6 +1858,8 @@ SELECT
         'age',                    (SELECT j FROM age),
         'date_of_birth',          (SELECT j FROM date_of_birth),
         'has_gold',               (SELECT j FROM has_gold),
+        'entitlements',           (SELECT j FROM entitlements_),
+        'subscription_expires_at',(SELECT j FROM subscription_expires_at_),
         'ahavah_extra',           (SELECT j FROM ahavah_extra),
         'about',                  (SELECT j FROM about),
         'gender',                 (SELECT j FROM gender),
