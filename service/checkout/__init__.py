@@ -152,6 +152,59 @@ def post_checkout_web(s, req):
 
 
 # ---------------------------------------------------------------------------
+# GET /billing-portal
+# ---------------------------------------------------------------------------
+#
+# Stripe Customer Portal session — drops the user into Stripe's hosted
+# subscription-management UI (update card, view invoices, cancel,
+# resume). Without this, every "I want to cancel" or "my card expired"
+# becomes a support ticket. Requires the user to have completed at
+# least one paid Checkout (which stamps person.stripe_customer_id via
+# the webhook); free users get 400.
+
+def get_billing_portal(s):
+    """Return {'url': '<stripe portal URL>'} or an error tuple.
+
+    Status codes:
+      200 — success
+      401 — not signed in
+      400 — user has no Stripe customer record (never subscribed)
+      503 — Stripe not configured (STRIPE_SECRET_KEY unset)
+      502 — Stripe API call failed
+    """
+    if not s or not s.person_id:
+        return 'Not authorized', 401
+
+    stripe = _stripe()
+    if stripe is None:
+        return 'Billing portal not configured', 503
+
+    from database import api_tx
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            'SELECT stripe_customer_id FROM person WHERE id = %(id)s',
+            dict(id=s.person_id),
+        ).fetchone()
+
+    customer_id = (row or {}).get('stripe_customer_id')
+    if not customer_id:
+        return 'No active subscription', 400
+
+    web_base = os.environ.get('AHAVAH_WEB_BASE_URL', 'https://ahavah.app').rstrip('/')
+
+    try:
+        session = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=f'{web_base}/profile',
+        )
+    except Exception as e:
+        logger.warning(f'Stripe billing portal create failed: {e}')
+        return 'Could not start billing portal', 502
+
+    return {'url': session.url}
+
+
+# ---------------------------------------------------------------------------
 # POST /webhooks/stripe-checkout
 # ---------------------------------------------------------------------------
 #
@@ -337,3 +390,5 @@ def post_stripe_checkout_webhook():
 
     # Other event types — accept (200) to suppress retries; nothing to do.
     return {'ok': True, 'ignored': event_type}
+
+

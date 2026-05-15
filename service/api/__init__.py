@@ -529,6 +529,25 @@ def delete_account(s: t.SessionInfo):
     # tend to test.
     return person.delete_or_ban_account(s=s)
 
+
+@apost('/account/cancel-deletion')
+def post_account_cancel_deletion(s: t.SessionInfo):
+    """Phase W cutover (2026-05-15): self-service undo of a pending
+    soft-delete. Restores activated=TRUE + clears
+    deletion_requested_at, so the pendingdeletion cron stops
+    considering the row + the user reappears in /search + /matches.
+    Idempotent — no-op on already-active accounts."""
+    return person.cancel_account_deletion(s=s)
+
+
+@aget('/billing-portal')
+def get_billing_portal(s: t.SessionInfo):
+    """Phase W cutover (2026-05-15): Stripe Customer Portal session
+    for self-service subscription management. Requires the user to
+    have completed at least one paid Checkout (which stamps
+    person.stripe_customer_id via the webhook); free users get 400."""
+    return checkout.get_billing_portal(s=s)
+
 @aget('/account/export')
 def get_account_export(s: t.SessionInfo):
     """GDPR right-to-portability export. Returns the user's profile data as

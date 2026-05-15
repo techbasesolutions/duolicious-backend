@@ -77,6 +77,63 @@ def store_message(
 
     _store_message_batcher.enqueue(job, callback)
 
+    # Phase W push notifications — fire-and-forget message push.
+    # Wrapped in a try/except so any push-stack failure (missing
+    # VAPID keys, missing pywebpush, transient DB issue) can never
+    # block the chat write path. send_to_user_safe is itself
+    # fire-and-forget on a background thread.
+    if from_id and to_id and from_id != to_id:
+        try:
+            _push_chat_message(
+                from_id=from_id,
+                to_id=to_id,
+                body=message.body or '',
+                is_audio=isinstance(message, AudioMessage),
+            )
+        except Exception:
+            import traceback
+            print('store_message: push trigger failed:')
+            print(traceback.format_exc())
+
+
+def _push_chat_message(from_id: int, to_id: int, body: str, is_audio: bool):
+    """Look up sender display + UUID, fire web-push to recipient.
+    Recipient sees: title=<sender name>, body=<message text>,
+    tap → /chat/<sender uuid>. The `tag` collapses repeat messages
+    in the same conversation so the OS notification tray doesn't
+    stack 12 banners when a chatty user fires off a burst."""
+    from service.notifications import send_to_user_safe, PUSH_ENABLED
+    if not PUSH_ENABLED:
+        return
+
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            'SELECT name, uuid::text AS uuid FROM person WHERE id = %(id)s',
+            dict(id=from_id),
+        ).fetchone()
+    if not row:
+        return
+    sender_name = row.get('name') or 'Someone'
+    sender_uuid = row.get('uuid') or ''
+
+    if is_audio:
+        push_body = '(voice message)'
+    else:
+        # Cap at ~80 chars + ellipsis. Apple Push truncates around
+        # 110 chars on the lock screen, but shorter reads cleaner.
+        clean = body.replace('\n', ' ').strip()
+        push_body = clean[:80] + ('…' if len(clean) > 80 else '')
+        if not push_body:
+            push_body = '(empty message)'
+
+    send_to_user_safe(
+        person_id=to_id,
+        title=sender_name,
+        body=push_body,
+        url=f'/chat/{sender_uuid}',
+        tag=f'chat:{sender_uuid}',
+    )
+
 
 def _process_store_message_batch(batch: list[StoreMessageJob]):
     store_mam_message_jobs = [
