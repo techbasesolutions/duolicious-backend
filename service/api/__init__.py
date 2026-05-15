@@ -768,3 +768,6 @@ def post_mark_visitors_checked(req: t.PostMarkVisitorsChecked, s: t.SessionInfo)
 # don't touch the brittle top-level `from service import (...)` block.
 # See docstring at the top of notifications_routes.py for the why.
 import service.api.notifications_routes  # noqa: E402,F401
+# Same sibling-routes pattern for /admin/reports — gated on
+# person.roles && ARRAY['admin','mod'] inside the handler.
+import service.api.moderation_routes  # noqa: E402,F401

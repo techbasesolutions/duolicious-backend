@@ -1717,6 +1717,14 @@ WITH photo_ AS (
     SELECT to_char(deletion_requested_at AT TIME ZONE 'UTC',
                    'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS j
     FROM person WHERE id = %(person_id)s
+), roles_ AS (
+    -- Operator roles (TEXT[] on person.roles). Empty array for
+    -- ordinary users; ['admin'] / ['mod'] / both for operators.
+    -- Frontend uses this to gate /admin/* surfaces — server-side
+    -- /admin/* endpoints re-validate via the same roles column,
+    -- this is purely about UI visibility.
+    SELECT COALESCE(roles, '{{}}'::TEXT[]) AS j
+    FROM person WHERE id = %(person_id)s
 ), stripe_customer_id_ AS (
     -- Set by /webhooks/stripe-checkout's checkout.session.completed
     -- handler. Frontend reads it to gate visibility of the "Manage
@@ -1894,6 +1902,7 @@ SELECT
         'subscription_expires_at',(SELECT j FROM subscription_expires_at_),
         'deletion_requested_at',  (SELECT j FROM deletion_requested_at_),
         'stripe_customer_id',     (SELECT j FROM stripe_customer_id_),
+        'roles',                  (SELECT j FROM roles_),
         'languages_spoken',       (SELECT j FROM languages_spoken_),
         'primary_language',       (SELECT j FROM primary_language_),
         'ahavah_extra',           (SELECT j FROM ahavah_extra),
