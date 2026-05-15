@@ -1093,6 +1093,8 @@ SELECT
         'name',                      (SELECT name                      FROM prospect),
         'age',                       (SELECT age                       FROM prospect),
         'ahavah_extra',              (SELECT ahavah_extra              FROM prospect),
+        'languages_spoken',          (SELECT COALESCE(languages_spoken, '{{}}'::TEXT[]) FROM prospect),
+        'primary_language',          (SELECT primary_language          FROM prospect),
         'location',                  (SELECT location                  FROM prospect),
         'match_percentage',          (SELECT j                         FROM match_percentage),
         'about',                     (SELECT about                     FROM prospect),
@@ -1695,6 +1697,18 @@ WITH photo_ AS (
     SELECT to_char(subscription_expires_at AT TIME ZONE 'UTC',
                    'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS j
     FROM person WHERE id = %(person_id)s
+), languages_spoken_ AS (
+    -- Phase W cutover (2026-05-15): ship the user's selected
+    -- languages back to the client. Without this, /onboarding's
+    -- language picker writes to the column but /profile/edit shows
+    -- an empty list on refresh + peers don't see the user's
+    -- spoken languages on /profile/[uuid].
+    SELECT COALESCE(languages_spoken, '{{}}'::TEXT[]) AS j
+    FROM person WHERE id = %(person_id)s
+), primary_language_ AS (
+    -- DeepL translation target. Optional; NULL when the user hasn't
+    -- expressed a preference (most users skip this in onboarding).
+    SELECT primary_language AS j FROM person WHERE id = %(person_id)s
 ), deletion_requested_at_ AS (
     -- ISO 8601 stamp set when the user POSTed /account (soft-delete).
     -- NULL for active accounts. Frontend uses this to surface a
@@ -1877,6 +1891,8 @@ SELECT
         'subscription_expires_at',(SELECT j FROM subscription_expires_at_),
         'deletion_requested_at',  (SELECT j FROM deletion_requested_at_),
         'stripe_customer_id',     (SELECT j FROM stripe_customer_id_),
+        'languages_spoken',       (SELECT j FROM languages_spoken_),
+        'primary_language',       (SELECT j FROM primary_language_),
         'ahavah_extra',           (SELECT j FROM ahavah_extra),
         'about',                  (SELECT j FROM about),
         'gender',                 (SELECT j FROM gender),
