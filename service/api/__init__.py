@@ -699,3 +699,9 @@ def get_visitors(s: t.SessionInfo):
 @validate(t.PostMarkVisitorsChecked)
 def post_mark_visitors_checked(req: t.PostMarkVisitorsChecked, s: t.SessionInfo):
     return person.post_mark_visitors_checked(req=req, s=s)
+
+
+# Phase W push notifications - registered via a sibling module so we
+# don't touch the brittle top-level `from service import (...)` block.
+# See docstring at the top of notifications_routes.py for the why.
+import service.api.notifications_routes  # noqa: E402,F401

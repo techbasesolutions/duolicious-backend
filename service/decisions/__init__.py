@@ -219,6 +219,32 @@ def post_decisions(req: t.PostDecision, s: t.SessionInfo):
         return {"match": None}
 
     row = rows[0]
+
+    # Mutual like → push the matched peer. Lazy-import notifications +
+    # wrapped in try/except so a missing pywebpush dependency, missing
+    # VAPID env vars, or any other push-stack issue can never block
+    # the match-create response. send_to_user_safe is itself
+    # fire-and-forget but we belt-and-suspenders the import too.
+    try:
+        from service.notifications import send_to_user_safe
+        with api_tx() as tx:
+            me_row = tx.execute(
+                "SELECT name FROM person WHERE id = %(me_id)s",
+                dict(me_id=s.person_id),
+            ).fetchone()
+        my_name = (me_row or {}).get("name") or "Someone"
+        send_to_user_safe(
+            person_id=row["peer_id"],
+            title="It's a match!",
+            body=f"{my_name} likes you back",
+            url="/matches",
+            tag=f"match:{row['match_id']}",
+        )
+    except Exception:
+        import traceback
+        print("decisions.post_decisions push trigger failed:")
+        print(traceback.format_exc())
+
     return {
         "match": {
             "match_id": row["match_id"],

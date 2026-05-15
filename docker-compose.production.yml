@@ -67,8 +67,15 @@ services:
       DUO_SMTP_USER: resend
       DUO_SMTP_PASS: ${DUO_SMTP_PASS}
       DUO_USE_RESEND_API: ${DUO_USE_RESEND_API}
+      DUO_DISABLE_FIREHOL: ${DUO_DISABLE_FIREHOL}
       DUO_RESEND_FROM_OVERRIDE: ${DUO_RESEND_FROM_OVERRIDE}
       DUO_REPORT_EMAIL: "ahavah@example.com 20 a@example.com 0"
+      # Phase W push notifications (VAPID). PUSH_ENABLED in
+      # service/notifications/__init__.py is bool(public AND private),
+      # so leaving these blank disables push without breaking imports.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      VAPID_SUBJECT: ${VAPID_SUBJECT}
       # CORS — Vercel previews + frontend domain
       DUO_CORS_ORIGINS: ${DUO_CORS_ORIGINS}
       # DO Spaces (must override base "s3mock" defaults)
@@ -140,8 +147,15 @@ services:
       DUO_SMTP_USER: resend
       DUO_SMTP_PASS: ${DUO_SMTP_PASS}
       DUO_USE_RESEND_API: ${DUO_USE_RESEND_API}
+      DUO_DISABLE_FIREHOL: ${DUO_DISABLE_FIREHOL}
       DUO_RESEND_FROM_OVERRIDE: ${DUO_RESEND_FROM_OVERRIDE}
       DUO_REPORT_EMAIL: "ahavah@example.com 20 a@example.com 0"
+      # Phase W push notifications (VAPID). PUSH_ENABLED in
+      # service/notifications/__init__.py is bool(public AND private),
+      # so leaving these blank disables push without breaking imports.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      VAPID_SUBJECT: ${VAPID_SUBJECT}
       # DO Spaces (override base s3mock)
       DUO_R2_BUCKET_NAME: ${DUO_R2_BUCKET_NAME}
       DUO_R2_AUDIO_BUCKET_NAME: ${DUO_R2_AUDIO_BUCKET_NAME}

@@ -25,6 +25,7 @@ sentry-sdk[flask]>=2.18    # Task 0.5 telemetry; init opt-in via SENTRY_DSN env 
 posthog>=3.7               # Task 0.5 telemetry; init opt-in via POSTHOG_API_KEY
 deepl>=1.18                # Phase 2 translation; opt-in via DEEPL_API_KEY env var
 stripe>=11.0               # Phase 3 Identity verification; opt-in via STRIPE_SECRET_KEY
+pywebpush>=2.0             # Phase W push notifications; opt-in via VAPID_PRIVATE_KEY + VAPID_PUBLIC_KEY
 spacy
 uvicorn
 websockets

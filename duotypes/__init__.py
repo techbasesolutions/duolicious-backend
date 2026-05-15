@@ -300,6 +300,24 @@ class PostCheckoutWeb(BaseModel):
     tier_key: str = Field(pattern=r"^(month|quart|year)$")
 
 
+class PushSubscriptionKeys(BaseModel):
+    p256dh: str = Field(min_length=1, max_length=256)
+    auth: str = Field(min_length=1, max_length=128)
+
+
+class PostNotificationsSubscribe(BaseModel):
+    """POST /notifications/subscribe body — exact shape returned by
+    swReg.pushManager.subscribe().toJSON() in the browser."""
+    endpoint: str = Field(min_length=1, max_length=2048)
+    keys: PushSubscriptionKeys
+
+
+class DeleteNotificationsSubscribe(BaseModel):
+    """DELETE /notifications/subscribe body — endpoint suffices to
+    identify the device's subscription row for removal."""
+    endpoint: str = Field(min_length=1, max_length=2048)
+
+
 class PatchOnboardeeInfo(BaseModel):
     name: Optional[str] = Field(
         default=None,
