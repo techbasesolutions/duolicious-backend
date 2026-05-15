@@ -187,7 +187,13 @@ SELECT
     -- /matches, and the chat header. NULL when the prospect has never
     -- been signed in (fresh seed account, etc.) — frontend treats NULL
     -- as "no signal", neither online nor a stamped time.
-    EXTRACT(EPOCH FROM NOW() - p.last_online_time)::int AS seconds_since_last_online
+    EXTRACT(EPOCH FROM NOW() - p.last_online_time)::int AS seconds_since_last_online,
+    -- Map opt-out: prospect set "Show me on the map" → off in privacy
+    -- settings (stored as ahavah_extra.showOnMap = false). Default TRUE
+    -- when the key is absent (legacy users + new accounts). Frontend
+    -- /map filters markers on this; /discover ignores it (the same row
+    -- is allowed to appear in the swipe deck).
+    COALESCE((p.ahavah_extra->>'showOnMap')::boolean, TRUE) AS show_on_map
 FROM search_cache sc
 JOIN person p ON p.id = sc.prospect_person_id
 WHERE sc.searcher_person_id = %(searcher_person_id)s
