@@ -1695,6 +1695,21 @@ WITH photo_ AS (
     SELECT to_char(subscription_expires_at AT TIME ZONE 'UTC',
                    'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS j
     FROM person WHERE id = %(person_id)s
+), deletion_requested_at_ AS (
+    -- ISO 8601 stamp set when the user POSTed /account (soft-delete).
+    -- NULL for active accounts. Frontend uses this to surface a
+    -- "Your account is scheduled for deletion on … Cancel?" banner
+    -- on /settings + a button that calls /account/cancel-deletion.
+    SELECT to_char(deletion_requested_at AT TIME ZONE 'UTC',
+                   'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS j
+    FROM person WHERE id = %(person_id)s
+), stripe_customer_id_ AS (
+    -- Set by /webhooks/stripe-checkout's checkout.session.completed
+    -- handler. Frontend reads it to gate visibility of the "Manage
+    -- subscription" CTA (calls GET /billing-portal); without a
+    -- stripe_customer_id the user has never had a Stripe customer
+    -- record and the portal endpoint would 400.
+    SELECT stripe_customer_id AS j FROM person WHERE id = %(person_id)s
 ), ahavah_extra AS (
     -- Ahavah-specific profile fields (assembly / torahLevel / shabbat
     -- / feastDays / polygyny / headCovering / tzitzit / calendar /
@@ -1860,6 +1875,8 @@ SELECT
         'has_gold',               (SELECT j FROM has_gold),
         'entitlements',           (SELECT j FROM entitlements_),
         'subscription_expires_at',(SELECT j FROM subscription_expires_at_),
+        'deletion_requested_at',  (SELECT j FROM deletion_requested_at_),
+        'stripe_customer_id',     (SELECT j FROM stripe_customer_id_),
         'ahavah_extra',           (SELECT j FROM ahavah_extra),
         'about',                  (SELECT j FROM about),
         'gender',                 (SELECT j FROM gender),

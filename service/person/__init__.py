@@ -818,6 +818,42 @@ def delete_or_ban_account(
 
     return rows
 
+def cancel_account_deletion(s: t.SessionInfo):
+    """Restore an account that's mid-grace-window (Phase W cutover).
+
+    Counterpart to delete_or_ban_account's user-initiated branch:
+    flips activated back to TRUE and clears deletion_requested_at,
+    so the pendingdeletion cron stops considering the row for hard
+    delete + the user reappears in /search + /matches.
+
+    Idempotent — calling on a never-deleted account is a no-op
+    (activated stays TRUE, deletion_requested_at stays NULL).
+
+    Returns:
+      {"ok": True, "restored": bool}  — restored=True if a pending
+      deletion was actually canceled; False if there was nothing to
+      cancel (already-active account).
+    """
+    if not s or not s.person_id:
+        return 'Not authorized', 401
+
+    with api_tx() as tx:
+        cur = tx.execute(
+            """
+            UPDATE person
+               SET activated = TRUE,
+                   deletion_requested_at = NULL
+             WHERE id = %(person_id)s
+               AND deletion_requested_at IS NOT NULL
+            RETURNING id
+            """,
+            dict(person_id=s.person_id),
+        )
+        rows = cur.fetchall()
+
+    return {'ok': True, 'restored': len(rows) > 0}
+
+
 def post_deactivate(s: t.SessionInfo):
     params = dict(person_id=s.person_id)
 
