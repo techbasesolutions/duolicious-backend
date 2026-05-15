@@ -1946,6 +1946,14 @@ SELECT
         'verified_age',           (SELECT j FROM verified_age),
         'verified_ethnicity',     (SELECT j FROM verified_ethnicity),
 
+        -- Phase W tier ENUM (mig 0003 + 0012). Surfaced so the /verify
+        -- page can render Silver / Gold "Verified" pills based on the
+        -- new tier ladder rather than the upstream verification_level
+        -- string (which only knows about 'Photos'/'Photos + ID').
+        'ahavah_verification_tier',
+            (SELECT ahavah_verification_tier::text FROM person
+             WHERE id = %(person_id)s),
+
         'theme', json_build_object(
             'title_color',            (SELECT j FROM title_color),
             'body_color',             (SELECT j FROM body_color),
@@ -2609,6 +2617,23 @@ INSERT INTO verification_job (
 ) VALUES (
     %(person_id)s,
     %(photo_uuid)s
+)
+"""
+
+# Silver burst (mig 0012). photo_uuid stays the canonical "proof" frame
+# (the first capture); silver_burst_uuids holds the additional frames
+# the cron passes to the GPT-4.1 classifier as `claimed_uuids`. The
+# classifier's existing `image_1_has_person_from_image_N` checks must
+# come back ALL=true for the burst to count as a Silver pass.
+Q_INSERT_VERIFICATION_JOB_SILVER = """
+INSERT INTO verification_job (
+    person_id,
+    photo_uuid,
+    silver_burst_uuids
+) VALUES (
+    %(person_id)s,
+    %(photo_uuid)s,
+    %(silver_burst_uuids)s::TEXT[]
 )
 """
 

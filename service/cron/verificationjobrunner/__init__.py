@@ -26,6 +26,12 @@ class VerificationJob:
     claimed_age: int
     claimed_gender: str
     claimed_ethnicity: str | None
+    # Silver tier (mig 0012): when present, the cron appends these to
+    # claimed_uuids so the GPT-4.1 vision classifier confirms all 3
+    # selfies show the same person AND the profile photos do too. ALL
+    # entries here must come back as verified for the burst to count
+    # as a Silver pass — otherwise it fails over to a Bronze run.
+    silver_burst_uuids: list[str] | None = None
 
 async def do_verification_job(verification_job: VerificationJob):
     async with api_tx() as tx:
@@ -34,15 +40,54 @@ async def do_verification_job(verification_job: VerificationJob):
             dict(verification_job_id=verification_job.id)
         )
 
+    is_silver = bool(verification_job.silver_burst_uuids)
+    # For a Silver burst, append the additional selfies as claimed
+    # photos so the classifier validates same-person across the whole
+    # capture set in a single API call. The classifier's existing
+    # `image_1_has_person_from_image_N` checks (up to N=8) cover this
+    # natively — no prompt rewrite needed.
+    classifier_claimed = list(verification_job.claimed_uuids)
+    if is_silver:
+        # Cap to keep total images <= 8 (classifier prompt limit).
+        # Profile photos take precedence; burst frames truncate to fit.
+        room = max(0, 7 - len(classifier_claimed))
+        classifier_claimed = classifier_claimed + (
+            list(verification_job.silver_burst_uuids or [])[:room])
+
     verification_result = await verify(
         proof_uuid=verification_job.proof_uuid,
-        claimed_uuids=verification_job.claimed_uuids,
+        claimed_uuids=classifier_claimed,
         claimed_age=verification_job.claimed_age,
         claimed_gender=verification_job.claimed_gender,
         claimed_ethnicity=verification_job.claimed_ethnicity,
     )
 
+    # For a Silver burst, ALL of the burst UUIDs we asked the classifier
+    # about must come back as verified — otherwise the user submitted
+    # 3 selfies but only some matched, which is a failure even if
+    # profile photos individually did match.
+    silver_passed = False
+    if is_silver and verification_result.success:
+        burst_in_classifier = set(
+            verification_job.silver_burst_uuids[:max(0, 7 - len(verification_job.claimed_uuids))]
+            if verification_job.silver_burst_uuids else []
+        )
+        verified_set = set(verification_result.success.verified_uuids)
+        silver_passed = bool(burst_in_classifier) and burst_in_classifier.issubset(verified_set)
+
     if verification_result.success:
+        # Tier ladder for the SQL rank-ratchet:
+        #   silver = full burst (all 3 selfies) confirmed same person
+        #            AND profile photos matched.
+        #   bronze = at least one profile photo verified by classifier.
+        #   None   = 'Basics only' (anti-spoof gestures passed but no
+        #            profile photo matched the selfie). Don't bump.
+        if silver_passed:
+            target_tier = 'silver'
+        elif verification_result.success.verified_uuids:
+            target_tier = 'bronze'
+        else:
+            target_tier = None
         params = dict(
             verification_job_id=verification_job.id,
             person_id=verification_job.person_id,
@@ -57,6 +102,7 @@ async def do_verification_job(verification_job: VerificationJob):
                 if verification_result.success.verified_uuids
                 else 'Basics only'
             ),
+            target_tier=target_tier,
             raw_json=verification_result.success.raw_json,
         )
     else:
@@ -75,6 +121,9 @@ async def do_verification_job(verification_job: VerificationJob):
             status='failure',
             message=message,
             verification_level_name='No verification',
+            # NULL target_tier short-circuits the rank ladder in the
+            # SQL — failure runs leave ahavah_verification_tier alone.
+            target_tier=None,
             raw_json=verification_result.failure.raw_json,
         )
 
@@ -95,6 +144,7 @@ async def verify_once():
             claimed_age=row['claimed_age'],
             claimed_gender=row['claimed_gender'],
             claimed_ethnicity=row['claimed_ethnicity'],
+            silver_burst_uuids=row.get('silver_burst_uuids'),
         )
         for row in rows
     ]

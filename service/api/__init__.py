@@ -675,6 +675,17 @@ def get_feed(s: t.SessionInfo):
 def post_verification_selfie(req: t.PostVerificationSelfie, s: t.SessionInfo):
     return person.post_verification_selfie(req, s)
 
+@apost('/verification-multi-selfie')
+@validate(t.PostVerificationMultiSelfie)
+def post_verification_multi_selfie(req: t.PostVerificationMultiSelfie, s: t.SessionInfo):
+    """Silver tier: upload 3 selfie frames in one call. Stores all 3
+    in the bucket, primes a verification_job with photo_uuid=first +
+    silver_burst_uuids=[second, third]. Subsequent /verify call (same
+    pattern as Bronze) flips status to 'queued' and the cron picks it
+    up. Anti-replay: each frame's md5 still flows through
+    verification_photo_hash so a re-uploaded photo fails fast."""
+    return person.post_verification_multi_selfie(req, s)
+
 @apost('/verify')
 def post_verify(s: t.SessionInfo):
     limit = "8 per day"

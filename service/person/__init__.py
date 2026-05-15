@@ -2083,6 +2083,81 @@ def post_verification_selfie(req: t.PostVerificationSelfie, s: t.SessionInfo):
         print('Upload failed with exception:', e)
         return '', 500
 
+def post_verification_multi_selfie(
+    req: t.PostVerificationMultiSelfie,
+    s: t.SessionInfo,
+):
+    """Silver-tier capture endpoint. Mirrors post_verification_selfie's
+    upload-then-job pattern but stores 3 frames in one shot and writes
+    silver_burst_uuids on the resulting verification_job. The cron then
+    picks it up via the same /verify -> 'queued' status flip; the
+    burst_uuids drive the multi-frame classifier path.
+
+    Hash check: each frame must be unique against verification_photo_hash
+    (same anti-replay as Bronze). If any frame is a reuse the whole
+    burst is failed before the job is inserted, so the user sees the
+    same V_REUSED_SELFIE error they'd get on Bronze.
+    """
+    if len(req.frames) != 3:
+        return 'frames must contain exactly 3 entries', 400
+
+    photo_uuids = [secrets.token_hex(32) for _ in req.frames]
+    proof_uuid = photo_uuids[0]
+    burst_uuids = photo_uuids[1:]
+
+    with api_tx() as tx:
+        # Anti-replay: every frame must clear the dedupe table. If any
+        # one fails, mark the job 'failure' so the user retries with
+        # fresh captures (same UX as Bronze).
+        for frame in req.frames:
+            row = tx.execute(
+                Q_INSERT_VERIFICATION_PHOTO_HASH,
+                dict(photo_hash=frame.md5_hash),
+            ).fetchall()
+            if not row:
+                tx.execute(Q_UPDATE_VERIFICATION_JOB, dict(
+                    person_id=s.person_id,
+                    status='failure',
+                    message=V_REUSED_SELFIE,
+                    expected_previous_status=None,
+                ))
+                return '', 200
+
+        # Replace any prior verification_job for this person, then
+        # insert the silver burst. Reusing the existing INSERT and
+        # then UPDATEing silver_burst_uuids in a follow-up statement
+        # keeps Q_INSERT_VERIFICATION_JOB unchanged.
+        tx.execute(Q_DELETE_VERIFICATION_JOB, dict(person_id=s.person_id))
+        tx.execute(Q_INSERT_VERIFICATION_JOB, dict(
+            person_id=s.person_id,
+            photo_uuid=proof_uuid,
+        ))
+        tx.execute(
+            """
+            UPDATE verification_job
+               SET silver_burst_uuids = %(burst_uuids)s::TEXT[]
+             WHERE person_id = %(person_id)s
+            """,
+            dict(person_id=s.person_id, burst_uuids=burst_uuids),
+        )
+
+    # Upload all three frames to the bucket. Failure here is rare but
+    # non-fatal to the row (cron will fail the job naturally when the
+    # classifier can't fetch the image). 500 keeps the user's UI in
+    # the "uploading-photo" state so they can retry.
+    try:
+        for uuid_, frame in zip(photo_uuids, req.frames):
+            put_image_in_object_store(
+                uuid_,
+                frame,
+                CropSize(top=frame.top, left=frame.left),
+                sizes=[450],
+            )
+    except Exception as e:
+        print('Multi-selfie upload failed with exception:', e)
+        return '', 500
+
+
 def post_verify(s: t.SessionInfo):
     params = dict(
         person_id=s.person_id,

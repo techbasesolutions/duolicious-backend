@@ -690,6 +690,14 @@ class PostVerificationSelfie(BaseModel):
     base64_file: Base64File
 
 
+class PostVerificationMultiSelfie(BaseModel):
+    """Silver verification: 3 selfies captured at different head poses
+    in a single client-driven burst. Cron stores all three and runs the
+    Bronze classifier with the sibling UUIDs included as claimed photos
+    so the classifier confirms identity across the burst."""
+    frames: List[Base64File] = Field(min_length=3, max_length=3)
+
+
 class ValidDatetime(BaseModel):
     datetime: datetime
 

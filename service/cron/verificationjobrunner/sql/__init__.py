@@ -3,6 +3,11 @@ SELECT
     id,
     person_id,
     photo_uuid AS proof_uuid,
+    -- Silver tier (mig 0012): when populated, the cron appends these
+    -- to claimed_uuids and requires all of them to come back as
+    -- 'same person' from the classifier; on success the user is
+    -- promoted to 'silver' instead of 'bronze'. NULL for Bronze runs.
+    silver_burst_uuids,
     ARRAY(
         SELECT
             uuid
@@ -96,19 +101,29 @@ WITH updated_verification_job AS (
             WHERE
                 name = %(verification_level_name)s
         ),
-        -- Phase W cross-write: also bump the ahavah_verification_tier
-        -- ENUM (mig 0003) so the Stripe Identity / Gold flow's rank
-        -- check sees the user as 'bronze'. Without this, a user who
-        -- passed Bronze still shows up as `tier = 'none'` to the Gold
-        -- promote_user() — works (gold > bronze) but the peer-profile
-        -- 'verified' surface stays empty until Gold lands. Skip the
-        -- bump on the 'No verification' / 'Basics only' branches —
-        -- those don't earn a Bronze badge.
+        -- Phase W cross-write: bump ahavah_verification_tier (mig 0003)
+        -- alongside the upstream verification_level lookup. Cron passes
+        -- target_tier='bronze' for normal Bronze runs, 'silver' for
+        -- Silver bursts (mig 0012). Only ratchets UP — a Bronze run
+        -- never demotes a Silver/Gold user. 'No verification' /
+        -- 'Basics only' branches pass target_tier=NULL and skip the
+        -- bump entirely.
         ahavah_verification_tier =
             CASE
-                WHEN %(verification_level_name)s = 'Photos'
-                    AND ahavah_verification_tier = 'none'
-                THEN 'bronze'::ahavah_verification_tier
+                WHEN %(target_tier)s::TEXT IS NOT NULL
+                    AND CASE ahavah_verification_tier
+                            WHEN 'none' THEN 0
+                            WHEN 'bronze' THEN 1
+                            WHEN 'silver' THEN 2
+                            WHEN 'gold' THEN 3
+                        END
+                        < CASE %(target_tier)s::TEXT
+                            WHEN 'bronze' THEN 1
+                            WHEN 'silver' THEN 2
+                            WHEN 'gold' THEN 3
+                            ELSE 0
+                        END
+                THEN %(target_tier)s::ahavah_verification_tier
                 ELSE ahavah_verification_tier
             END,
         verified_age = %(verified_age)s,
