@@ -1487,6 +1487,26 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
            AND length(%(field_value)s) = 2
            AND %(field_value)s ~ '^[A-Za-z]{2}$'
         """
+    elif field_name == 'languages_spoken':
+        # Phase W: round-trip language multi-select. Frontend sends an
+        # array of canonical codes (en, he, ...) plus optional
+        # "custom:..." entries; stored verbatim in TEXT[] column.
+        # Empty list clears the field — search query treats `[]` as
+        # "no preference".
+        q1 = """
+        UPDATE person
+           SET languages_spoken = %(field_value)s::TEXT[]
+         WHERE id = %(person_id)s
+        """
+    elif field_name == 'primary_language':
+        # Phase W: single primary language code (DeepL target). Stored
+        # as-is; lookup-table validation deferred (free text by design
+        # since custom-language tokens like "custom:Aramaic" are valid).
+        q1 = """
+        UPDATE person
+           SET primary_language = %(field_value)s
+         WHERE id = %(person_id)s
+        """
     elif field_name == 'smoking':
         q1 = """
         UPDATE person SET smoking_id = yes_no_optional.id

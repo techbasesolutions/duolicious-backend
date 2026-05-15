@@ -1128,9 +1128,11 @@ SELECT
         'other_clubs',            (SELECT j             FROM other_clubs_json),
 
         -- Verifications
-        'verified_age',           (SELECT verified_age       FROM prospect),
-        'verified_gender',        (SELECT verified_gender    FROM prospect),
-        'verified_ethnicity',     (SELECT verified_ethnicity FROM prospect),
+        'verified_age',                 (SELECT verified_age                 FROM prospect),
+        'verified_gender',              (SELECT verified_gender              FROM prospect),
+        'verified_ethnicity',           (SELECT verified_ethnicity           FROM prospect),
+        'ahavah_verification_tier',     (SELECT ahavah_verification_tier::text FROM prospect),
+        'id_verified_country',          (SELECT id_verified_country          FROM prospect),
 
         -- Theme
         'theme', json_build_object(

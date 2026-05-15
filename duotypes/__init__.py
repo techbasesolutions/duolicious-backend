@@ -504,6 +504,14 @@ class PatchProfileInfo(BaseModel):
     # /profile/edit changes move the user's /search pool. Validated
     # to 2-char shape in the SQL handler (length + ~ '^[A-Za-z]{2}$').
     country: Optional[str] = Field(default=None, min_length=2, max_length=2)
+    # Phase W: languages_spoken (TEXT[]) — frontend sends BCP-47/ISO-639-1
+    # codes (en, he) plus custom: prefixed entries. Stored verbatim so the
+    # editor can round-trip the exact list. /search filters on
+    # languages_spoken && preferred_languages.
+    languages_spoken: Optional[List[str]] = Field(default=None, min_length=0)
+    # Phase W: primary_language (TEXT) — single ISO code marking the user's
+    # preferred language for translation. NULL when unset.
+    primary_language: Optional[str] = Field(default=None, min_length=2, max_length=64)
 
     @model_validator(mode='after')
     def check_exactly_one(self):

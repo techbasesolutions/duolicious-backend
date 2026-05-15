@@ -108,13 +108,20 @@ def promote_user(person_id: int, level: str, country: Optional[str] = None) -> b
 
     with api_tx() as tx:
         row = tx.execute(
-            'SELECT verification_level FROM person WHERE id = %(id)s',
+            'SELECT ahavah_verification_tier FROM person WHERE id = %(id)s',
             dict(id=person_id),
         ).fetchone()
         if not row:
             return False
 
-        current = row['verification_level']
+        # Migration 0003 added `ahavah_verification_tier` ENUM
+        # ('none','bronze','silver','gold') as the Phase W tier column.
+        # The earlier code addressed `verification_level` (text), which
+        # never existed — every webhook silently 500'd. The legacy
+        # `verification_level_id` (integer FK to the upstream
+        # Duolicious lookup) is updated separately by the Bronze cron
+        # at service/cron/verificationjobrunner.
+        current = row['ahavah_verification_tier']
         if rank.get(current, 0) >= new_rank:
             # Don't allow demotion or no-op rewrites.
             return False
@@ -123,16 +130,20 @@ def promote_user(person_id: int, level: str, country: Optional[str] = None) -> b
             tx.execute(
                 """
                 UPDATE person
-                   SET verification_level   = %(level)s,
-                       id_verified_country  = %(country)s,
-                       id_verified_at       = NOW()
+                   SET ahavah_verification_tier = %(level)s::ahavah_verification_tier,
+                       id_verified_country      = %(country)s,
+                       id_verified_at           = NOW()
                  WHERE id = %(id)s
                 """,
                 dict(id=person_id, level=level, country=country),
             )
         else:
             tx.execute(
-                'UPDATE person SET verification_level = %(level)s WHERE id = %(id)s',
+                """
+                UPDATE person
+                   SET ahavah_verification_tier = %(level)s::ahavah_verification_tier
+                 WHERE id = %(id)s
+                """,
                 dict(id=person_id, level=level),
             )
     return True

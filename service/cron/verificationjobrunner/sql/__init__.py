@@ -96,6 +96,21 @@ WITH updated_verification_job AS (
             WHERE
                 name = %(verification_level_name)s
         ),
+        -- Phase W cross-write: also bump the ahavah_verification_tier
+        -- ENUM (mig 0003) so the Stripe Identity / Gold flow's rank
+        -- check sees the user as 'bronze'. Without this, a user who
+        -- passed Bronze still shows up as `tier = 'none'` to the Gold
+        -- promote_user() — works (gold > bronze) but the peer-profile
+        -- 'verified' surface stays empty until Gold lands. Skip the
+        -- bump on the 'No verification' / 'Basics only' branches —
+        -- those don't earn a Bronze badge.
+        ahavah_verification_tier =
+            CASE
+                WHEN %(verification_level_name)s = 'Photos'
+                    AND ahavah_verification_tier = 'none'
+                THEN 'bronze'::ahavah_verification_tier
+                ELSE ahavah_verification_tier
+            END,
         verified_age = %(verified_age)s,
         verified_gender = %(verified_gender)s,
         verified_ethnicity = %(verified_ethnicity)s
