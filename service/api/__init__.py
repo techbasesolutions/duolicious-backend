@@ -454,6 +454,12 @@ def get_matches(s: t.SessionInfo):
 def get_match(s: t.SessionInfo, match_id: str):
     return decisions.get_match(s, match_id)
 
+@aget('/likes/incoming')
+def get_incoming_likes(s: t.SessionInfo):
+    """People who've liked the session user but the user hasn't decided
+    on yet. Powers the /matches 'Liked you' tab on the frontend."""
+    return decisions.get_incoming_likes(s)
+
 @apost('/inbox-info')
 @validate(t.PostInboxInfo)
 def post_inbox_info(req: t.PostInboxInfo, s: t.SessionInfo):

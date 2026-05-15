@@ -97,6 +97,57 @@ ORDER BY
 """
 
 
+Q_LIST_INCOMING_LIKES = """
+-- People who liked the session user but for whom the session user has
+-- NOT yet decided (no reverse like, no skip / report).
+-- Powers /matches "Liked you" tab.
+SELECT
+    liker.uuid::text AS liker_uuid,
+    liker.name       AS liker_name,
+    EXTRACT(YEAR FROM AGE(liker.date_of_birth))::int AS liker_age,
+    COALESCE(
+        (
+            SELECT json_agg(ph.uuid ORDER BY ph.position)
+            FROM photo ph
+            WHERE ph.person_id = liker.id
+        ),
+        '[]'::json
+    )::jsonb AS liker_photo_uuids,
+    l.created_at::text AS created_at
+FROM
+    liked l
+JOIN person liker ON liker.id = l.liker_id
+WHERE
+    l.liked_id = %(me_id)s
+    -- Exclude prospects we've already liked (those become matches via
+    -- /matches, not "Liked you")
+    AND NOT EXISTS (
+        SELECT 1 FROM liked rev
+        WHERE rev.liker_id = %(me_id)s
+          AND rev.liked_id = l.liker_id
+    )
+    -- Exclude anyone we've skipped / reported in either direction.
+    AND NOT EXISTS (
+        SELECT 1 FROM skipped s
+        WHERE (s.subject_person_id = %(me_id)s AND s.object_person_id = l.liker_id)
+           OR (s.subject_person_id = l.liker_id AND s.object_person_id = %(me_id)s)
+    )
+    -- Liker must still be activated (no soft-deleted accounts).
+    AND liker.activated = TRUE
+    -- Defensive: skip anyone we already share a confirmed match with
+    -- (covers the case where one half of `liked` was wiped but the
+    -- match row survives — that user belongs in 'Matches', not here).
+    AND NOT EXISTS (
+        SELECT 1 FROM ahavah_match m
+        WHERE (m.user_a_id = %(me_id)s AND m.user_b_id = l.liker_id)
+           OR (m.user_b_id = %(me_id)s AND m.user_a_id = l.liker_id)
+    )
+ORDER BY
+    l.created_at DESC
+LIMIT 200
+"""
+
+
 Q_GET_MATCH = """
 SELECT
     m.match_id::text   AS match_id,
@@ -195,6 +246,32 @@ def get_matches(s: t.SessionInfo):
         for r in rows
     ]
     return {"matches": matches}
+
+
+def get_incoming_likes(s: t.SessionInfo):
+    """Users who liked the session user but for whom the session user
+    has not yet decided. Powers the /matches 'Liked you' tab. Same
+    response shape as get_matches with `with_profile` for frontend
+    parity, plus `liked_at` so the UI can sort by recency."""
+    if s.person_id is None:
+        return "Not signed in", 401
+
+    with api_tx() as tx:
+        rows = tx.execute(Q_LIST_INCOMING_LIKES, dict(me_id=s.person_id)).fetchall()
+
+    likes = [
+        {
+            "with_profile": {
+                "id": r["liker_uuid"],
+                "firstName": r["liker_name"],
+                "age": r["liker_age"],
+                "photo_uuids": r["liker_photo_uuids"],
+            },
+            "liked_at": r["created_at"],
+        }
+        for r in rows
+    ]
+    return {"likes": likes}
 
 
 def get_match(s: t.SessionInfo, match_id: str):
