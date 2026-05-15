@@ -1876,6 +1876,9 @@ WITH photo_ AS (
     SELECT ({Q_COMPUTED_FLAIR}) AS j FROM person WHERE id = %(person_id)s
 )
 SELECT
+    -- json_build_object has a hard 100-arg cap (50 key/value pairs).
+    -- Split into two halves + merge with `||` so we can keep adding
+    -- fields. Order within the merged object is non-significant.
     json_build_object(
         'photo',                  (SELECT j FROM photo_),
         'photo_extra_exts',       (SELECT j FROM photo_extra_exts),
@@ -1919,8 +1922,8 @@ SELECT
         'units',                  (SELECT j FROM unit),
 
         'chats',                  (SELECT j FROM chat),
-        'intros',                 (SELECT j FROM intro),
-
+        'intros',                 (SELECT j FROM intro)
+    )::jsonb || json_build_object(
         'verification level',     (SELECT j FROM privacy_verification_level),
         'public profile',         (SELECT j FROM public_profile),
         'show my location',       (SELECT j FROM show_my_location),
@@ -1939,8 +1942,7 @@ SELECT
         ),
 
         'flair', (SELECT j FROM flair)
-
-    ) AS j
+    )::jsonb AS j
 """
 
 Q_DELETE_PROFILE_INFO_PHOTO = """
