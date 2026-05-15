@@ -804,19 +804,77 @@ def delete_or_ban_account(
             ]
             # User-initiated: soft-delete only. Cron will hard-delete
             # after the 7-day grace window expires.
-            tx.execute(
+            cur = tx.execute(
                 """
                 UPDATE person
                    SET activated = FALSE,
                        deletion_requested_at = NOW()
                  WHERE id = %(person_id)s
+                RETURNING email, name, deletion_requested_at
                 """,
                 dict(person_id=s.person_id),
             )
+            _email_row = cur.fetchone()
         else:
             raise ValueError('At least one parameter must not be None')
 
+    # Notify the user out-of-band so they have a recovery path even if
+    # they close the app immediately. Threaded so the SMTP round-trip
+    # doesn't block the DELETE response (Resend is usually <500ms but
+    # we don't want the client waiting on it).
+    if s and _email_row:
+        try:
+            import threading
+            threading.Thread(
+                target=_send_deletion_pending_email,
+                kwargs=dict(
+                    email=_email_row['email'],
+                    name=_email_row['name'],
+                    deletion_requested_at=_email_row['deletion_requested_at'],
+                ),
+                daemon=True,
+            ).start()
+        except Exception:
+            import traceback
+            print('delete_or_ban_account: deletion-email dispatch failed:')
+            print(traceback.format_exc())
+
     return rows
+
+
+def _send_deletion_pending_email(email: str, name: str, deletion_requested_at):
+    """Worker for the threaded email dispatch in delete_or_ban_account.
+
+    Adds 7 days to `deletion_requested_at` (UTC) to compute the purge
+    cutoff, formats it for human consumption, builds the HTML body via
+    service.person.deletion_email.deletion_pending_template, and sends
+    via aws_smtp (Resend HTTPS in prod). Suppresses sample/example.com
+    addresses so the autodeactivate2 convention is preserved."""
+    if not email:
+        return
+    if email.lower().endswith('@example.com'):
+        return
+
+    try:
+        from datetime import timedelta
+        from smtp import aws_smtp
+        from service.person.deletion_email import deletion_pending_template
+        from service.config import PRODUCT_NAME
+
+        purge_at = deletion_requested_at + timedelta(days=7)
+        purge_pretty = purge_at.strftime('%a, %B %-d, %Y')
+
+        body = deletion_pending_template(name=name, purge_iso=purge_pretty)
+        aws_smtp.send(
+            subject=f'Your {PRODUCT_NAME} account is scheduled for deletion',
+            body=body,
+            to_addr=email,
+        )
+        print(f'delete_or_ban_account: deletion email sent to {email}')
+    except Exception:
+        import traceback
+        print('_send_deletion_pending_email: failed:')
+        print(traceback.format_exc())
 
 def cancel_account_deletion(s: t.SessionInfo):
     """Restore an account that's mid-grace-window (Phase W cutover).
