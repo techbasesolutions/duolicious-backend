@@ -500,6 +500,10 @@ class PatchProfileInfo(BaseModel):
     browse_invisibly: Optional[str] = None
     public_profile: Optional[str] = None
     theme: Optional[Theme] = None
+    # Phase W cutover (2026-05-15): direct ISO2 country PATCH so
+    # /profile/edit changes move the user's /search pool. Validated
+    # to 2-char shape in the SQL handler (length + ~ '^[A-Za-z]{2}$').
+    country: Optional[str] = Field(default=None, min_length=2, max_length=2)
 
     @model_validator(mode='after')
     def check_exactly_one(self):

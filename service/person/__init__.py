@@ -1472,6 +1472,21 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
         WHERE person.id = %(person_id)s
         AND looking_for.name = %(field_value)s
         """
+    elif field_name == 'country':
+        # Phase W cutover (2026-05-15): direct ISO2 country PATCH so
+        # /profile/edit country changes move the user's /search pool
+        # (Q_UNCACHED_SEARCH_2 filters on p.country = ANY(preferred)).
+        # Was previously only set via /onboarding/location's pycountry
+        # path; post-onboarding edits silently dropped.
+        # Validation: 2-char uppercase ISO2 only — anything else
+        # leaves person.country unchanged (UPDATE no-ops by WHERE).
+        q1 = """
+        UPDATE person
+           SET country = UPPER(%(field_value)s)
+         WHERE id = %(person_id)s
+           AND length(%(field_value)s) = 2
+           AND %(field_value)s ~ '^[A-Za-z]{2}$'
+        """
     elif field_name == 'smoking':
         q1 = """
         UPDATE person SET smoking_id = yes_no_optional.id
