@@ -1301,6 +1301,40 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
 
         q2 = Q_UPDATE_VERIFICATION_LEVEL
     elif field_name == 'location':
+        # Phase W map fix (2026-05-15): also populate person.country
+        # (CHAR(2) ISO2) so /search ships ISO codes the frontend
+        # WorldMap + centroidOf() expect. The location table only
+        # stores the full country NAME ("Barbados", not "BB"), so we
+        # resolve via pycountry on the way in. Without this, every
+        # newly-onboarded user has country = '' and is filtered out
+        # of the map view (see realCandidates.filter(c => Boolean(c.country))
+        # in src/app/map/page.tsx).
+        try:
+            import pycountry
+            with api_tx() as tx:
+                _row = tx.execute(
+                    "SELECT country FROM location WHERE long_friendly = %(lf)s",
+                    dict(lf=field_value),
+                ).fetchone()
+            _country_name = (_row or {}).get('country') or ''
+            _country_iso = ''
+            if _country_name:
+                try:
+                    _country_iso = pycountry.countries.lookup(_country_name).alpha_2
+                except LookupError:
+                    _country_iso = ''
+        except Exception:
+            # pycountry missing or any unexpected lookup failure: leave
+            # country empty so the rest of the location update still
+            # succeeds. Map will hide the user; they can be backfilled
+            # manually until pycountry lands in the image.
+            _country_iso = ''
+
+        params = dict(
+            person_id=s.person_id,
+            field_value=field_value,
+            country_iso=_country_iso,
+        )
         q1 = """
         UPDATE person
         SET
@@ -1314,7 +1348,10 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
                 = location.short_friendly,
 
             location_long_friendly
-                = location.long_friendly
+                = location.long_friendly,
+
+            country
+                = COALESCE(NULLIF(%(country_iso)s, ''), person.country)
         FROM location
         WHERE person.id = %(person_id)s
         AND long_friendly = %(field_value)s
