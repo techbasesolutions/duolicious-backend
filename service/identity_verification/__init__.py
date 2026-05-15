@@ -65,11 +65,17 @@ def _stripe():
         import stripe
         stripe.api_key = api_key
         _stripe_module = stripe
-        _webhook_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
+        # Suffix matches the checkout module's `STRIPE_WEBHOOK_SECRET_CHECKOUT`
+        # convention. Falling back to the un-suffixed name keeps any older
+        # deploys booting if both are set / only the legacy name is set.
+        _webhook_secret = (
+            os.environ.get('STRIPE_WEBHOOK_SECRET_IDENTITY')
+            or os.environ.get('STRIPE_WEBHOOK_SECRET')
+        )
         if not _webhook_secret:
             logger.warning(
-                'STRIPE_SECRET_KEY set but STRIPE_WEBHOOK_SECRET unset; '
-                'incoming webhooks will be rejected'
+                'STRIPE_SECRET_KEY set but STRIPE_WEBHOOK_SECRET_IDENTITY '
+                'unset; incoming Identity webhooks will be rejected'
             )
         logger.info('Stripe Identity client initialized')
     except Exception as e:
