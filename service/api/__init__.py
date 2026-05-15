@@ -578,6 +578,10 @@ def post_checkout_web(req: t.PostCheckoutWeb, s: t.SessionInfo):
 def post_stripe_identity_webhook():
     return identity_verification.post_stripe_identity_webhook()
 
+@post('/webhooks/stripe-checkout')
+def post_stripe_checkout_webhook():
+    return checkout.post_stripe_checkout_webhook()
+
 @post('/webhooks/revenuecat')
 def post_revenuecat_webhook():
     return revenuecat_webhook.post_revenuecat_webhook()
