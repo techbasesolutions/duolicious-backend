@@ -413,28 +413,68 @@ def post_unskip_by_uuid(s: t.SessionInfo, prospect_uuid: str):
 # See service/decisions/__init__.py + migrations/0006_match_loop.sql.
 @apost('/decisions/reset')
 def post_decisions_reset(s: t.SessionInfo):
-    """Wipe the current user's swipe history (both liked + skipped).
+    """Wipe the current user's swipe history (liked + skipped + matches).
     Phase W cutover testing convenience — lets a developer / seed
     account exhaust the candidate pool, then reset to re-test the
-    full /discover loop without manual DB intervention."""
+    full /discover loop without manual DB intervention.
+
+    Test-mode semantics: this is destructive. We delete:
+      - rows where this user is the SUBJECT in skipped/liked/swipe,
+        AND rows where this user is the OBJECT (so a peer's prior
+        block of this user also clears — both halves needed for
+        Q_UNCACHED_SEARCH_2's bidirectional skipped exclusion)
+      - ahavah_match rows where this user is either user_a or user_b
+        (matches re-form on the next mutual like; without this delete
+        Ehud + Jada would stay in /matches and never reappear in
+        each other's /discover during a re-test)
+      - the user's search_cache so /search recomputes
+    """
     with api_tx() as tx:
+        # Bidirectional skipped wipe — clears both Ehud→Jada and
+        # Jada→Ehud rows when Ehud resets. Necessary for symmetric
+        # re-test (any one-sided block would otherwise persist).
         tx.execute(
-            "DELETE FROM skipped WHERE subject_person_id = %(p)s",
+            """
+            DELETE FROM skipped
+             WHERE subject_person_id = %(p)s
+                OR object_person_id  = %(p)s
+            """,
             dict(p=s.person_id),
         )
+        # Bidirectional liked wipe — same reason; reset wipes incoming
+        # likes too so the peer can re-like from a clean slate.
         tx.execute(
-            "DELETE FROM liked WHERE liker_id = %(p)s",
+            """
+            DELETE FROM liked
+             WHERE liker_id = %(p)s
+                OR liked_id = %(p)s
+            """,
             dict(p=s.person_id),
         )
         # `swipe` is the upstream Duolicious swipe-history table that
-        # Q_UNCACHED_SEARCH_2 also excludes against. Without this delete,
-        # /discover stayed empty after a reset because every prospect was
-        # still marked as "already swiped".
+        # Q_UNCACHED_SEARCH_2 also excludes against. Without this
+        # delete, /discover stayed empty after a reset because every
+        # prospect was still marked as "already swiped".
         tx.execute(
             "DELETE FROM swipe WHERE swiper_person_id = %(p)s",
             dict(p=s.person_id),
         )
-        # Also clear the search_cache so the next /search recomputes.
+        # ahavah_match — Phase W match-loop table. Match rows survive
+        # liked/skipped wipes by FK (CASCADE only fires on person row
+        # deletion). Explicit delete here so a reset truly returns the
+        # pair to the "never met" state for re-test. Cascade also
+        # removes any chat history tied to the match (mam_message,
+        # inbox conversation rows) per the FK chain in init-api.sql.
+        tx.execute(
+            """
+            DELETE FROM ahavah_match
+             WHERE user_a_id = %(p)s
+                OR user_b_id = %(p)s
+            """,
+            dict(p=s.person_id),
+        )
+        # Clear the search_cache so the next /search recomputes
+        # against the now-clean swipe/skipped/match state.
         tx.execute(
             "DELETE FROM search_cache WHERE searcher_person_id = %(p)s",
             dict(p=s.person_id),
