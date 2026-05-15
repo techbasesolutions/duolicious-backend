@@ -1,4 +1,4 @@
-from service.config import EMAIL_ASSETS_BASE_URL, PRODUCT_NAME, WEB_BASE_URL
+from service.config import PRODUCT_NAME, WEB_BASE_URL
 
 
 def emailtemplate():
@@ -16,8 +16,8 @@ def emailtemplate():
                 <td align="center">
                     <table width="600" cellspacing="0" cellpadding="0" border="0" align="center">
                         <tr>
-                            <td bgcolor="#70f" align="center">
-                                <img src="{EMAIL_ASSETS_BASE_URL}/header-logo.png" alt="{PRODUCT_NAME} Logo" width="108" height="50" />
+                            <td bgcolor="#70f" align="center" style="padding: 18px 0;">
+                                <span style="font-family: Arial, Helvetica, sans-serif; font-size: 22px; font-weight: 900; color: #ffffff; letter-spacing: 0.04em;">{PRODUCT_NAME}</span>
                             </td>
                         </tr>
                         <tr>

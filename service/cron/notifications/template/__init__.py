@@ -2,7 +2,6 @@ from urllib.parse import urlencode
 
 from service.config import (
     API_BASE_URL,
-    EMAIL_ASSETS_BASE_URL,
     EMAIL_DOMAIN,
     PRODUCT_NAME,
     WEB_BASE_URL,
@@ -50,8 +49,8 @@ def emailtemplate(email, has_intro, has_chat):
             <td align="center">
                 <table style="max-width: 600px; width: 100%;" cellspacing="0" cellpadding="0" border="0" align="center">
                     <tr>
-                        <td bgcolor="#70f" align="center">
-                            <img src="{EMAIL_ASSETS_BASE_URL}/header-logo.png" alt="{PRODUCT_NAME} Logo" width="108" height="50" />
+                        <td bgcolor="#70f" align="center" style="padding: 18px 0;">
+                            <span style="font-family: Arial, Helvetica, sans-serif; font-size: 22px; font-weight: 900; color: #ffffff; letter-spacing: 0.04em;">{PRODUCT_NAME}</span>
                         </td>
                     </tr>
                     <tr>
