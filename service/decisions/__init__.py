@@ -82,6 +82,7 @@ SELECT
         ),
         '[]'::json
     )::jsonb AS peer_photo_uuids,
+    EXTRACT(EPOCH FROM NOW() - peer.last_online_time)::int AS peer_seconds_since_last_online,
     m.created_at::text AS created_at
 FROM
     ahavah_match m
@@ -113,6 +114,7 @@ SELECT
         ),
         '[]'::json
     )::jsonb AS liker_photo_uuids,
+    EXTRACT(EPOCH FROM NOW() - liker.last_online_time)::int AS liker_seconds_since_last_online,
     l.created_at::text AS created_at
 FROM
     liked l
@@ -162,6 +164,7 @@ SELECT
         ),
         '[]'::json
     )::jsonb AS peer_photo_uuids,
+    EXTRACT(EPOCH FROM NOW() - peer.last_online_time)::int AS peer_seconds_since_last_online,
     m.created_at::text AS created_at
 FROM
     ahavah_match m
@@ -240,6 +243,7 @@ def get_matches(s: t.SessionInfo):
                 "firstName": r["peer_name"],
                 "age": r["peer_age"],
                 "photo_uuids": r["peer_photo_uuids"],
+                "seconds_since_last_online": r["peer_seconds_since_last_online"],
             },
             "created_at": r["created_at"],
         }
@@ -266,6 +270,7 @@ def get_incoming_likes(s: t.SessionInfo):
                 "firstName": r["liker_name"],
                 "age": r["liker_age"],
                 "photo_uuids": r["liker_photo_uuids"],
+                "seconds_since_last_online": r["liker_seconds_since_last_online"],
             },
             "liked_at": r["created_at"],
         }

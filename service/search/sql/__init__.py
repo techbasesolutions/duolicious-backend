@@ -182,7 +182,12 @@ SELECT
     0 AS match_percentage,
     NULL::text AS verification_required,
     p.location_short_friendly AS location,
-    p.country AS country
+    p.country AS country,
+    -- Drives the green-dot / "last seen Xm ago" affordance on /discover,
+    -- /matches, and the chat header. NULL when the prospect has never
+    -- been signed in (fresh seed account, etc.) — frontend treats NULL
+    -- as "no signal", neither online nor a stamped time.
+    EXTRACT(EPOCH FROM NOW() - p.last_online_time)::int AS seconds_since_last_online
 FROM search_cache sc
 JOIN person p ON p.id = sc.prospect_person_id
 WHERE sc.searcher_person_id = %(searcher_person_id)s
