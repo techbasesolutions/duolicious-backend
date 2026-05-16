@@ -38,6 +38,15 @@ def _uncached_search_results(
     no: Tuple[int, int],
     gender_preference: list[int],
     verified_only: bool = False,
+    intents: list[str] | None = None,
+    marital_statuses: list[str] | None = None,
+    has_children_buckets: list[str] | None = None,
+    assemblies: list[str] | None = None,
+    torah_levels: list[str] | None = None,
+    polygyny_stances: list[str] | None = None,
+    calendars: list[str] | None = None,
+    educations: list[str] | None = None,
+    health_tags: list[str] | None = None,
 ):
     n, o = no
 
@@ -47,6 +56,17 @@ def _uncached_search_results(
         o=o,
         gender_preference=gender_preference,
         verified_only=verified_only,
+        # Phase W cutover: pill-grid filter arrays. Empty list = no
+        # filter; the SQL clauses below all guard on cardinality()=0.
+        intents=intents or [],
+        marital_statuses=marital_statuses or [],
+        has_children_buckets=has_children_buckets or [],
+        assemblies=assemblies or [],
+        torah_levels=torah_levels or [],
+        polygyny_stances=polygyny_stances or [],
+        calendars=calendars or [],
+        educations=educations or [],
+        health_tags=health_tags or [],
     )
 
     try:
@@ -103,6 +123,15 @@ def get_search(
     o: str | None,
     club: ClubHttpArg | None,
     verified_only: bool = False,
+    intents: list[str] | None = None,
+    marital_statuses: list[str] | None = None,
+    has_children_buckets: list[str] | None = None,
+    assemblies: list[str] | None = None,
+    torah_levels: list[str] | None = None,
+    polygyny_stances: list[str] | None = None,
+    calendars: list[str] | None = None,
+    educations: list[str] | None = None,
+    health_tags: list[str] | None = None,
 ):
     search_type, no = get_search_type(n, o)
 
@@ -131,7 +160,17 @@ def get_search(
                 searcher_person_id=s.person_id,
                 no=no,
                 gender_preference=gender_preference,
-                verified_only=verified_only)
+                verified_only=verified_only,
+                intents=intents,
+                marital_statuses=marital_statuses,
+                has_children_buckets=has_children_buckets,
+                assemblies=assemblies,
+                torah_levels=torah_levels,
+                polygyny_stances=polygyny_stances,
+                calendars=calendars,
+                educations=educations,
+                health_tags=health_tags,
+            )
 
         elif search_type == 'cached-search':
             return _cached_search_results(

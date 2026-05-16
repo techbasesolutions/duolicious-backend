@@ -276,10 +276,34 @@ def get_search(s: t.SessionInfo):
     # flips this param; backend just needs the boolean.
     verified_only = request.args.get('verified_only') in ('1', 'true', 'yes')
 
+    # Phase W cutover (2026-05-15) — pill-grid filters from
+    # FiltersSheet. Each is a comma-joined list of kebab-case enum
+    # values; backend filters against p.ahavah_extra->>'<field>' so
+    # the precise Torah-observant values round-trip (avoids lossy
+    # enum-table joins). Empty/missing → [] → no filter applied.
+    def _csv_list(name):
+        raw = request.args.get(name, '')
+        return [v for v in raw.split(',') if v] if raw else []
+
+    intents              = _csv_list('intents')
+    marital_statuses     = _csv_list('marital_statuses')
+    has_children_buckets = _csv_list('has_children')   # 'has' | 'none'
+    assemblies           = _csv_list('assemblies')
+    torah_levels         = _csv_list('torah_levels')
+    polygyny_stances     = _csv_list('polygyny')
+    calendars            = _csv_list('calendars')
+    educations           = _csv_list('educations')
+    health_tags          = _csv_list('health_tags')
+
     search_type, _ = search.get_search_type(n, o)
 
     limit = "15 per 2 minutes"
-    scope = json.dumps([search_type, lowerClub, verified_only])
+    scope = json.dumps([
+        search_type, lowerClub, verified_only,
+        intents, marital_statuses, has_children_buckets,
+        assemblies, torah_levels, polygyny_stances,
+        calendars, educations, health_tags,
+    ])
 
     if search_type == 'uncached-search':
         with (
@@ -294,10 +318,32 @@ def get_search(s: t.SessionInfo):
                 exempt_when=disable_account_rate_limit)
         ):
             return search.get_search(
-                s=s, n=n, o=o, club=club, verified_only=verified_only)
+                s=s, n=n, o=o, club=club,
+                verified_only=verified_only,
+                intents=intents,
+                marital_statuses=marital_statuses,
+                has_children_buckets=has_children_buckets,
+                assemblies=assemblies,
+                torah_levels=torah_levels,
+                polygyny_stances=polygyny_stances,
+                calendars=calendars,
+                educations=educations,
+                health_tags=health_tags,
+            )
     else:
         return search.get_search(
-            s=s, n=n, o=o, club=club, verified_only=verified_only)
+            s=s, n=n, o=o, club=club,
+            verified_only=verified_only,
+            intents=intents,
+            marital_statuses=marital_statuses,
+            has_children_buckets=has_children_buckets,
+            assemblies=assemblies,
+            torah_levels=torah_levels,
+            polygyny_stances=polygyny_stances,
+            calendars=calendars,
+            educations=educations,
+            health_tags=health_tags,
+        )
 
 @get('/health', limiter=limiter.exempt)
 def get_health():

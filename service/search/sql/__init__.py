@@ -141,6 +141,71 @@ prospect_pool AS (
           OR p.ahavah_verification_tier <> 'none'::ahavah_verification_tier
           OR p.verification_level_id > 1
       )
+
+      -- Phase W cutover (2026-05-15) — pill-grid filters from the
+      -- discover/map FiltersSheet. Each is a comma-joined list of
+      -- kebab-case enum values; we filter against
+      -- p.ahavah_extra->>'<field>' so the precise Torah-observant
+      -- values round-trip (the upstream Duolicious enum tables are
+      -- coarse and lossy — e.g. re-married collapses to Married, and
+      -- the assembly/torahLevel/polygyny/calendar fields have no
+      -- first-class column at all). Empty array = no filter; the
+      -- cardinality()=0 guard skips the ANY() check entirely so the
+      -- normal pool isn't narrowed.
+
+      AND (
+          cardinality(%(intents)s::TEXT[]) = 0
+          OR p.ahavah_extra->>'intent' = ANY(%(intents)s::TEXT[])
+      )
+      AND (
+          cardinality(%(marital_statuses)s::TEXT[]) = 0
+          OR p.ahavah_extra->>'maritalStatus' = ANY(%(marital_statuses)s::TEXT[])
+      )
+      -- Children: 2-bucket filter ("has" / "none"). The frontend
+      -- multi-select can pass both buckets (meaning "any value
+      -- present") or just one. Backend treats both selected as a
+      -- no-op (every candidate matches one or the other).
+      AND (
+          cardinality(%(has_children_buckets)s::TEXT[]) = 0
+          OR (
+              'has' = ANY(%(has_children_buckets)s::TEXT[])
+              AND COALESCE((p.ahavah_extra->>'children')::INT, 0) > 0
+          )
+          OR (
+              'none' = ANY(%(has_children_buckets)s::TEXT[])
+              AND COALESCE((p.ahavah_extra->>'children')::INT, 0) = 0
+          )
+      )
+      AND (
+          cardinality(%(assemblies)s::TEXT[]) = 0
+          OR p.ahavah_extra->>'assembly' = ANY(%(assemblies)s::TEXT[])
+      )
+      AND (
+          cardinality(%(torah_levels)s::TEXT[]) = 0
+          OR p.ahavah_extra->>'torahLevel' = ANY(%(torah_levels)s::TEXT[])
+      )
+      AND (
+          cardinality(%(polygyny_stances)s::TEXT[]) = 0
+          OR p.ahavah_extra->>'polygyny' = ANY(%(polygyny_stances)s::TEXT[])
+      )
+      AND (
+          cardinality(%(calendars)s::TEXT[]) = 0
+          OR p.ahavah_extra->>'calendar' = ANY(%(calendars)s::TEXT[])
+      )
+      AND (
+          cardinality(%(educations)s::TEXT[]) = 0
+          OR p.ahavah_extra->>'education' = ANY(%(educations)s::TEXT[])
+      )
+      -- Health tags: prospect.healthTags JSON array must include every
+      -- selected tag (AND semantics — picking "non-smoker" + "fitness"
+      -- requires both). JSONB containment via `?&` operator.
+      AND (
+          cardinality(%(health_tags)s::TEXT[]) = 0
+          OR (
+              p.ahavah_extra->'healthTags' IS NOT NULL
+              AND p.ahavah_extra->'healthTags' ?& %(health_tags)s::TEXT[]
+          )
+      )
 )
 INSERT INTO search_cache (
     searcher_person_id, position, prospect_person_id, prospect_uuid,
