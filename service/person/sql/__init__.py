@@ -1708,8 +1708,10 @@ WITH photo_ AS (
     SELECT COALESCE(languages_spoken, '{{}}'::TEXT[]) AS j
     FROM person WHERE id = %(person_id)s
 ), primary_language_ AS (
-    -- DeepL translation target. Optional; NULL when the user hasn't
-    -- expressed a preference (most users skip this in onboarding).
+    -- The user's primary spoken language (one of `languages_spoken`).
+    -- Frontend renders a ★ prefix on the corresponding pill in
+    -- /profile/[uuid]'s Languages cluster. Optional; NULL when the
+    -- user hasn't expressed a preference.
     SELECT primary_language AS j FROM person WHERE id = %(person_id)s
 ), deletion_requested_at_ AS (
     -- ISO 8601 stamp set when the user POSTed /account (soft-delete).

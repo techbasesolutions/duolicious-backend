@@ -2,8 +2,8 @@
 Test-harness smoke tests.
 
 These exist to verify the test infrastructure itself works. They do NOT test
-product behavior. Real tests for translation_service / scam_detection /
-photo_moderation / entitlements land in their respective tasks (Phase 2-5).
+product behavior. Real tests for scam_detection / photo_moderation /
+entitlements land in their respective tasks (Phase 4-5).
 
 Run inside the api container:
     docker compose exec api sh -c 'pip install -r tests/requirements-test.txt && python -m pytest tests/test_smoke.py -v'
@@ -53,19 +53,9 @@ def test_make_message_carries_text_and_thread():
     assert m.detected_source_lang is None
 
 
-def test_redis_mock_fixture_provides_fakeredis(redis_mock):
-    redis_mock.set('hello', 'world')
-    assert redis_mock.get('hello') == b'world'
-
-
-def test_deepl_mock_fixture_provides_magicmock(deepl_mock, mocker):
-    deepl_mock.translate_text.return_value = mocker.MagicMock(
-        __str__=lambda s: 'Hola',
-        detected_source_lang='EN',
-    )
-    result = deepl_mock.translate_text('Hello', target_lang='ES')
-    assert str(result) == 'Hola'
-    assert result.detected_source_lang == 'EN'
+# test_redis_mock_fixture_provides_fakeredis + test_deepl_mock_fixture_provides_magicmock
+# removed 2026-05-15 — the underlying redis_mock + deepl_mock fixtures
+# were translation-specific; service.translation_service is deleted.
 
 
 def test_mock_rekognition_fixture_provides_magicmock(mock_rekognition):

@@ -1499,9 +1499,11 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
          WHERE id = %(person_id)s
         """
     elif field_name == 'primary_language':
-        # Phase W: single primary language code (DeepL target). Stored
-        # as-is; lookup-table validation deferred (free text by design
-        # since custom-language tokens like "custom:Aramaic" are valid).
+        # Phase W: marks which of the user's `languages_spoken` entries
+        # is their primary spoken language. Drives the ★ prefix on the
+        # Languages cluster in /profile/[uuid]. Stored as-is; lookup-
+        # table validation deferred (free text by design since custom-
+        # language tokens like "custom:Aramaic" are valid).
         q1 = """
         UPDATE person
            SET primary_language = %(field_value)s

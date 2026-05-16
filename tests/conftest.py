@@ -4,11 +4,15 @@ Ahavah pytest fixtures.
 Provides the named fixtures referenced throughout the implementation plan:
   - `client`       — Flask test client wired to the api package
   - `db`           — wraps `database.api_tx` for tests; rolls back after each test
-  - `redis_mock`   — fakeredis instance auto-substituted into modules that import Redis
-  - `deepl_mock`   — MagicMock for the DeepL client (Phase 2 translation tests)
   - `mock_rekognition` — MagicMock for boto3.client('rekognition') (Phase 4 photo moderation)
   - `signed_rc_event`  — helper to produce a signed RevenueCat webhook payload (Phase 5)
   - `stripe_signed_event` — helper to produce a Stripe webhook payload (Phase 3 ID verify)
+
+  Removed 2026-05-15:
+  - `redis_mock` / `deepl_mock` — fakeredis + DeepL fixtures. Translation
+    feature pulled (orphan settings page + onboarding promise + service.
+    translation_service module all deleted). Restore from git if
+    chat-side translation is re-introduced.
 
 These fixtures are forward-looking: most of the modules they mock don't exist
 yet (Phase 2/3/4/5 add them). When those modules land, the fixtures auto-wire
@@ -72,45 +76,10 @@ def db():
 # External-service mocks
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def redis_mock(monkeypatch):
-    """In-memory fakeredis instance, auto-substituted into translation_service.
-
-    `translation_service` lazy-inits its Redis client into module-globals
-    `_redis_client` (the client) and `_redis_init_attempted` (the gate). We
-    overwrite both so the next call to `_redis()` returns our fake instead
-    of trying to dial a real Redis.
-    """
-    import fakeredis
-    fake = fakeredis.FakeRedis()
-    try:
-        import service.translation_service as ts  # type: ignore
-        monkeypatch.setattr(ts, '_redis_client', fake)
-        monkeypatch.setattr(ts, '_redis_init_attempted', True)
-    except ImportError:
-        pass
-    return fake
-
-
-@pytest.fixture
-def deepl_mock(monkeypatch):
-    """MagicMock for the DeepL Translator client.
-
-    `translation_service` lazy-inits DeepL into module-globals `_deepl_client`
-    and `_deepl_init_attempted`. We overwrite both so the next call to
-    `_deepl()` returns our mock instead of trying to load DEEPL_API_KEY.
-
-    Tests use `deepl_mock.translate_text.return_value = MagicMock(__str__=...)`
-    to control the translate response.
-    """
-    mock = MagicMock(name='deepl_client')
-    try:
-        import service.translation_service as ts  # type: ignore
-        monkeypatch.setattr(ts, '_deepl_client', mock)
-        monkeypatch.setattr(ts, '_deepl_init_attempted', True)
-    except ImportError:
-        pass
-    return mock
+# `redis_mock` + `deepl_mock` fixtures removed 2026-05-15 along with
+# the service.translation_service module. They were the only call sites
+# for fakeredis / DeepL in the test suite. Restore from git history if
+# translation gets re-introduced.
 
 
 @pytest.fixture

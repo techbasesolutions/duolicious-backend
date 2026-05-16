@@ -17,11 +17,15 @@ from service import (
     person,
     revenuecat_webhook,
     search,
-    translation,
 )
 # `question` import removed in Task 0.3c — Q&A subsystem strip.
+# `translation` import removed 2026-05-15 — chat-side translation feature
+# removed (orphan settings page + onboarding promise both pulled); the
+# /translate-preview route + service.translation package were dropped.
+# Backend `person.primary_language` column stays — it's the user's
+# preferred-spoken-language marker (drives ★ prefix on Languages cluster
+# in /profile/[uuid]), no longer a DeepL target.
 # `discovery` added in Phase 1 Task 1.3 — country/language/long-distance prefs.
-# `translation` added in Phase 2 Task 2.4 — outgoing translation preview.
 # `identity_verification` added in Phase 3 Task 3.1 — Stripe Identity gold tier.
 # `revenuecat_webhook` added in Phase 5 Task 5.2 — IAP receipt validation.
 from database import api_tx
@@ -630,10 +634,6 @@ def post_search_preference_language(s: t.SessionInfo):
 @apost('/search-preference-long-distance')
 def post_search_preference_long_distance(s: t.SessionInfo):
     return discovery.post_search_preference_long_distance(s)
-
-@apost('/translate-preview')
-def post_translate_preview(s: t.SessionInfo):
-    return translation.post_translate_preview(s)
 
 @apost('/verification/start-id-flow')
 def post_start_id_flow(s: t.SessionInfo):
