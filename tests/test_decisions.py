@@ -131,3 +131,116 @@ def test_incoming_likes_includes_revealed_photos_for_non_premium(
     assert post['hidden'] is False
     assert post['with_profile']['id'] == liker['uuid']
     assert 'firstName' in post['with_profile']
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — daily like-quota enforcement (10/day, premium + day-pass bypass).
+#
+# Plan deviation: the plan's quota tests used an async http + `candidates`
+# fixture (11 prefab candidate UUIDs) that don't exist here. We adapt to
+# the sync Flask client + local-fixture pattern by inserting 11 candidate
+# `person` rows in the test itself, then driving POST /decisions for each.
+# ---------------------------------------------------------------------------
+
+def _make_candidates(n):
+    """Insert n minimal candidate person rows, return their {uuid,id} dicts.
+
+    Cleanup happens via the test's manual DELETE at the end (kept inline
+    rather than a fixture so each test owns its own candidate pool size).
+    """
+    return [_insert_person() for _ in range(n)]
+
+
+def _cleanup_candidates(candidates):
+    from database import api_tx
+    ids = [c['id'] for c in candidates]
+    if not ids:
+        return
+    with api_tx() as tx:
+        tx.execute(
+            "DELETE FROM person WHERE id = ANY(%(ids)s)",
+            dict(ids=ids),
+        )
+
+
+def test_decisions_quota_blocks_free_user_after_10(client, person, session_token):
+    """Free user — first 10 likes return 200; 11th returns 429 + resets_at."""
+    candidates = _make_candidates(11)
+    try:
+        headers = {'Authorization': f'Bearer {session_token}'}
+        for c in candidates[:10]:
+            res = client.post(
+                '/decisions',
+                json={'profile_uuid': c['uuid'], 'decision': 'like'},
+                headers=headers,
+            )
+            assert res.status_code == 200, res.get_data(as_text=True)
+
+        res = client.post(
+            '/decisions',
+            json={'profile_uuid': candidates[10]['uuid'], 'decision': 'like'},
+            headers=headers,
+        )
+        assert res.status_code == 429
+        body = res.get_json()
+        assert body['error'] == 'quota_exceeded'
+        assert 'resets_at' in body
+    finally:
+        _cleanup_candidates(candidates)
+
+
+def test_decisions_quota_bypassed_for_premium(client, person, session_token):
+    """Premium entitlement bypasses the cap — all 11 likes succeed."""
+    from database import api_tx
+    with api_tx() as tx:
+        tx.execute(
+            "UPDATE person SET entitlements = ARRAY['premium'] WHERE id = %(id)s",
+            dict(id=person['id']),
+        )
+    candidates = _make_candidates(11)
+    try:
+        headers = {'Authorization': f'Bearer {session_token}'}
+        for c in candidates:
+            res = client.post(
+                '/decisions',
+                json={'profile_uuid': c['uuid'], 'decision': 'like'},
+                headers=headers,
+            )
+            assert res.status_code == 200, res.get_data(as_text=True)
+    finally:
+        _cleanup_candidates(candidates)
+
+
+def test_decisions_quota_bypassed_with_active_day_pass(client, person, session_token):
+    """An unexpired day_pass ledger row bypasses the cap."""
+    from datetime import datetime, timedelta, timezone
+    from database import api_tx
+    expires = (datetime.now(tz=timezone.utc) + timedelta(hours=24)).isoformat()
+    with api_tx() as tx:
+        # Credit balance + write a day_pass debit. credit/debit aren't
+        # used here — we INSERT raw so the ledger row exists regardless
+        # of balance arithmetic.
+        tx.execute(
+            """INSERT INTO token_ledger (person_id, delta, reason, metadata)
+               VALUES (%(p)s, 5, 'purchase', '{}'::jsonb)""",
+            dict(p=person['uuid']),
+        )
+        tx.execute(
+            """INSERT INTO token_ledger (person_id, delta, reason, metadata)
+               VALUES (%(p)s, -3, 'day_pass', %(m)s::jsonb)""",
+            dict(p=person['uuid'],
+                 m='{"expires_at":"' + expires + '"}'),
+        )
+
+    candidates = _make_candidates(11)
+    try:
+        headers = {'Authorization': f'Bearer {session_token}'}
+        for c in candidates:
+            res = client.post(
+                '/decisions',
+                json={'profile_uuid': c['uuid'], 'decision': 'like'},
+                headers=headers,
+            )
+            assert res.status_code == 200, res.get_data(as_text=True)
+    finally:
+        _cleanup_candidates(candidates)

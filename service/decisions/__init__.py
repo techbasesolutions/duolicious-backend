@@ -14,9 +14,78 @@ the existing person/photo schema via the `liked` + `ahavah_match`
 tables (see migrations/0006_match_loop.sql).
 """
 
-from typing import Optional
+from datetime import timedelta
+from typing import Optional, Tuple
 from database import api_tx
 import duotypes as t
+
+
+# Phase 5 (monetization-tokens) — daily like quota for free users.
+#
+# Plan deviation: the plan was written for an async/asyncpg stack; this
+# codebase is sync psycopg. `_check_like_quota` takes a sync cursor `tx`
+# and uses named placeholders. `liked.liker_id` is INT (person.id);
+# `token_ledger.person_id` is UUID, hence the helper needs BOTH ids
+# (caller passes person_id for liked-lookup, person_uuid for day_pass).
+DAILY_LIKE_QUOTA = 10
+
+
+_Q_COUNT_RECENT_LIKES = """
+  SELECT COUNT(*) AS n FROM liked
+   WHERE liker_id = %(liker_id)s
+     AND created_at > NOW() - INTERVAL '24 hours'
+"""
+
+_Q_OLDEST_LIKE_IN_WINDOW = """
+  SELECT MIN(created_at) AS oldest FROM liked
+   WHERE liker_id = %(liker_id)s
+     AND created_at > NOW() - INTERVAL '24 hours'
+"""
+
+_Q_HAS_ACTIVE_DAY_PASS = """
+  SELECT 1 AS ok FROM token_ledger
+   WHERE person_id = %(person_uuid)s
+     AND reason = 'day_pass'
+     AND (metadata->>'expires_at')::timestamptz > NOW()
+   LIMIT 1
+"""
+
+
+def _check_like_quota(
+    tx,
+    person_id: int,
+    person_uuid: str,
+    entitlements: list,
+) -> Optional[Tuple[int, dict]]:
+    """Returns None if allowed, or (status_code, body) tuple if blocked.
+
+    Premium entitlement bypasses the quota. An active day-pass ledger
+    row (debit with reason='day_pass' and metadata.expires_at > NOW())
+    also bypasses. Otherwise count likes in the last 24h; if >=
+    DAILY_LIKE_QUOTA, return (429, {error, resets_at}).
+    """
+    if 'premium' in (entitlements or []):
+        return None
+
+    if tx.execute(
+        _Q_HAS_ACTIVE_DAY_PASS,
+        dict(person_uuid=person_uuid),
+    ).fetchone():
+        return None
+
+    row = tx.execute(
+        _Q_COUNT_RECENT_LIKES, dict(liker_id=person_id)
+    ).fetchone()
+    count = int(row['n']) if row else 0
+    if count < DAILY_LIKE_QUOTA:
+        return None
+
+    oldest_row = tx.execute(
+        _Q_OLDEST_LIKE_IN_WINDOW, dict(liker_id=person_id)
+    ).fetchone()
+    oldest = oldest_row['oldest'] if oldest_row else None
+    resets_at = (oldest + timedelta(hours=24)).isoformat() if oldest else None
+    return (429, {"error": "quota_exceeded", "resets_at": resets_at})
 
 
 Q_RECORD_LIKE = """
@@ -208,7 +277,21 @@ def post_decisions(req: t.PostDecision, s: t.SessionInfo):
     if req.decision != "like":
         return "Unknown decision", 400
 
+    # Phase 5: enforce 10/day like quota for free users; premium and
+    # active day-pass bypass. Reuse the same api_tx for the quota check
+    # and the like-insert so concurrent likes can't slip past the cap.
+    from service.entitlements import list_entitlements
+    assert s.person_uuid is not None
+    entitlements = list_entitlements(s.person_id)
+
     with api_tx() as tx:
+        blocked = _check_like_quota(
+            tx, s.person_id, s.person_uuid, entitlements,
+        )
+        if blocked is not None:
+            body, status = blocked[1], blocked[0]
+            return body, status
+
         rows = tx.execute(
             Q_RECORD_LIKE,
             dict(me_id=s.person_id, prospect_uuid=req.profile_uuid),
