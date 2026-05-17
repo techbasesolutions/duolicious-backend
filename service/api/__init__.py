@@ -910,6 +910,26 @@ def post_tokens_day_pass(s: t.SessionInfo):
         return {'error': 'insufficient_tokens'}, 402
 
 
+# Phase 6 — super-like: spend 2 tokens to send a priority like. Writes
+# liked.is_super=TRUE; if the target had previously liked the viewer
+# (mutual), also creates an ahavah_match row and returns its match_id
+# so the frontend can navigate straight into the match-celebration view.
+from service.tokens.actions.super_like import perform as _perform_super_like
+
+@apost('/tokens/super-like')
+def post_tokens_super_like(s: t.SessionInfo):
+    assert s.person_uuid is not None
+    payload = request.get_json(silent=True) or {}
+    target_id = payload.get('person_id')
+    if not target_id:
+        return {'error': 'missing_person_id'}, 400
+    try:
+        with api_tx() as tx:
+            return _perform_super_like(tx, s.person_uuid, target_id)
+    except _InsufficientTokens:
+        return {'error': 'insufficient_tokens'}, 402
+
+
 # Phase W push notifications - registered via a sibling module so we
 # don't touch the brittle top-level `from service import (...)` block.
 # See docstring at the top of notifications_routes.py for the why.
