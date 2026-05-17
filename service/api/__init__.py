@@ -827,6 +827,20 @@ def get_visitors(s: t.SessionInfo):
 def post_mark_visitors_checked(req: t.PostMarkVisitorsChecked, s: t.SessionInfo):
     return person.post_mark_visitors_checked(req=req, s=s)
 
+# Phase 1 Task 1.3 — token balance. Reads SUM(delta) from token_ledger via
+# the sync service.tokens helper. The endpoint runs in READ COMMITTED;
+# spend paths in later phases hold FOR UPDATE inside api_tx().
+from service.tokens import get_balance as _get_token_balance
+
+@aget('/tokens/balance')
+def get_tokens_balance(s: t.SessionInfo):
+    """Returns {balance: int} for the authenticated user."""
+    # @aget defaults to expected_onboarding_status=True, so person_uuid is
+    # always set; assert for the type checker.
+    assert s.person_uuid is not None
+    with api_tx('READ COMMITTED') as tx:
+        return {'balance': _get_token_balance(tx, s.person_uuid)}
+
 
 # Phase W push notifications - registered via a sibling module so we
 # don't touch the brittle top-level `from service import (...)` block.
