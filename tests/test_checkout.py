@@ -244,3 +244,146 @@ def test_webhook_token_credit_is_idempotent(
     assert r2.status_code == 200
     # Balance MUST NOT change on the replay.
     assert _balance(person_uuid['uuid']) == after_first
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 — subscription stipend (initial + renewal)
+# ---------------------------------------------------------------------------
+#
+# These exercise the new SUBSCRIPTION_TIER_TO_STIPEND credit logic. Two
+# layers of idempotency are at play:
+#   1. record_event() (outer) dedupes by Stripe event_id.
+#   2. _credit_subscription_stipend() (inner) dedupes by session/invoice id
+#      stamped into token_ledger.metadata.
+# The "initial" path keys on stripe_session_id; the "renewal" path keys on
+# stripe_invoice_id.
+
+
+def _make_subscription_event(person_id: int, person_uuid_str: str, tier: str,
+                             *, event_id: str | None = None,
+                             session_id: str | None = None,
+                             sub_id: str = 'sub_test_xyz'):
+    sid = session_id or f'cs_sub_{uuid4().hex}'
+    eid = event_id or f'evt_sub_{uuid4().hex}'
+    return {
+        'id':     eid,
+        'object': 'event',
+        'type':   'checkout.session.completed',
+        'data': {
+            'object': {
+                'object':              'checkout.session',
+                'id':                  sid,
+                'mode':                'subscription',
+                'client_reference_id': str(person_id),
+                'customer':            f'cus_{uuid4().hex}',
+                'subscription':        sub_id,
+                'metadata': {
+                    'user_id':   str(person_id),
+                    'tier_key':  tier,
+                    'user_uuid': person_uuid_str,
+                },
+            }
+        },
+    }
+
+
+TIER_TO_STIPEND = {'month': 10, 'quart': 12, 'year': 15}
+
+
+@pytest.mark.parametrize('tier,expected', list(TIER_TO_STIPEND.items()))
+def test_webhook_credits_subscription_stipend_on_create(
+    client, person_uuid, webhook_env, tier, expected,
+):
+    # Subscription.retrieve is called on checkout.session.completed to fetch
+    # current_period_end — we return a minimal dict so _expiry_from_subscription
+    # falls through to the tier default.
+    webhook_env.Subscription.retrieve.return_value = SimpleNamespace(
+        to_dict_recursive=lambda: {'current_period_end': None, 'metadata': {}},
+    )
+    payload = _make_subscription_event(
+        person_uuid['id'], person_uuid['uuid'], tier,
+    )
+    res = client.post(
+        '/webhooks/stripe-checkout',
+        data=json.dumps(payload).encode(),
+        headers={'Stripe-Signature': 't=0,v1=fake', 'Content-Type': 'application/json'},
+    )
+    assert res.status_code == 200
+    assert _balance(person_uuid['uuid']) == expected
+
+
+def test_webhook_subscription_stipend_idempotent_on_replay(
+    client, person_uuid, webhook_env,
+):
+    """Same session_id, two distinct event_ids — second post must not
+    re-credit. Mirrors the token-bundle idempotency test pattern."""
+    webhook_env.Subscription.retrieve.return_value = SimpleNamespace(
+        to_dict_recursive=lambda: {'current_period_end': None, 'metadata': {}},
+    )
+    session_id = f'cs_sub_{uuid4().hex}'
+    p1 = _make_subscription_event(
+        person_uuid['id'], person_uuid['uuid'], 'month',
+        session_id=session_id,
+    )
+    p2 = _make_subscription_event(
+        person_uuid['id'], person_uuid['uuid'], 'month',
+        session_id=session_id,
+    )
+    assert p1['id'] != p2['id']
+    headers = {'Stripe-Signature': 't=0,v1=fake', 'Content-Type': 'application/json'}
+    r1 = client.post('/webhooks/stripe-checkout',
+                     data=json.dumps(p1).encode(), headers=headers)
+    assert r1.status_code == 200
+    assert _balance(person_uuid['uuid']) == 10
+    r2 = client.post('/webhooks/stripe-checkout',
+                     data=json.dumps(p2).encode(), headers=headers)
+    assert r2.status_code == 200
+    assert _balance(person_uuid['uuid']) == 10
+
+
+def test_webhook_renewal_credits_stipend_on_invoice_payment_succeeded(
+    client, person_uuid, webhook_env,
+):
+    """invoice.payment_succeeded with billing_reason=subscription_cycle
+    triggers another stipend credit (renewal). Uses stripe_invoice_id as
+    the idempotency key (not session_id), so it does NOT collide with the
+    initial-subscription credit's idempotency row."""
+    sub_id = 'sub_renew_xyz'
+    invoice_id = f'in_test_{uuid4().hex}'
+    webhook_env.Subscription.retrieve.return_value = SimpleNamespace(
+        to_dict_recursive=lambda: {
+            'metadata': {
+                'tier_key':    'quart',
+                'person_uuid': person_uuid['uuid'],
+                'user_uuid':   person_uuid['uuid'],
+                'user_id':     str(person_uuid['id']),
+            },
+        },
+    )
+    payload = {
+        'id':     f'evt_inv_{uuid4().hex}',
+        'object': 'event',
+        'type':   'invoice.payment_succeeded',
+        'data': {
+            'object': {
+                'object':         'invoice',
+                'id':             invoice_id,
+                'billing_reason': 'subscription_cycle',
+                'subscription':   sub_id,
+                'customer':       f'cus_{uuid4().hex}',
+                # No metadata on invoice — handler reads tier_key off the
+                # subscription via Subscription.retrieve. person_id on the
+                # invoice maps via the metadata user_id field below.
+                'metadata':       {'user_id': str(person_uuid['id'])},
+            }
+        },
+    }
+    res = client.post(
+        '/webhooks/stripe-checkout',
+        data=json.dumps(payload).encode(),
+        headers={'Stripe-Signature': 't=0,v1=fake', 'Content-Type': 'application/json'},
+    )
+    assert res.status_code == 200
+    assert _balance(person_uuid['uuid']) == 12  # quart → 12
+
+

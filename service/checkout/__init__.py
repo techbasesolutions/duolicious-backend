@@ -124,6 +124,29 @@ SKU_TO_COUNT: dict[str, int] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Subscription tier → monthly token stipend (Phase 8 — monetization-tokens v1)
+# ---------------------------------------------------------------------------
+#
+# Premium subscribers get a monthly token stipend they can spend on
+# super-likes, boosts, and extra likers reveals. Counts are intentionally
+# inversely-loaded: longer commitments yield more tokens per renewal
+# cycle. The webhook credits these tokens on both initial subscription
+# (checkout.session.completed, mode='subscription') AND each renewal
+# (invoice.payment_succeeded, billing_reason='subscription_cycle').
+#
+# Idempotency is enforced at the ledger level by checking for an existing
+# row with metadata->>'stripe_session_id' (initial) or
+# metadata->>'stripe_invoice_id' (renewal). Stripe retries cannot
+# double-credit.
+
+SUBSCRIPTION_TIER_TO_STIPEND: dict[str, int] = {
+    'month': 10,
+    'quart': 12,
+    'year':  15,
+}
+
+
 def _price_for_sku(sku: str) -> Optional[str]:
     env_var = _SKU_ENV.get(sku)
     if not env_var:
@@ -448,6 +471,79 @@ def _handle_token_purchase(session: dict) -> dict:
     return {'ok': True, 'credited': token_count, 'sku': sku}
 
 
+def _credit_subscription_stipend(
+    *,
+    person_uuid: str,
+    tier_key: str,
+    idempotency_key_field: str,
+    idempotency_key_value: str,
+    extra_metadata: Optional[dict] = None,
+) -> dict:
+    """Idempotently credit a subscription stipend.
+
+    `idempotency_key_field` is either 'stripe_session_id' (initial
+    subscription) or 'stripe_invoice_id' (renewal). We dedupe by checking
+    token_ledger for an existing 'subscription_stipend' row carrying the
+    same value in that metadata key. Belt-and-suspenders alongside the
+    outer record_event() dedupe.
+    """
+    from database import api_tx
+    from service.tokens import credit
+
+    stipend = SUBSCRIPTION_TIER_TO_STIPEND.get(tier_key or '')
+    if not stipend:
+        logger.warning(
+            'subscription stipend: unknown tier_key=%r (%s=%s)',
+            tier_key, idempotency_key_field, idempotency_key_value,
+        )
+        return {'ok': True, 'ignored': 'unknown_tier'}
+    if not person_uuid or not idempotency_key_value:
+        logger.warning(
+            'subscription stipend: missing person_uuid or %s',
+            idempotency_key_field,
+        )
+        return {'ok': True, 'ignored': 'missing_ref'}
+
+    with api_tx() as tx:
+        existing = tx.execute(
+            f"""
+            SELECT 1 FROM token_ledger
+             WHERE reason = 'subscription_stipend'
+               AND metadata->>'{idempotency_key_field}' = %(v)s
+             LIMIT 1
+            """,
+            dict(v=idempotency_key_value),
+        ).fetchone()
+        if existing:
+            return {'ok': True, 'replay': True, idempotency_key_field: idempotency_key_value}
+
+        metadata = {
+            'tier_key': tier_key,
+            idempotency_key_field: idempotency_key_value,
+        }
+        if extra_metadata:
+            metadata.update(extra_metadata)
+        credit(
+            tx, person_uuid, stipend,
+            reason='subscription_stipend',
+            metadata=metadata,
+        )
+    return {'ok': True, 'credited': stipend, 'tier_key': tier_key}
+
+
+def _person_uuid_for_id(person_id: int) -> Optional[str]:
+    """Look up person.uuid (string) for a numeric person_id."""
+    if not person_id:
+        return None
+    from database import api_tx
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            'SELECT uuid::text AS uuid FROM person WHERE id = %(id)s',
+            dict(id=person_id),
+        ).fetchone()
+    return row['uuid'] if row else None
+
+
 def post_stripe_checkout_webhook():
     """Stripe-signed webhook for /webhooks/stripe-checkout."""
     stripe = _stripe()
@@ -532,7 +628,59 @@ def post_stripe_checkout_webhook():
                 sub_obj = {}
         expires_at = _expiry_from_subscription(sub_obj, tier_key)
         entitlements.grant(person_id, _PREMIUM_ENTITLEMENT, expires_at=expires_at)
+
+        # Phase 8 — credit the monthly token stipend on initial subscription.
+        # Idempotent per checkout session id; renewal cycles are handled
+        # below in the invoice.payment_succeeded branch. Failures here MUST
+        # NOT 500 the webhook (Stripe would retry forever); we log and 200.
+        try:
+            person_uuid = _person_uuid_for_id(person_id)
+            if person_uuid:
+                _credit_subscription_stipend(
+                    person_uuid=person_uuid,
+                    tier_key=tier_key or '',
+                    idempotency_key_field='stripe_session_id',
+                    idempotency_key_value=obj.get('id') or '',
+                )
+        except Exception as e:
+            logger.warning(
+                'subscription stipend credit failed for person_id=%s: %s',
+                person_id, e,
+            )
         return {'ok': True, 'granted': _PREMIUM_ENTITLEMENT}
+
+    if event_type == 'invoice.payment_succeeded':
+        # Renewal stipend. Only act on subscription_cycle invoices (i.e.,
+        # automatic renewals); the FIRST invoice of a brand-new subscription
+        # is billing_reason='subscription_create' and is handled by the
+        # checkout.session.completed branch above. Idempotent per invoice id.
+        if obj.get('billing_reason') != 'subscription_cycle':
+            return {'ok': True, 'ignored': 'non_renewal'}
+        sub_id = obj.get('subscription')
+        if not sub_id:
+            return {'ok': True, 'ignored': 'no_subscription'}
+        try:
+            sub = stripe.Subscription.retrieve(sub_id)
+            sub_dict = sub.to_dict_recursive() if hasattr(sub, 'to_dict_recursive') else dict(sub)
+        except Exception as e:
+            logger.warning(
+                'invoice.payment_succeeded: could not retrieve sub %s: %s',
+                sub_id, e,
+            )
+            return {'ok': True, 'ignored': 'sub_retrieve_failed'}
+        sub_md = sub_dict.get('metadata') or {}
+        renewal_tier = sub_md.get('tier_key') or ''
+        renewal_person_uuid = sub_md.get('person_uuid') or sub_md.get('user_uuid')
+        if not renewal_person_uuid:
+            # Fall back to person_id lookup → uuid translation.
+            renewal_person_uuid = _person_uuid_for_id(person_id)
+        return _credit_subscription_stipend(
+            person_uuid=renewal_person_uuid or '',
+            tier_key=renewal_tier,
+            idempotency_key_field='stripe_invoice_id',
+            idempotency_key_value=obj.get('id') or '',
+            extra_metadata={'stripe_subscription_id': sub_id},
+        )
 
     if event_type == 'customer.subscription.updated':
         # Active or trialing → keep premium; canceled/unpaid/past_due → revoke.
