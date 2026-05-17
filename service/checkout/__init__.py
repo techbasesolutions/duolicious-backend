@@ -101,6 +101,37 @@ def _price_for_tier(tier_key: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Token-bundle SKU mapping (Phase 2 token economy)
+# ---------------------------------------------------------------------------
+#
+# One-shot token purchases. Each SKU maps to a Stripe Price (one-time, not
+# recurring) configured in the dashboard. Same env-missing → 400 rule as the
+# subscription tiers above. The webhook below mirrors `SKU_TO_COUNT` to
+# decide how many tokens to credit on session.mode == 'payment'.
+
+_SKU_ENV: dict[str, str] = {
+    'single':  'STRIPE_PRICE_TOKENS_SINGLE',
+    'starter': 'STRIPE_PRICE_TOKENS_STARTER',
+    'plus':    'STRIPE_PRICE_TOKENS_PLUS',
+    'pro':     'STRIPE_PRICE_TOKENS_PRO',
+}
+
+SKU_TO_COUNT: dict[str, int] = {
+    'single':  1,
+    'starter': 10,
+    'plus':    22,
+    'pro':     50,
+}
+
+
+def _price_for_sku(sku: str) -> Optional[str]:
+    env_var = _SKU_ENV.get(sku)
+    if not env_var:
+        return None
+    return os.environ.get(env_var) or None
+
+
+# ---------------------------------------------------------------------------
 # POST /checkout/web {tier_key}
 # ---------------------------------------------------------------------------
 
@@ -146,6 +177,64 @@ def post_checkout_web(s, req):
         )
     except Exception as e:
         logger.warning(f'Stripe Checkout session create failed: {e}')
+        return 'Could not start checkout', 502
+
+    return {'url': session.url}
+
+
+# ---------------------------------------------------------------------------
+# POST /checkout/tokens {sku}
+# ---------------------------------------------------------------------------
+#
+# One-shot token bundle purchase (Phase 2). Mirrors post_checkout_web but
+# with mode='payment' instead of 'subscription'. The matching webhook
+# branch (mode == 'payment' below) credits token_ledger on completion.
+#
+# `client_reference_id` carries the person UUID (string) so the webhook
+# can credit the right user without a customer_id lookup. We also stash
+# sku in session.metadata so the webhook can map back to a token count
+# independent of the Price-ID (Price IDs change between test/live mode).
+
+def post_checkout_tokens(s, req):
+    """Create a Stripe Checkout session for a token-bundle SKU.
+
+    Returns:
+      {"url": "<stripe checkout url>"} on success
+      {"error": "unknown_sku"}, 400      if SKU env price-id missing
+      'Not authorized', 401              if no session
+      'Checkout not configured', 503     if STRIPE_SECRET_KEY unset
+      'Could not start checkout', 502    on Stripe API failure
+    """
+    if not s or not s.person_id or not s.person_uuid:
+        return 'Not authorized', 401
+
+    stripe = _stripe()
+    if stripe is None:
+        return 'Checkout not configured', 503
+
+    sku = req.sku
+    price_id = _price_for_sku(sku)
+    if not price_id:
+        return {'error': 'unknown_sku'}, 400
+
+    web_base = os.environ.get('AHAVAH_WEB_BASE_URL', 'https://ahavah.app').rstrip('/')
+
+    try:
+        session = stripe.checkout.Session.create(
+            mode='payment',
+            line_items=[{'price': price_id, 'quantity': 1}],
+            metadata={
+                'user_id':   str(s.person_id),
+                'user_uuid': str(s.person_uuid),
+                'sku':       sku,
+            },
+            # Use person UUID — that's what token_ledger.person_id keys on.
+            client_reference_id=str(s.person_uuid),
+            success_url=f'{web_base}/profile/tokens?purchase=success',
+            cancel_url=f'{web_base}/profile/tokens?purchase=cancel',
+        )
+    except Exception as e:
+        logger.warning(f'Stripe Checkout (tokens) session create failed: {e}')
         return 'Could not start checkout', 502
 
     return {'url': session.url}

@@ -300,6 +300,12 @@ class PostCheckoutWeb(BaseModel):
     tier_key: str = Field(pattern=r"^(month|quart|year)$")
 
 
+class PostCheckoutTokens(BaseModel):
+    """POST /checkout/tokens body — frontend sends the bundle SKU
+    ('single' | 'starter' | 'plus' | 'pro') matching the token store UI."""
+    sku: str = Field(pattern=r"^(single|starter|plus|pro)$")
+
+
 class PushSubscriptionKeys(BaseModel):
     p256dh: str = Field(min_length=1, max_length=256)
     auth: str = Field(min_length=1, max_length=128)

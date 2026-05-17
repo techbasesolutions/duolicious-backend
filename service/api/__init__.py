@@ -646,6 +646,14 @@ def post_checkout_web(req: t.PostCheckoutWeb, s: t.SessionInfo):
     and return the hosted URL the frontend redirects to. Phase W cutover."""
     return checkout.post_checkout_web(s, req)
 
+@apost('/checkout/tokens')
+@validate(t.PostCheckoutTokens)
+def post_checkout_tokens(req: t.PostCheckoutTokens, s: t.SessionInfo):
+    """Create a Stripe Checkout session (mode=payment) for a one-shot
+    token-bundle SKU. The webhook credits token_ledger on completion.
+    Phase 2 token economy."""
+    return checkout.post_checkout_tokens(s, req)
+
 @post('/webhooks/stripe-identity')
 def post_stripe_identity_webhook():
     return identity_verification.post_stripe_identity_webhook()
