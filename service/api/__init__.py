@@ -850,6 +850,50 @@ def get_tokens_balance(s: t.SessionInfo):
         return {'balance': _get_token_balance(tx, s.person_uuid)}
 
 
+# Phase 4 — reveal-liker spend path. Spend 1 token to unblur an incoming
+# liker. Idempotent per (viewer, liker) pair: re-tap is a no-op.
+from service.tokens import InsufficientTokens as _InsufficientTokens
+from service.tokens.actions.reveal import perform as _perform_reveal
+
+@apost('/tokens/reveal')
+def post_tokens_reveal(s: t.SessionInfo):
+    assert s.person_uuid is not None
+    payload = request.get_json(silent=True) or {}
+    liker_id = payload.get('liker_id')
+    if not liker_id:
+        return {'error': 'missing_liker_id'}, 400
+    try:
+        with api_tx() as tx:
+            return _perform_reveal(tx, s.person_uuid, liker_id)
+    except _InsufficientTokens:
+        return {'error': 'insufficient_tokens'}, 402
+
+
+# Phase 7 — boost spotlight: spend 5 tokens for a 30-minute top-of-deck
+# slot. perform() owns the debit + active_boosts upsert inside a single
+# api_tx() so both commit atomically. get_active() reads the current
+# boost state for the user (powers BoostCard's countdown UI).
+from service.tokens.actions.boost import (
+    perform as _perform_boost,
+    get_active as _get_active_boost,
+)
+
+@apost('/tokens/boost')
+def post_tokens_boost(s: t.SessionInfo):
+    assert s.person_uuid is not None
+    try:
+        with api_tx() as tx:
+            return _perform_boost(tx, s.person_uuid)
+    except _InsufficientTokens:
+        return {'error': 'insufficient_tokens'}, 402
+
+@aget('/tokens/active-boost')
+def get_tokens_active_boost(s: t.SessionInfo):
+    assert s.person_uuid is not None
+    with api_tx('READ COMMITTED') as tx:
+        return _get_active_boost(tx, s.person_uuid)
+
+
 # Phase W push notifications - registered via a sibling module so we
 # don't touch the brittle top-level `from service import (...)` block.
 # See docstring at the top of notifications_routes.py for the why.
