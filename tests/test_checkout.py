@@ -156,3 +156,91 @@ def test_checkout_tokens_requires_auth(client, fake_stripe):
     # Auth-decorator rejects missing bearer with 400 in this codebase
     # (service/api/decorators.py — see test_tokens.py note).
     assert res.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Task 2.3 — webhook credits tokens on session.mode=payment (idempotent)
+# ---------------------------------------------------------------------------
+
+def _make_payment_event(person_uuid_str: str, sku: str, *,
+                        event_id: str | None = None,
+                        session_id: str | None = None,
+                        amount_total: int = 999):
+    """Build a Stripe-shaped checkout.session.completed payload with
+    mode=payment. Returns (body_bytes, parsed_dict) for client.post + assert.
+    """
+    sid = session_id or f'cs_test_{uuid4().hex}'
+    eid = event_id or f'evt_test_{uuid4().hex}'
+    return {
+        'id':     eid,
+        'object': 'event',
+        'type':   'checkout.session.completed',
+        'data': {
+            'object': {
+                'object':               'checkout.session',
+                'id':                   sid,
+                'mode':                 'payment',
+                'client_reference_id':  person_uuid_str,
+                'metadata':             {'sku': sku, 'user_uuid': person_uuid_str},
+                'amount_total':         amount_total,
+            }
+        },
+    }
+
+
+@pytest.fixture
+def webhook_env(monkeypatch, fake_stripe):
+    """Set the webhook secret so the handler doesn't 503; signature
+    verification itself is bypassed because fake_stripe.Webhook is a
+    MagicMock that no-ops construct_event."""
+    monkeypatch.setenv('STRIPE_WEBHOOK_SECRET_CHECKOUT', 'whsec_test')
+    return fake_stripe
+
+
+def _balance(person_uuid_str):
+    from database import api_tx
+    from service.tokens import get_balance
+    with api_tx() as tx:
+        return get_balance(tx, person_uuid_str)
+
+
+def test_webhook_credits_tokens_on_payment_session(
+    client, person_uuid, webhook_env,
+):
+    payload = _make_payment_event(person_uuid['uuid'], 'starter')
+    body = json.dumps(payload).encode()
+
+    res = client.post(
+        '/webhooks/stripe-checkout',
+        data=body,
+        headers={'Stripe-Signature': 't=0,v1=fake', 'Content-Type': 'application/json'},
+    )
+    assert res.status_code == 200
+    assert _balance(person_uuid['uuid']) == 10  # 'starter' → 10 tokens
+
+
+def test_webhook_token_credit_is_idempotent(
+    client, person_uuid, webhook_env,
+):
+    # Same session_id, two different event_ids — the outer record_event
+    # dedupes by event_id, but the ledger-level check dedupes by
+    # session_id. Use distinct event_ids so the second post gets past
+    # record_event and is caught only by the ledger guard.
+    session_id = f'cs_test_{uuid4().hex}'
+    p1 = _make_payment_event(person_uuid['uuid'], 'plus', session_id=session_id)
+    p2 = _make_payment_event(person_uuid['uuid'], 'plus', session_id=session_id)
+    assert p1['id'] != p2['id']
+
+    headers = {'Stripe-Signature': 't=0,v1=fake', 'Content-Type': 'application/json'}
+
+    r1 = client.post('/webhooks/stripe-checkout',
+                     data=json.dumps(p1).encode(), headers=headers)
+    assert r1.status_code == 200
+    after_first = _balance(person_uuid['uuid'])
+    assert after_first == 22  # 'plus' → 22 tokens
+
+    r2 = client.post('/webhooks/stripe-checkout',
+                     data=json.dumps(p2).encode(), headers=headers)
+    assert r2.status_code == 200
+    # Balance MUST NOT change on the replay.
+    assert _balance(person_uuid['uuid']) == after_first

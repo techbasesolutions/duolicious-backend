@@ -372,6 +372,82 @@ def _expiry_from_subscription(sub: dict, tier_key: Optional[str]) -> datetime:
     return fallback
 
 
+# ---------------------------------------------------------------------------
+# Token-purchase webhook handler (mode=payment branch)
+# ---------------------------------------------------------------------------
+#
+# Two layers of idempotency:
+#   1. service.entitlements.record_event() in the outer webhook dedupes by
+#      Stripe event_id (so a literal retry of the same event is a no-op).
+#   2. This function ALSO checks token_ledger for an existing row with
+#      metadata->>'stripe_session_id' = <session_id>. That's a belt-and-
+#      suspenders guard against the (rare) case of two different events
+#      referencing the same Checkout session — e.g. a manual replay of a
+#      different event type with the same `id` payload swapped. The plan
+#      mandates this ledger-level check explicitly.
+
+def _handle_token_purchase(session: dict) -> dict:
+    """Credit token_ledger for a completed mode=payment Checkout session.
+
+    Reads:
+      session['id']                    — Stripe session id (idempotency key)
+      session['client_reference_id']   — person UUID (set on session create)
+      session['metadata']['sku']       — bundle SKU ('single' | ... | 'pro')
+      session['amount_total']          — paid amount in cents (for audit)
+
+    Returns the dict the webhook should respond with (Stripe always 200).
+    """
+    from database import api_tx
+    from service.tokens import credit
+
+    session_id   = session.get('id') or ''
+    md           = session.get('metadata') or {}
+    sku          = md.get('sku') or ''
+    person_uuid  = session.get('client_reference_id') or md.get('user_uuid') or ''
+    amount_total = session.get('amount_total')
+
+    token_count = SKU_TO_COUNT.get(sku)
+    if not token_count:
+        logger.warning(
+            'token-purchase webhook: unknown sku=%r session_id=%r',
+            sku, session_id,
+        )
+        return {'ok': True, 'ignored': 'unknown_sku'}
+
+    if not person_uuid or not session_id:
+        logger.warning(
+            'token-purchase webhook: missing person_uuid or session_id '
+            '(person_uuid=%r session_id=%r)', person_uuid, session_id,
+        )
+        return {'ok': True, 'ignored': 'missing_ref'}
+
+    # Ledger-level idempotency — guard against re-crediting if this same
+    # session_id was already processed under a different event_id.
+    with api_tx() as tx:
+        existing = tx.execute(
+            """
+            SELECT 1 FROM token_ledger
+             WHERE metadata->>'stripe_session_id' = %(sid)s
+             LIMIT 1
+            """,
+            dict(sid=session_id),
+        ).fetchone()
+        if existing:
+            return {'ok': True, 'replay': True, 'session_id': session_id}
+
+        credit(
+            tx, person_uuid, token_count,
+            reason='purchase',
+            metadata={
+                'stripe_session_id': session_id,
+                'sku': sku,
+                'amount_cents': amount_total,
+            },
+        )
+
+    return {'ok': True, 'credited': token_count, 'sku': sku}
+
+
 def post_stripe_checkout_webhook():
     """Stripe-signed webhook for /webhooks/stripe-checkout."""
     stripe = _stripe()
@@ -431,6 +507,14 @@ def post_stripe_checkout_webhook():
 
     md = obj.get('metadata') or {}
     tier_key = md.get('tier_key')
+
+    # Phase 2 — token-bundle one-shot purchases discriminate by session.mode.
+    # Subscription Checkouts (mode='subscription') fall through to the
+    # entitlement branches below; token bundles (mode='payment') are handled
+    # here and return early. Only triggers on checkout.session.completed —
+    # subscription.* events have no `mode` field.
+    if event_type == 'checkout.session.completed' and obj.get('mode') == 'payment':
+        return _handle_token_purchase(obj)
 
     if event_type == 'checkout.session.completed':
         customer_id = obj.get('customer')
