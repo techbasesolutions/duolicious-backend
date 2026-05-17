@@ -175,6 +175,9 @@ SELECT
     liker.uuid::text AS liker_uuid,
     liker.name       AS liker_name,
     EXTRACT(YEAR FROM AGE(liker.date_of_birth))::int AS liker_age,
+    -- Phase 6: surface is_super so /matches can ring super-likers with
+    -- a lime ring + Super pill, and we can sort them first below.
+    l.is_super       AS is_super,
     COALESCE(
         (
             SELECT json_agg(ph.uuid ORDER BY ph.position)
@@ -214,7 +217,7 @@ WHERE
            OR (m.user_b_id = %(me_id)s AND m.user_a_id = l.liker_id)
     )
 ORDER BY
-    l.created_at DESC
+    l.is_super DESC, l.created_at DESC
 LIMIT 200
 """
 
@@ -425,6 +428,7 @@ def get_incoming_likes(s: t.SessionInfo):
                 },
                 "liked_at": r["created_at"],
                 "hidden": False,
+                "is_super": bool(r["is_super"]),
             })
         else:
             likes.append({
@@ -435,6 +439,10 @@ def get_incoming_likes(s: t.SessionInfo):
                 },
                 "liked_at": r["created_at"],
                 "hidden": True,
+                # is_super is not paywalled — the lime ring on /matches
+                # works against the hidden blurred card too, so the user
+                # can prioritize spending a reveal token on super-likers.
+                "is_super": bool(r["is_super"]),
             })
     return {"count": count, "likes": likes, "premium": is_premium}
 

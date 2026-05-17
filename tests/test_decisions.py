@@ -211,6 +211,60 @@ def test_decisions_quota_bypassed_for_premium(client, person, session_token):
         _cleanup_candidates(candidates)
 
 
+# ---------------------------------------------------------------------------
+# Phase 6 — /likes/incoming sorts is_super=TRUE first + exposes is_super flag
+# ---------------------------------------------------------------------------
+
+def test_incoming_likes_super_first_and_flagged(client, person, session_token):
+    """Super-likes sort above plain likes; is_super flag exposed per record."""
+    from database import api_tx
+
+    # Two distinct likers — one super-like, one plain like. Both
+    # inserted explicitly so we control ordering: the plain like is
+    # MORE RECENT (created_at later), so without the is_super-first
+    # ORDER BY it would come first. Phase 6's sort puts super first
+    # regardless of recency.
+    liker_plain = _insert_person()
+    liker_super = _insert_person()
+    try:
+        # Promote viewer to premium so both likes are visible (avoids
+        # the reveal-paywall hiding the plain like and skewing the test).
+        with api_tx() as tx:
+            tx.execute(
+                "UPDATE person SET entitlements = ARRAY['premium'] WHERE id = %(id)s",
+                dict(id=person['id']),
+            )
+            # Super-like FIRST (older), plain like SECOND (newer) — so
+            # is_super sort wins over created_at sort.
+            tx.execute(
+                """INSERT INTO liked (liker_id, liked_id, is_super, created_at)
+                   VALUES (%(liker)s, %(liked)s, TRUE, NOW() - INTERVAL '1 hour')""",
+                dict(liker=liker_super['id'], liked=person['id']),
+            )
+            tx.execute(
+                """INSERT INTO liked (liker_id, liked_id, is_super, created_at)
+                   VALUES (%(liker)s, %(liked)s, FALSE, NOW())""",
+                dict(liker=liker_plain['id'], liked=person['id']),
+            )
+
+        res = client.get(
+            '/likes/incoming',
+            headers={'Authorization': f'Bearer {session_token}'},
+        )
+        assert res.status_code == 200, res.get_data(as_text=True)
+        body = res.get_json()
+        assert body['count'] == 2
+        assert len(body['likes']) == 2
+
+        # Super-liker first despite older created_at.
+        assert body['likes'][0]['with_profile']['id'] == liker_super['uuid']
+        assert body['likes'][0]['is_super'] is True
+        assert body['likes'][1]['with_profile']['id'] == liker_plain['uuid']
+        assert body['likes'][1]['is_super'] is False
+    finally:
+        _cleanup_candidates([liker_plain, liker_super])
+
+
 def test_decisions_quota_bypassed_with_active_day_pass(client, person, session_token):
     """An unexpired day_pass ledger row bypasses the cap."""
     from datetime import datetime, timedelta, timezone
