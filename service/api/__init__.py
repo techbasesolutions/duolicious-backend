@@ -894,6 +894,22 @@ def get_tokens_active_boost(s: t.SessionInfo):
         return _get_active_boost(tx, s.person_uuid)
 
 
+# Phase 5 — day-pass: spend 3 tokens to bypass the 10/day like quota
+# for 24h. perform() owns the debit inside the api_tx() so the ledger
+# row commits atomically with the balance check. _InsufficientTokens
+# already imported above in the Phase 4 reveal block.
+from service.tokens.actions.day_pass import perform as _perform_day_pass
+
+@apost('/tokens/day-pass')
+def post_tokens_day_pass(s: t.SessionInfo):
+    assert s.person_uuid is not None
+    try:
+        with api_tx() as tx:
+            return _perform_day_pass(tx, s.person_uuid)
+    except _InsufficientTokens:
+        return {'error': 'insufficient_tokens'}, 402
+
+
 # Phase W push notifications - registered via a sibling module so we
 # don't touch the brittle top-level `from service import (...)` block.
 # See docstring at the top of notifications_routes.py for the why.
