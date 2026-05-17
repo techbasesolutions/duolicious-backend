@@ -96,9 +96,18 @@ prospect_pool AS (
         ''::text AS gender,
         ''::text AS sexual_orientation,
         p.verification_level_id,
-        p.last_online_time
+        p.last_online_time,
+        (ab.person_id IS NOT NULL) AS is_boosted
     FROM person p
     CROSS JOIN searcher_prefs sp
+    -- Phase 7 Task 7.2 — surface boosted candidates first in /search.
+    -- active_boosts is upserted by service.tokens.actions.boost.perform()
+    -- with a 30-minute TTL. LEFT JOIN so non-boosted prospects still
+    -- appear; the (ab.person_id IS NOT NULL) sort key (below) ranks
+    -- boosted rows ahead of everyone else within the existing ordering.
+    LEFT JOIN active_boosts ab
+           ON ab.person_id = p.uuid
+          AND ab.expires_at > NOW()
     WHERE p.activated = TRUE
       AND p.id != %(searcher_person_id)s
       AND p.gender_id = ANY(%(gender_preference)s::SMALLINT[])
@@ -213,7 +222,7 @@ INSERT INTO search_cache (
 )
 SELECT
     %(searcher_person_id)s,
-    (ROW_NUMBER() OVER (ORDER BY p.verification_level_id DESC, p.last_online_time DESC, p.id) - 1)::SMALLINT,
+    (ROW_NUMBER() OVER (ORDER BY p.is_boosted DESC, p.verification_level_id DESC, p.last_online_time DESC, p.id) - 1)::SMALLINT,
     p.id,
     p.uuid_raw,
     NULL,
