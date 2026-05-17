@@ -387,3 +387,66 @@ def test_webhook_renewal_credits_stipend_on_invoice_payment_succeeded(
     assert _balance(person_uuid['uuid']) == 12  # quart → 12
 
 
+# ---------------------------------------------------------------------------
+# Phase 8 — cancellation revokes premium, preserves tokens
+# ---------------------------------------------------------------------------
+
+def test_webhook_subscription_cancel_preserves_token_balance(
+    client, person_uuid, webhook_env,
+):
+    """customer.subscription.deleted must (a) revoke the 'premium'
+    entitlement + null subscription_expires_at, (b) NOT touch token_ledger.
+    Stipend tokens already credited remain spendable after cancellation."""
+    from database import api_tx
+    from service.tokens import credit
+
+    # Pre-state: user is premium AND has 5 stipend tokens.
+    with api_tx() as tx:
+        tx.execute(
+            """UPDATE person
+                  SET entitlements = ARRAY['premium'],
+                      subscription_expires_at = NOW() + INTERVAL '30 days'
+                WHERE id = %(id)s""",
+            dict(id=person_uuid['id']),
+        )
+        credit(
+            tx, person_uuid['uuid'], 5,
+            reason='subscription_stipend',
+            metadata={'tier_key': 'month', 'pre_cancel': True},
+        )
+
+    payload = {
+        'id':     f'evt_cancel_{uuid4().hex}',
+        'object': 'event',
+        'type':   'customer.subscription.deleted',
+        'data': {
+            'object': {
+                'object':   'subscription',
+                'id':       'sub_test_cancel',
+                'customer': f'cus_{uuid4().hex}',
+                'metadata': {
+                    'user_id':     str(person_uuid['id']),
+                    'person_uuid': person_uuid['uuid'],
+                },
+            }
+        },
+    }
+    res = client.post(
+        '/webhooks/stripe-checkout',
+        data=json.dumps(payload).encode(),
+        headers={'Stripe-Signature': 't=0,v1=fake', 'Content-Type': 'application/json'},
+    )
+    assert res.status_code == 200
+
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            'SELECT entitlements, subscription_expires_at FROM person WHERE id = %(id)s',
+            dict(id=person_uuid['id']),
+        ).fetchone()
+    assert 'premium' not in (row['entitlements'] or [])
+    assert row['subscription_expires_at'] is None
+    # Tokens preserved — this is the key assertion: cancellation must NOT
+    # touch token_ledger.
+    assert _balance(person_uuid['uuid']) == 5
+
+

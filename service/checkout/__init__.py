@@ -698,7 +698,20 @@ def post_stripe_checkout_webhook():
         return {'ok': True, 'noop': True, 'status': status}
 
     if event_type == 'customer.subscription.deleted':
+        # Phase 8: cancellation revokes the premium entitlement and clears
+        # the subscription expiry stamp. It DOES NOT touch token_ledger —
+        # stipend tokens already credited are the user's property; canceling
+        # a subscription does not retroactively void unspent tokens (same
+        # rule as one-shot bundles). The frontend's quota / spend gates
+        # consult token_ledger directly, so an ex-subscriber can still
+        # spend their remaining balance until it hits zero.
         entitlements.revoke(person_id, _PREMIUM_ENTITLEMENT)
+        from database import api_tx
+        with api_tx() as tx:
+            tx.execute(
+                'UPDATE person SET subscription_expires_at = NULL WHERE id = %(id)s',
+                dict(id=person_id),
+            )
         return {'ok': True, 'revoked': True}
 
     if event_type == 'invoice.payment_failed':
