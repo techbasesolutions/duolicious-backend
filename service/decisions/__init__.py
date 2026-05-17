@@ -279,19 +279,26 @@ def get_matches(s: t.SessionInfo):
     return {"matches": matches}
 
 
+_Q_REVEALED_LIKER_UUIDS = """
+SELECT liker_id::text AS liker_uuid
+  FROM revealed_likers
+ WHERE viewer_id = %(viewer_id)s
+"""
+
+
 def get_incoming_likes(s: t.SessionInfo):
     """Users who liked the session user but for whom the session user
     has not yet decided. Powers the /matches 'Liked you' tab.
 
     Premium gate (Phase W cutover, 2026-05-15): the FULL list (names,
-    ages, photo UUIDs) requires the 'premium' entitlement. Free users
-    get only the COUNT — frontend renders blurred placeholders + an
-    upgrade CTA. This is the canonical dating-app paywall and the
-    primary purchase driver for Ahavah Premium.
+    ages, photo UUIDs) requires the 'premium' entitlement. Non-premium
+    users see only the likers they've individually revealed via
+    POST /tokens/reveal (Phase 4 monetization). The `count` field is
+    always accurate so the locked-state CTA can render "N people like you".
 
     Response shape:
-      Premium:   { "count": N, "likes": [...full records], "premium": true }
-      Free tier: { "count": N, "likes": [],               "premium": false }
+      Premium:   { "count": N, "likes": [...all],            "premium": true }
+      Free tier: { "count": N, "likes": [...revealed only],  "premium": false }
     """
     if s.person_id is None:
         return "Not signed in", 401
@@ -301,29 +308,52 @@ def get_incoming_likes(s: t.SessionInfo):
 
     with api_tx() as tx:
         rows = tx.execute(Q_LIST_INCOMING_LIKES, dict(me_id=s.person_id)).fetchall()
+        # Phase 4: revealed_likers keys on the viewer's UUID, not int id.
+        # Skip the second query entirely for premium users (they see all).
+        revealed_uuids: set[str] = set()
+        if not is_premium and s.person_uuid is not None:
+            revealed_rows = tx.execute(
+                _Q_REVEALED_LIKER_UUIDS,
+                dict(viewer_id=str(s.person_uuid)),
+            ).fetchall()
+            revealed_uuids = {r['liker_uuid'] for r in revealed_rows}
 
     count = len(rows)
 
-    if not is_premium:
-        # Don't ship name/age/photos — Browser DevTools-savvy users
-        # could otherwise read past the paywall. Count alone is
-        # enough for the upgrade CTA copy ("3 people like you").
-        return {"count": count, "likes": [], "premium": False}
+    def _visible(row) -> bool:
+        return is_premium or row['liker_uuid'] in revealed_uuids
 
-    likes = [
-        {
-            "with_profile": {
-                "id": r["liker_uuid"],
-                "firstName": r["liker_name"],
-                "age": r["liker_age"],
-                "photo_uuids": r["liker_photo_uuids"],
-                "seconds_since_last_online": r["liker_seconds_since_last_online"],
-            },
-            "liked_at": r["created_at"],
-        }
-        for r in rows
-    ]
-    return {"count": count, "likes": likes, "premium": True}
+    # Phase 4 monetization-tokens (2026-05-16): non-premium users get
+    # a HIDDEN stub for every unrevealed liker — `id` + `hidden: True`
+    # only — so the frontend can render N tappable blurred cards (one
+    # per real liker) and call POST /tokens/reveal with the correct
+    # liker_id when the user taps to spend a token. Name/age/photos
+    # remain server-side until the reveal lands.
+    likes = []
+    for r in rows:
+        if _visible(r):
+            likes.append({
+                "with_profile": {
+                    "id": r["liker_uuid"],
+                    "firstName": r["liker_name"],
+                    "age": r["liker_age"],
+                    "photo_uuids": r["liker_photo_uuids"],
+                    "seconds_since_last_online": r["liker_seconds_since_last_online"],
+                },
+                "liked_at": r["created_at"],
+                "hidden": False,
+            })
+        else:
+            likes.append({
+                "with_profile": {
+                    "id": r["liker_uuid"],
+                    # Deliberately no firstName / age / photo_uuids —
+                    # those are the paywalled fields.
+                },
+                "liked_at": r["created_at"],
+                "hidden": True,
+            })
+    return {"count": count, "likes": likes, "premium": is_premium}
 
 
 def get_match(s: t.SessionInfo, match_id: str):
