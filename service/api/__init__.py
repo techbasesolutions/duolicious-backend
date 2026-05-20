@@ -965,3 +965,7 @@ import service.api.notifications_routes  # noqa: E402,F401
 # Same sibling-routes pattern for /admin/reports — gated on
 # person.roles && ARRAY['admin','mod'] inside the handler.
 import service.api.moderation_routes  # noqa: E402,F401
+# Chat reactions (2026-05-20) — sibling-routes pattern. Toggle endpoint
+# persists via service.reactions then publishes a <reaction/> frame to the
+# peer's Redis channel for real-time delivery (chat server unchanged).
+import service.api.reactions_routes  # noqa: E402,F401
