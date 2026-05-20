@@ -274,8 +274,32 @@ def post_checkout_tokens(s, req):
 # least one paid Checkout (which stamps person.stripe_customer_id via
 # the webhook); free users get 400.
 
-def get_billing_portal(s):
+# Stripe Customer Portal flow_data types we deep-link to. Each maps a
+# specific in-app action button straight to the matching Stripe flow so the
+# user lands on (e.g.) the cancel screen instead of the generic portal home.
+# There is no 'pause' flow type — pause stays on the generic portal.
+_PORTAL_FLOW_TYPES = frozenset({
+    'subscription_update',
+    'subscription_cancel',
+    'payment_method_update',
+})
+
+
+def _customer_id_for(person_id):
+    from database import api_tx
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            'SELECT stripe_customer_id FROM person WHERE id = %(id)s',
+            dict(id=person_id),
+        ).fetchone()
+    return (row or {}).get('stripe_customer_id')
+
+
+def get_billing_portal(s, flow=None):
     """Return {'url': '<stripe portal URL>'} or an error tuple.
+
+    `flow` (optional) deep-links into a specific Customer Portal flow when it
+    is one of _PORTAL_FLOW_TYPES; otherwise the generic portal home is used.
 
     Status codes:
       200 — success
@@ -291,29 +315,138 @@ def get_billing_portal(s):
     if stripe is None:
         return 'Billing portal not configured', 503
 
-    from database import api_tx
-    with api_tx('read committed') as tx:
-        row = tx.execute(
-            'SELECT stripe_customer_id FROM person WHERE id = %(id)s',
-            dict(id=s.person_id),
-        ).fetchone()
-
-    customer_id = (row or {}).get('stripe_customer_id')
+    customer_id = _customer_id_for(s.person_id)
     if not customer_id:
         return 'No active subscription', 400
 
     web_base = os.environ.get('AHAVAH_WEB_BASE_URL', 'https://ahavah.app').rstrip('/')
 
+    kwargs = dict(customer=customer_id, return_url=f'{web_base}/profile')
+    if flow in _PORTAL_FLOW_TYPES:
+        kwargs['flow_data'] = {'type': flow}
+
     try:
-        session = stripe.billing_portal.Session.create(
-            customer=customer_id,
-            return_url=f'{web_base}/profile',
-        )
+        session = stripe.billing_portal.Session.create(**kwargs)
     except Exception as e:
         logger.warning(f'Stripe billing portal create failed: {e}')
         return 'Could not start billing portal', 502
 
     return {'url': session.url}
+
+
+# ---------------------------------------------------------------------------
+# GET /billing/subscription + GET /billing/invoices — native read surfaces.
+# These feed the rebuilt billing page real data (replacing the old
+# PLACEHOLDER_SUBSCRIPTION). Read-only: no money mutation here.
+# ---------------------------------------------------------------------------
+
+def _g(obj, key, default=None):
+    """Attribute-or-key getter tolerant of Stripe objects, dicts, and mocks."""
+    if obj is None:
+        return default
+    val = getattr(obj, key, None)
+    if val is None and isinstance(obj, dict):
+        val = obj.get(key, default)
+    return default if val is None else val
+
+
+def _price_label(price) -> str:
+    """Build '$8.99 / month' from a Stripe price object. Tolerant of missing
+    fields — falls back to a plain dollar amount or empty string."""
+    amount = _g(price, 'unit_amount')
+    if amount is None:
+        return ''
+    recurring = _g(price, 'recurring')
+    interval = _g(recurring, 'interval')
+    cents = amount % 100
+    dollars = f'${amount / 100:.2f}' if cents else f'${amount // 100}'
+    return f'{dollars} / {interval}' if interval else dollars
+
+
+def get_subscription(s):
+    """Current subscription summary, or {'status': 'none'}.
+
+    Status codes: 200, 401 (no session), 503 (Stripe unconfigured),
+    502 (Stripe call failed).
+    """
+    if not s or not s.person_id:
+        return 'Not authorized', 401
+
+    stripe = _stripe()
+    if stripe is None:
+        return 'Billing not configured', 503
+
+    customer_id = _customer_id_for(s.person_id)
+    if not customer_id:
+        return {'status': 'none'}
+
+    try:
+        subs = stripe.Subscription.list(
+            customer=customer_id,
+            status='all',
+            limit=1,
+            expand=['data.default_payment_method', 'data.items.data.price'],
+        )
+    except Exception as e:
+        logger.warning(f'Stripe subscription list failed: {e}')
+        return 'Could not load subscription', 502
+
+    data = _g(subs, 'data') or []
+    if not data:
+        return {'status': 'none'}
+
+    sub = data[0]
+    item_data = _g(_g(sub, 'items'), 'data') or []
+    price = _g(item_data[0], 'price') if item_data else None
+    card = _g(_g(sub, 'default_payment_method'), 'card')
+
+    return {
+        'status': _g(sub, 'status', 'none'),
+        'plan_label': 'Premium',
+        'price_label': _price_label(price),
+        'current_period_end': _g(sub, 'current_period_end'),
+        'cancel_at_period_end': bool(_g(sub, 'cancel_at_period_end', False)),
+        'card_brand': _g(card, 'brand'),
+        'card_last4': _g(card, 'last4'),
+    }
+
+
+def get_invoices(s):
+    """Up to 12 recent invoices with hosted + PDF links. 401/503/502 as above.
+    Empty list when the user has no Stripe customer record."""
+    if not s or not s.person_id:
+        return 'Not authorized', 401
+
+    stripe = _stripe()
+    if stripe is None:
+        return 'Billing not configured', 503
+
+    customer_id = _customer_id_for(s.person_id)
+    if not customer_id:
+        return {'invoices': []}
+
+    try:
+        invoices = stripe.Invoice.list(customer=customer_id, limit=12)
+    except Exception as e:
+        logger.warning(f'Stripe invoice list failed: {e}')
+        return 'Could not load invoices', 502
+
+    data = _g(invoices, 'data') or []
+    out = []
+    for inv in data:
+        amount = _g(inv, 'amount_paid')
+        if amount is None:
+            amount = _g(inv, 'amount_due', 0)
+        currency = (_g(inv, 'currency', 'usd') or 'usd').upper()
+        out.append({
+            'id': _g(inv, 'id'),
+            'created': _g(inv, 'created'),
+            'amount_label': f'${amount / 100:.2f} {currency}',
+            'status': _g(inv, 'status'),
+            'hosted_invoice_url': _g(inv, 'hosted_invoice_url'),
+            'invoice_pdf': _g(inv, 'invoice_pdf'),
+        })
+    return {'invoices': out}
 
 
 # ---------------------------------------------------------------------------

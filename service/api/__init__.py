@@ -602,8 +602,26 @@ def get_billing_portal(s: t.SessionInfo):
     """Phase W cutover (2026-05-15): Stripe Customer Portal session
     for self-service subscription management. Requires the user to
     have completed at least one paid Checkout (which stamps
-    person.stripe_customer_id via the webhook); free users get 400."""
-    return checkout.get_billing_portal(s=s)
+    person.stripe_customer_id via the webhook); free users get 400.
+
+    Optional ?flow= deep-links into a specific Customer Portal flow
+    (subscription_update / subscription_cancel / payment_method_update);
+    unknown/absent -> generic portal home."""
+    return checkout.get_billing_portal(s=s, flow=request.args.get('flow'))
+
+
+@aget('/billing/subscription')
+def get_billing_subscription(s: t.SessionInfo):
+    """Native read surface: current subscription summary or
+    {'status': 'none'}. Feeds the rebuilt /billing-portal page."""
+    return checkout.get_subscription(s=s)
+
+
+@aget('/billing/invoices')
+def get_billing_invoices(s: t.SessionInfo):
+    """Native read surface: up to 12 recent invoices with hosted +
+    PDF links."""
+    return checkout.get_invoices(s=s)
 
 @aget('/account/export')
 def get_account_export(s: t.SessionInfo):
