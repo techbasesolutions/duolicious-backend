@@ -285,6 +285,12 @@ _PORTAL_FLOW_TYPES = frozenset({
 })
 
 
+# The subscription_update / subscription_cancel portal flows REQUIRE the
+# target subscription id in flow_data (Stripe 400s without it); the
+# payment_method_update flow + the generic portal do not.
+_SUB_SCOPED_FLOWS = frozenset({'subscription_update', 'subscription_cancel'})
+
+
 def _customer_id_for(person_id):
     from database import api_tx
     with api_tx('read committed') as tx:
@@ -293,6 +299,27 @@ def _customer_id_for(person_id):
             dict(id=person_id),
         ).fetchone()
     return (row or {}).get('stripe_customer_id')
+
+
+def _active_subscription_id(stripe, customer_id):
+    """First non-terminal subscription id for the customer, or None.
+    Prefers active/trialing/past_due over canceled ones."""
+    try:
+        subs = stripe.Subscription.list(customer=customer_id, status='all', limit=10)
+    except Exception as e:
+        logger.warning(f'Stripe subscription list (for flow) failed: {e}')
+        return None
+    data = _g(subs, 'data') or []
+    live = {'active', 'trialing', 'past_due', 'unpaid', 'paused'}
+    chosen = None
+    for sub in data:
+        sid = _g(sub, 'id')
+        if not sid:
+            continue
+        if _g(sub, 'status') in live:
+            return sid
+        chosen = chosen or sid
+    return chosen
 
 
 def get_billing_portal(s, flow=None):
@@ -323,7 +350,14 @@ def get_billing_portal(s, flow=None):
 
     kwargs = dict(customer=customer_id, return_url=f'{web_base}/profile')
     if flow in _PORTAL_FLOW_TYPES:
-        kwargs['flow_data'] = {'type': flow}
+        flow_data = {'type': flow}
+        if flow in _SUB_SCOPED_FLOWS:
+            # These flows need the target subscription id or Stripe 400s.
+            sub_id = _active_subscription_id(stripe, customer_id)
+            if not sub_id:
+                return 'No active subscription to manage', 400
+            flow_data[flow] = {'subscription': sub_id}
+        kwargs['flow_data'] = flow_data
 
     try:
         session = stripe.billing_portal.Session.create(**kwargs)

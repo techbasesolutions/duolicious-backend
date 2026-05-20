@@ -90,14 +90,37 @@ def test_invoices_empty_when_no_customer(monkeypatch):
     assert checkout.get_invoices(_session()) == {'invoices': []}
 
 
-def test_portal_flow_passthrough(stripe_mock):
+def test_portal_sub_scoped_flow_includes_subscription(stripe_mock):
+    # subscription_cancel / subscription_update REQUIRE the target sub id.
+    stripe_mock.Subscription.list.return_value = {
+        'data': [{'id': 'sub_42', 'status': 'active'}],
+    }
     stripe_mock.billing_portal.Session.create.return_value = SimpleNamespace(
         url='https://stripe/portal'
     )
     out = checkout.get_billing_portal(_session(), flow='subscription_cancel')
     assert out == {'url': 'https://stripe/portal'}
     _, kwargs = stripe_mock.billing_portal.Session.create.call_args
-    assert kwargs['flow_data'] == {'type': 'subscription_cancel'}
+    assert kwargs['flow_data'] == {
+        'type': 'subscription_cancel',
+        'subscription_cancel': {'subscription': 'sub_42'},
+    }
+
+
+def test_portal_payment_method_flow_not_sub_scoped(stripe_mock):
+    # payment_method_update does NOT need a subscription id.
+    stripe_mock.billing_portal.Session.create.return_value = SimpleNamespace(
+        url='https://stripe/portal'
+    )
+    checkout.get_billing_portal(_session(), flow='payment_method_update')
+    _, kwargs = stripe_mock.billing_portal.Session.create.call_args
+    assert kwargs['flow_data'] == {'type': 'payment_method_update'}
+
+
+def test_portal_sub_scoped_flow_400_without_subscription(stripe_mock):
+    stripe_mock.Subscription.list.return_value = {'data': []}
+    out = checkout.get_billing_portal(_session(), flow='subscription_update')
+    assert out[1] == 400
 
 
 def test_portal_ignores_unknown_flow(stripe_mock):
