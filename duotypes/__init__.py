@@ -274,6 +274,15 @@ class PostRequestOtp(BaseModel):
         return value.lower().strip()
 
 
+class PostWaitlist(BaseModel):
+    email: EmailStr
+    answers: dict = {}
+
+    @field_validator('email', mode='before')
+    def validate_email(cls, value):
+        return EmailStr._validate(value.lower().strip())
+
+
 class PostCheckOtp(BaseModel):
     otp: str = Field(pattern=r"^\d{6}$")
 

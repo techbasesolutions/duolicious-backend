@@ -987,3 +987,5 @@ import service.api.moderation_routes  # noqa: E402,F401
 # persists via service.reactions then publishes a <reaction/> frame to the
 # peer's Redis channel for real-time delivery (chat server unchanged).
 import service.api.reactions_routes  # noqa: E402,F401
+# Waitlist capture (2026-05-20) — public pre-signup form. Sibling module.
+import service.api.waitlist_routes  # noqa: E402,F401
