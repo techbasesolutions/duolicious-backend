@@ -341,12 +341,18 @@ def get_billing_portal(s, flow=None):
 # ---------------------------------------------------------------------------
 
 def _g(obj, key, default=None):
-    """Attribute-or-key getter tolerant of Stripe objects, dicts, and mocks."""
+    """Key-or-attribute getter tolerant of Stripe objects, dicts, and mocks.
+
+    Dict access is tried FIRST: Stripe's StripeObject is a dict subclass, so
+    `getattr(obj, 'items')` would return the built-in dict.items method rather
+    than the field value. Reading the key off the mapping avoids that
+    collision (also covers plain dicts used in tests)."""
     if obj is None:
         return default
-    val = getattr(obj, key, None)
-    if val is None and isinstance(obj, dict):
-        val = obj.get(key, default)
+    if isinstance(obj, dict):
+        val = obj.get(key, None)
+    else:
+        val = getattr(obj, key, None)
     return default if val is None else val
 
 
