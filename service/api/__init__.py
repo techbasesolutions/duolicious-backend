@@ -930,6 +930,34 @@ def post_tokens_super_like(s: t.SessionInfo):
         return {'error': 'insufficient_tokens'}, 402
 
 
+# Discover Rewind (2026-05-19) — spend 1 token to undo the last pass and
+# re-show that profile. perform() owns the debit + skipped/swipe deletes
+# inside a single api_tx() so they commit atomically. Pass-only: the
+# existence check runs before the debit (no token spent if there's
+# nothing to undo). reason='rewind' is allowed by migration 0015.
+from service.tokens.actions.rewind import (
+    perform as _perform_rewind,
+    NothingToRewind as _NothingToRewind,
+)
+
+@apost('/tokens/rewind')
+def post_tokens_rewind(s: t.SessionInfo):
+    assert s.person_uuid is not None
+    payload = request.get_json(silent=True) or {}
+    prospect_uuid = payload.get('profile_uuid')
+    if not prospect_uuid:
+        return {'error': 'missing_profile_uuid'}, 400
+    try:
+        with api_tx() as tx:
+            return _perform_rewind(
+                tx, s.person_uuid, s.person_id, prospect_uuid,
+            )
+    except _NothingToRewind:
+        return {'error': 'nothing_to_rewind'}, 409
+    except _InsufficientTokens:
+        return {'error': 'insufficient_tokens'}, 402
+
+
 # Phase W push notifications - registered via a sibling module so we
 # don't touch the brittle top-level `from service import (...)` block.
 # See docstring at the top of notifications_routes.py for the why.
