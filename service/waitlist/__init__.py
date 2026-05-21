@@ -19,6 +19,7 @@ _Q_UPSERT = """
   VALUES (%(email)s, %(answers)s::jsonb)
   ON CONFLICT (email) DO UPDATE
     SET answers = EXCLUDED.answers, updated_at = NOW()
+  RETURNING (created_at = updated_at) AS inserted
 """
 
 _Q_GET = """
@@ -27,11 +28,14 @@ _Q_GET = """
 """
 
 
-def upsert(tx, email: str, answers: dict) -> None:
-    tx.execute(_Q_UPSERT, dict(
+def upsert(tx, email: str, answers: dict) -> bool:
+    """Insert or update the waitlist row. Returns True iff this was a brand-new
+    signup (so the caller can fire the welcome email exactly once per email)."""
+    row = tx.execute(_Q_UPSERT, dict(
         email=normalize_email(email),
         answers=json.dumps(answers or {}),
-    ))
+    )).fetchone()
+    return bool(row and row["inserted"])
 
 
 def get(tx, email: str) -> dict | None:

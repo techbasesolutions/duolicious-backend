@@ -13,6 +13,7 @@ import duotypes as t
 from service.api.decorators import get, post, validate, shared_otp_limit
 from database import api_tx
 from service.waitlist import upsert, count as waitlist_count
+from emails.waitlist_welcome import send_waitlist_welcome_async
 
 
 @post('/waitlist', limiter=shared_otp_limit)
@@ -20,7 +21,12 @@ from service.waitlist import upsert, count as waitlist_count
 def post_waitlist(req: t.PostWaitlist):
     answers = req.answers if isinstance(req.answers, dict) else {}
     with api_tx() as tx:
-        upsert(tx, req.email, answers)
+        is_new = upsert(tx, req.email, answers)
+    # Welcome email fires once, only on a brand-new signup (the landing posts
+    # {email} first, then the wizard re-upserts answers — we don't resend).
+    # Fire-and-forget so the response isn't blocked on SMTP.
+    if is_new:
+        send_waitlist_welcome_async(req.email)
     return {'ok': True}
 
 
