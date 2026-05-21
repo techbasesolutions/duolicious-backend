@@ -1510,14 +1510,17 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
          WHERE id = %(person_id)s
         """
     elif field_name == 'verification_required':
-        # Phase W cutover: drives the discover/search filter that excludes
-        # unverified prospects from this user's feed. Value is "Yes"/"No"
-        # (matching show_my_age + sibling toggles); stored as BOOLEAN on
-        # the column. Free for any user — verification gating is opt-in
-        # and doesn't require a paid tier.
+        # "Require my matches to be verified" — a SEARCHER preference that
+        # drives the discover verified_only filter (the frontend reads it and
+        # passes ?verified_only). Backed by require_verified_prospects, NOT
+        # person.verification_required: the latter is the anti-abuse / location
+        # flag read by the chat send-gate + the global search hide, so writing
+        # it here blocked the user's own messaging + hid them from search
+        # (conflation bug fixed 2026-05-21). Value "Yes"/"No" matching the
+        # show_my_age + sibling toggles.
         q1 = """
         UPDATE person
-           SET verification_required = (
+           SET require_verified_prospects = (
                CASE WHEN %(field_value)s = 'Yes' THEN TRUE ELSE FALSE END)
          WHERE id = %(person_id)s
         """
