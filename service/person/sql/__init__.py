@@ -1857,6 +1857,11 @@ WITH photo_ AS (
         CASE WHEN show_my_age THEN 'Yes' ELSE 'No' END AS j
     FROM person
     WHERE id = %(person_id)s
+), require_verified_prospects AS (
+    SELECT
+        CASE WHEN require_verified_prospects THEN 'Yes' ELSE 'No' END AS j
+    FROM person
+    WHERE id = %(person_id)s
 ), hide_me_from_strangers AS (
     SELECT
         CASE WHEN hide_me_from_strangers THEN 'Yes' ELSE 'No' END AS j
@@ -1941,6 +1946,7 @@ SELECT
         'public profile',         (SELECT j FROM public_profile),
         'show my location',       (SELECT j FROM show_my_location),
         'show my age',            (SELECT j FROM show_my_age),
+        'verification_required',  (SELECT j FROM require_verified_prospects),
         'hide me from strangers', (SELECT j FROM hide_me_from_strangers),
         'browse invisibly',       (SELECT j FROM browse_invisibly),
 
