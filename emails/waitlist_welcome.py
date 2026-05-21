@@ -1,10 +1,10 @@
 """Waitlist welcome email (growth / share focus).
 
-Audience: people who gave their email on the landing page. No account yet, so
-no sign-in link. Mirrors the canonical E1 "Welcome" template (light, logo
-header, indigo chip, Ultra title with one indigo accent word, lime callout) in
-emails/canonical/Ahavah-Email-Templates.html. Table-based + inline-styled per
-emails/README.md.
+Faithful port of the canonical E1 "Welcome" template
+(emails/canonical/Ahavah-Email-Templates.html): light card, white logo header,
+indigo chip, Ultra title with one indigo accent word, lime callout, lime CTA,
+canonical footer. Audience: landing-page email signups (no account yet, so no
+sign-in code). Inline-styled + dark-mode aware via emails.base.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from emails.base import (
     render,
     button,
     chip,
+    callout,
     INK,
     INK_SOFT,
     INDIGO,
@@ -33,42 +34,35 @@ PREHEADER = "You're on the list. Ahavah launches Summer 2026. Founding members g
 _BODY = f"""
 {chip("You're on the list")}
 
-<h1 style="margin:18px 0 14px;font-family:{SERIF};font-size:42px;line-height:1.02;letter-spacing:-0.022em;font-weight:normal;color:{INK};">
+<h1 class="e-title" style="margin:18px 0 14px;font-family:{SERIF};font-size:44px;line-height:1.0;letter-spacing:-0.022em;font-weight:400;color:{INK};">
   Welcome to <span style="color:{INDIGO};">Ahavah</span>.
 </h1>
 
-<p style="margin:0 0 18px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
+<p class="e-text" style="margin:0 0 16px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
   Thank you for joining. Ahavah is Torah-observant matchmaking for serious
   believers, here to help you find a spouse aligned in Torah, faith, family,
   and covenant.
 </p>
-<p style="margin:0 0 26px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
-  We launch <strong style="color:{INK};">Summer 2026</strong>. We'll email your
-  sign-in link the moment invites open.
+<p class="e-text" style="margin:0 0 28px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
+  We launch <strong style="color:{INK};font-weight:700;">Summer 2026</strong>.
+  We'll email your sign-in link the moment invites open.
 </p>
 
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 30px;">
-  <tr>
-    <td width="4" bgcolor="{LIME}" style="background:{LIME};border-radius:4px 0 0 4px;">&nbsp;</td>
-    <td bgcolor="#F4FBE3" style="padding:14px 18px;background:#F4FBE3;border-radius:0 10px 10px 0;font-family:{SANS};font-size:14px;line-height:1.5;color:{INK};font-weight:bold;">
-      Founding member perk: six months of Premium free at launch.
-    </td>
-  </tr>
-</table>
+{callout("Founding member perk: six months of Premium free at launch.")}
 
-<hr style="height:1px;background:#E7E3D8;border:none;margin:0 0 30px;"/>
+<hr style="height:1px;background:rgba(15,11,31,0.08);border:none;margin:0 0 28px;"/>
 
-<h2 style="margin:0 0 10px;font-family:{SERIF};font-size:26px;line-height:1.1;letter-spacing:-0.01em;font-weight:normal;color:{INK};">
+<h2 class="e-h2" style="margin:0 0 10px;font-family:{SERIF};font-size:26px;line-height:1.06;letter-spacing:-0.01em;font-weight:400;color:{INK};">
   Know someone else seeking marriage?
 </h2>
-<p style="margin:0 0 24px;font-family:{SANS};font-size:15px;line-height:1.6;color:{INK_SOFT};">
+<p class="e-text" style="margin:0 0 24px;font-family:{SANS};font-size:15px;line-height:1.6;color:{INK_SOFT};">
   Ahavah grows by word of mouth. Share it with believers who are serious about
   marriage, family, and building a Torah-based home.
 </p>
 
-{button("Invite a friend &rarr;", SHARE_URL, variant="lime")}
+{button("Invite a friend &rarr;", SHARE_URL, variant="lime", full=True)}
 
-<p style="margin:16px 0 0;font-family:{SANS};font-size:13px;line-height:1.5;color:{MUTED};text-align:center;">
+<p class="e-text" style="margin:16px 0 0;font-family:{SANS};font-size:13px;line-height:1.5;color:{MUTED};text-align:center;">
   Or simply forward this email.
 </p>
 """
@@ -76,7 +70,14 @@ _BODY = f"""
 _FOOTER = f"""
 Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
 You're receiving this because you joined the waitlist at
-<a href="{SHARE_URL}" style="color:{INDIGO};font-weight:bold;text-decoration:none;">ahavah.app</a>.
+<a href="{SHARE_URL}" style="color:{INDIGO};font-weight:600;text-decoration:none;">ahavah.app</a>.
+<div style="margin-top:14px;">
+  <a href="{SHARE_URL}/faq" style="color:{MUTED};font-weight:600;text-decoration:underline;">Help</a>
+  &nbsp;&nbsp;&middot;&nbsp;&nbsp;
+  <a href="{SHARE_URL}/privacy" style="color:{MUTED};font-weight:600;text-decoration:underline;">Privacy</a>
+  &nbsp;&nbsp;&middot;&nbsp;&nbsp;
+  <a href="{SHARE_URL}/legal/terms" style="color:{MUTED};font-weight:600;text-decoration:underline;">Terms</a>
+</div>
 """
 
 
