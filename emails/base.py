@@ -17,6 +17,9 @@ EMAIL_ASSET_ORIGIN: str = os.environ.get(
     "AHAVAH_EMAIL_ASSET_ORIGIN", "https://ahavah.app"
 )
 LOGO_URL: str = f"{EMAIL_ASSET_ORIGIN}/email/logo-horizontal.png"
+# White logo lockup for the dark header band (visible in light AND in clients
+# that force dark-mode inversion, where a dark-ink logo would disappear).
+LOGO_WHITE_URL: str = f"{EMAIL_ASSET_ORIGIN}/email/logo-horizontal-wht.png"
 
 # Tokens (see emails/README.md)
 INK = "#0F0B1F"
@@ -73,9 +76,12 @@ def render(
     own logo (white logo on a dark hero).
     """
     if hero_html is None:
+        # Dark brand band + white logo. Dark-mode-safe: a dark-ink logo on white
+        # vanishes when Gmail/Android force-inverts the email; a white logo on a
+        # solid dark band stays visible in both light and inverted-dark.
         header_row = (
-            '<tr><td style="padding:28px 36px 22px;border-bottom:1px solid rgba(15,11,31,0.06);">'
-            f'<img src="{LOGO_URL}" alt="Ahavah" height="32" style="height:32px;width:auto;display:block;border:0;outline:none;text-decoration:none;"/>'
+            '<tr><td bgcolor="#1A1340" style="background:#1A1340;padding:24px 36px;">'
+            f'<img src="{LOGO_WHITE_URL}" alt="Ahavah" height="30" style="height:30px;width:auto;display:block;border:0;outline:none;text-decoration:none;"/>'
             "</td></tr>"
         )
     else:
@@ -87,6 +93,8 @@ def render(
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <meta name="x-apple-disable-message-reformatting"/>
+<meta name="color-scheme" content="light dark"/>
+<meta name="supported-color-schemes" content="light dark"/>
 <title>{title}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
@@ -109,7 +117,3 @@ def render(
 </table>
 </body>
 </html>"""
-
-
-# White logo lockup for dark heroes (host alongside the dark logo).
-LOGO_WHITE_URL: str = f"{EMAIL_ASSET_ORIGIN}/email/logo-horizontal-wht.png"
