@@ -27,8 +27,11 @@ LAVENDER = "#BC96FF"
 CANVAS = "#ECE9E0"
 PANEL = "#FBF9F4"
 MUTED = "#6A6580"
-SERIF = "Georgia, 'Times New Roman', serif"   # display fallback for 'Ultra'
-SANS = "Arial, Helvetica, sans-serif"          # body fallback for 'Plus Jakarta Sans'
+# Brand fonts first; web-safe fallbacks for clients that don't load web fonts.
+# The <link> in render() loads Ultra + Plus Jakarta Sans in clients that keep
+# <head> styles (Apple Mail, iOS Mail). Gmail/Outlook strip it and fall back.
+SERIF = "'Ultra', Georgia, 'Times New Roman', serif"          # display ('Ultra')
+SANS = "'Plus Jakarta Sans', Arial, Helvetica, sans-serif"    # body
 
 
 def button(label: str, href: str, *, variant: str = "lime") -> str:
@@ -44,10 +47,11 @@ def button(label: str, href: str, *, variant: str = "lime") -> str:
 
 
 def chip(label: str) -> str:
-    """Small indigo uppercase pill with a leading dot (the .e__chip component)."""
+    """Small indigo uppercase pill with a leading dot (the .e__chip component).
+    Solid tint background (rgba is unreliable in Outlook)."""
     return (
-        f'<span style="display:inline-block;padding:6px 12px;border-radius:999px;'
-        f'background:rgba(85,36,245,0.08);color:{INDIGO};font-family:{SANS};'
+        f'<span style="display:inline-block;padding:6px 13px;border-radius:999px;'
+        f'background:#EDE8FE;color:{INDIGO};font-family:{SANS};'
         f'font-size:12px;font-weight:bold;letter-spacing:0.14em;text-transform:uppercase;">'
         f"&#9679;&nbsp; {label}</span>"
     )
@@ -84,6 +88,9 @@ def render(
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <meta name="x-apple-disable-message-reformatting"/>
 <title>{title}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Ultra&display=swap" rel="stylesheet"/>
 </head>
 <body style="margin:0;padding:0;background:{CANVAS};">
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">{preheader}</div>
