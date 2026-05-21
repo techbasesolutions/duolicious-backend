@@ -42,3 +42,13 @@ def test_email_is_normalized(email):
         upsert(tx, f"  {email.upper()}  ", {"sex": "male"})
         # Stored + fetchable under the normalized (lower, trimmed) key.
         assert get(tx, email) is not None
+
+
+def test_count_reflects_rows(email):
+    from database import api_tx
+    from service.waitlist import upsert, count
+    with api_tx() as tx:
+        before = count(tx)
+        upsert(tx, email, {"sex": "male"})
+        after = count(tx)
+        assert after == before + 1

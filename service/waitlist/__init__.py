@@ -36,3 +36,10 @@ def upsert(tx, email: str, answers: dict) -> None:
 
 def get(tx, email: str) -> dict | None:
     return tx.execute(_Q_GET, dict(email=normalize_email(email))).fetchone()
+
+
+_Q_COUNT = "SELECT count(*) AS n FROM waitlist_signup"
+
+
+def count(tx) -> int:
+    return tx.execute(_Q_COUNT).fetchone()["n"]

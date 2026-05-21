@@ -10,9 +10,9 @@ onboarding-shaped JSONB blob persisted as-is for a magic-link launch flow.
 from __future__ import annotations
 
 import duotypes as t
-from service.api.decorators import post, validate, shared_otp_limit
+from service.api.decorators import get, post, validate, shared_otp_limit
 from database import api_tx
-from service.waitlist import upsert
+from service.waitlist import upsert, count as waitlist_count
 
 
 @post('/waitlist', limiter=shared_otp_limit)
@@ -22,3 +22,11 @@ def post_waitlist(req: t.PostWaitlist):
     with api_tx() as tx:
         upsert(tx, req.email, answers)
     return {'ok': True}
+
+
+@get('/waitlist/count')
+def get_waitlist_count():
+    # Public social-proof count. Flask serializes the dict to JSON.
+    with api_tx() as tx:
+        n = waitlist_count(tx)
+    return {'count': n}
