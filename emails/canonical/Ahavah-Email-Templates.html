@@ -1,0 +1,1627 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Ahavah — Email templates</title>
+<link rel="icon" href="assets/brand/logo-mark-lime.svg" type="image/svg+xml" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Ultra&display=swap" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+    background: #ECE9E0;
+    color: #0F0B1F;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+
+  /* ----- Page chrome ----- */
+  .page { max-width: 1480px; margin: 0 auto; padding: 56px 32px 96px; }
+  .page__head {
+    display: grid; grid-template-columns: 1fr auto;
+    align-items: end; gap: 32px;
+    padding-bottom: 32px;
+    border-bottom: 1px solid rgba(15,11,31,0.08);
+    margin-bottom: 40px;
+  }
+  .page__head h1 {
+    margin: 0;
+    font-family: 'Ultra', Georgia, serif;
+    font-size: clamp(36px, 4.4vw, 56px);
+    line-height: 0.98; letter-spacing: -0.02em;
+    font-weight: 400;
+  }
+  .page__head h1 em { color: #5524F5; font-style: normal; }
+  .page__head p {
+    margin: 12px 0 0;
+    font-size: 16px; line-height: 1.5;
+    color: oklch(0.45 0.05 280);
+    max-width: 640px;
+  }
+  .head__chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 14px; border-radius: 99px;
+    background: #fff;
+    border: 1px solid rgba(15,11,31,0.10);
+    font-size: 12px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: #0F0B1F;
+  }
+  .head__chip::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+    background: oklch(0.78 0.22 119);
+  }
+
+  /* ----- Email grid — 2 cols × 2 rows of mock client previews ----- */
+  .emails {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 36px;
+  }
+  @media (max-width: 1000px) { .emails { grid-template-columns: 1fr; } }
+
+  /* Mock email-client frame — desktop. Mimics a Gmail-like preview pane. */
+  .mail {
+    background: #fff;
+    border-radius: 18px;
+    overflow: hidden;
+    box-shadow:
+      0 24px 60px -16px rgba(15,11,31,0.20),
+      0 8px 16px -8px rgba(15,11,31,0.12);
+    border: 1px solid rgba(15,11,31,0.06);
+    display: flex; flex-direction: column;
+  }
+  .mail__chrome {
+    padding: 18px 22px 14px;
+    background: #FBF9F4;
+    border-bottom: 1px solid rgba(15,11,31,0.08);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .mail__subject {
+    margin: 0;
+    font-size: 18px; font-weight: 700;
+    color: #0F0B1F;
+    letter-spacing: -0.005em;
+    display: flex; align-items: center; gap: 10px;
+    text-wrap: pretty;
+  }
+  .mail__star {
+    width: 16px; height: 16px; color: #BC96FF;
+    flex-shrink: 0;
+  }
+  .mail__meta {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px; color: oklch(0.45 0.05 280);
+  }
+  .mail__from {
+    color: #0F0B1F; font-weight: 600;
+  }
+  .mail__sep { opacity: 0.4; }
+  .mail__inbox-pill {
+    display: inline-flex; align-items: center;
+    padding: 2px 8px; border-radius: 4px;
+    background: rgba(85,36,245,0.08);
+    color: #5524F5;
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+  .mail__body {
+    /* Body width pinned to 600 — standard responsive email width.
+       Letterboxed inside the client preview with a soft canvas BG.  */
+    background: #ECE9E0;
+    padding: 24px 16px 24px;
+  }
+  .mail__inner {
+    width: 600px;
+    max-width: 100%;
+    margin: 0 auto;
+    background: #fff;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .mail__footnote {
+    padding: 16px 22px;
+    border-top: 1px solid rgba(15,11,31,0.08);
+    background: #FBF9F4;
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 12px; font-weight: 600;
+    color: oklch(0.45 0.05 280);
+    letter-spacing: 0.04em;
+  }
+  .mail__footnote-l { display: flex; align-items: center; gap: 12px; }
+  .mail__footnote-actions { display: flex; gap: 6px; }
+  .mail__footnote-actions span {
+    padding: 4px 10px; border-radius: 999px;
+    background: #fff;
+    border: 1px solid rgba(15,11,31,0.10);
+    font-size: 11px; font-weight: 700;
+  }
+
+  /* ============================================================
+     EMAIL BODY — Shared
+  ============================================================ */
+  .e {
+    width: 100%;
+    background: #fff;
+    color: #0F0B1F;
+    font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+    line-height: 1.5;
+  }
+  .e__head {
+    padding: 32px 36px 24px;
+    border-bottom: 1px solid rgba(15,11,31,0.06);
+  }
+  .e__brand img {
+    height: 36px; width: auto; display: block;
+  }
+  .e__body { padding: 36px; }
+  .e__footer {
+    padding: 28px 36px;
+    background: #FBF9F4;
+    border-top: 1px solid rgba(15,11,31,0.06);
+    color: oklch(0.45 0.05 280);
+    font-size: 13px;
+    line-height: 1.55;
+    text-align: center;
+  }
+  .e__footer a { color: #5524F5; font-weight: 600; text-decoration: none; }
+  .e__footer-links {
+    display: flex; align-items: center; justify-content: center; gap: 14px;
+    margin-top: 14px;
+  }
+  .e__footer-links a {
+    color: oklch(0.45 0.05 280);
+    font-weight: 600; text-decoration: underline;
+  }
+  .e__hr {
+    height: 1px; background: rgba(15,11,31,0.08);
+    border: none; margin: 0;
+  }
+
+  /* Buttons + chips */
+  .e__btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: 10px;
+    padding: 18px 32px;
+    border-radius: 14px;
+    background: #D7FF81;
+    color: #0F0B1F;
+    font-size: 18px; font-weight: 800;
+    letter-spacing: 0.01em;
+    text-decoration: none;
+  }
+  .e__btn--outline {
+    background: #fff;
+    border: 1.5px solid rgba(15,11,31,0.18);
+    color: #0F0B1F;
+  }
+  .e__btn--dark {
+    background: #0F0B1F;
+    color: #fff;
+  }
+  .e__btn--full { width: 100%; }
+  .e__chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 12px; border-radius: 999px;
+    background: rgba(85,36,245,0.08);
+    color: #5524F5;
+    font-size: 12px; font-weight: 800;
+    letter-spacing: 0.16em; text-transform: uppercase;
+  }
+  .e__chip-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #5524F5;
+  }
+
+  /* ============================================================
+     E1 — Welcome / verify your email
+  ============================================================ */
+  .e1__title {
+    margin: 18px 0 12px;
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 44px; line-height: 1.0;
+    letter-spacing: -0.022em; font-weight: 400;
+    color: #0F0B1F;
+  }
+  .e1__title em { font-style: normal; color: #5524F5; }
+  .e1__lede {
+    margin: 0 0 28px;
+    font-size: 17px; line-height: 1.55;
+    color: oklch(0.40 0.05 280);
+  }
+  .e1__code {
+    display: flex; gap: 10px;
+    margin: 0 0 28px;
+  }
+  .e1__code-digit {
+    flex: 1;
+    height: 64px;
+    border-radius: 14px;
+    background: #FBF9F4;
+    border: 1.5px solid rgba(15,11,31,0.10);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    font-size: 30px; font-weight: 800;
+    letter-spacing: 0.02em;
+    color: #0F0B1F;
+    font-variant-numeric: tabular-nums;
+  }
+  .e1__code-digit--active {
+    background: #fff;
+    border-color: #5524F5;
+    box-shadow: 0 0 0 3px rgba(85,36,245,0.12);
+  }
+  .e1__note {
+    margin: 0 0 28px;
+    font-size: 14px; line-height: 1.6;
+    color: oklch(0.45 0.05 280);
+  }
+  .e1__valid {
+    display: flex; align-items: center; gap: 8px;
+    padding: 14px 18px;
+    background: rgba(215,255,129,0.20);
+    border-left: 4px solid #D7FF81;
+    border-radius: 0 10px 10px 0;
+    font-size: 14px; color: #0F0B1F;
+    font-weight: 600;
+  }
+  .e1__valid svg { flex-shrink: 0; color: #0F0B1F; }
+
+  /* ============================================================
+     E2 — You have a new match
+  ============================================================ */
+  .e2__hero {
+    position: relative;
+    height: 320px;
+    background: linear-gradient(160deg, #5524F5 0%, #BC96FF 100%);
+    overflow: hidden;
+  }
+  .e2__hero-mark {
+    position: absolute; top: 24px; left: 24px;
+    height: 32px;
+  }
+  .e2__hero-cards {
+    position: absolute; left: 0; right: 0; top: 70px;
+    display: flex; justify-content: center; gap: 0;
+  }
+  .e2__hero-card {
+    width: 150px; height: 200px;
+    border-radius: 18px;
+    border: 4px solid #fff;
+    background-size: cover;
+    background-position: center;
+    box-shadow: 0 10px 24px rgba(15,11,31,0.40);
+  }
+  .e2__hero-card--a {
+    background-image: url('assets/photo-match-him.jpg');
+    transform: rotate(-6deg);
+    margin-right: -32px;
+    z-index: 2;
+  }
+  .e2__hero-card--b {
+    background-image: url('assets/photo-jada.jpg');
+    background-position: center 30%;
+    transform: rotate(6deg);
+    z-index: 1;
+  }
+  .e2__pill-row {
+    position: absolute; left: 0; right: 0; bottom: 28px;
+    display: flex; justify-content: center;
+  }
+  .e2__match-pill {
+    display: inline-flex; align-items: center;
+    padding: 12px 24px; border-radius: 14px;
+    background: #D7FF81; color: #0F0B1F;
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 26px; letter-spacing: -0.01em; font-weight: 400;
+    box-shadow: 0 8px 20px rgba(15,11,31,0.20);
+    transform: rotate(-3deg);
+  }
+  .e2__title {
+    margin: 24px 0 12px;
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 36px; line-height: 1.0;
+    letter-spacing: -0.022em; font-weight: 400;
+    color: #0F0B1F;
+    text-align: center;
+  }
+  .e2__lede {
+    margin: 0 0 28px;
+    font-size: 17px; line-height: 1.5;
+    color: oklch(0.45 0.05 280);
+    text-align: center;
+  }
+  .e2__lede strong { color: #0F0B1F; font-weight: 700; }
+  .e2__actions {
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .e2__tip {
+    margin-top: 22px; padding-top: 18px;
+    border-top: 1px solid rgba(15,11,31,0.08);
+    font-size: 14px; line-height: 1.55;
+    color: oklch(0.45 0.05 280);
+  }
+  .e2__tip strong { color: #0F0B1F; }
+
+  /* ============================================================
+     E3 — Someone messaged you
+  ============================================================ */
+  .e3__title {
+    margin: 8px 0 18px;
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 36px; line-height: 1.0;
+    letter-spacing: -0.022em; font-weight: 400;
+    color: #0F0B1F;
+  }
+  .e3__title em { font-style: normal; color: #5524F5; }
+  .e3__sender {
+    display: flex; align-items: center; gap: 14px;
+    padding: 16px;
+    background: #FBF9F4;
+    border-radius: 14px;
+    margin-bottom: 18px;
+  }
+  .e3__avatar {
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    background-image: url('assets/photo-match-her.jpg');
+    background-size: cover; background-position: center 20%;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 3px #fff, 0 0 0 5px #D7FF81;
+  }
+  .e3__sender-name {
+    font-size: 18px; font-weight: 800;
+    color: #0F0B1F;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .e3__sender-name svg { color: #5524F5; }
+  .e3__sender-meta {
+    margin-top: 2px;
+    font-size: 13px; color: oklch(0.45 0.05 280);
+  }
+  .e3__bubble {
+    background: #BC96FF;
+    color: #0F0B1F;
+    padding: 18px 22px;
+    border-radius: 18px;
+    border-bottom-left-radius: 4px;
+    font-size: 17px; line-height: 1.45;
+    margin-bottom: 22px;
+    font-weight: 500;
+  }
+  .e3__bubble small {
+    display: block;
+    margin-top: 10px;
+    font-size: 12px; font-weight: 700;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: rgba(15,11,31,0.55);
+  }
+  .e3__cta-row {
+    display: flex; gap: 10px;
+  }
+  .e3__cta-row .e__btn { flex: 1; }
+  .e3__quietnote {
+    margin-top: 24px;
+    font-size: 13px; line-height: 1.55;
+    color: oklch(0.45 0.05 280);
+    text-align: center;
+  }
+  .e3__quietnote a { color: #5524F5; font-weight: 600; }
+
+  /* ============================================================
+     E4 — Weekly digest / re-engagement
+  ============================================================ */
+  .e4__kicker {
+    margin: 0 0 12px;
+    font-size: 13px; font-weight: 800;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    color: #5524F5;
+  }
+  .e4__title {
+    margin: 0 0 12px;
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 34px; line-height: 1.0;
+    letter-spacing: -0.022em; font-weight: 400;
+    color: #0F0B1F;
+  }
+  .e4__title em { font-style: normal; color: #5524F5; }
+  .e4__lede {
+    margin: 0 0 24px;
+    font-size: 15px; line-height: 1.55;
+    color: oklch(0.45 0.05 280);
+  }
+  .e4__stats {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 28px;
+  }
+  .e4__stat {
+    padding: 16px 14px;
+    background: #FBF9F4;
+    border-radius: 14px;
+    text-align: center;
+  }
+  .e4__stat-num {
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 38px; line-height: 1;
+    letter-spacing: -0.02em; font-weight: 400;
+    color: #5524F5;
+    margin-bottom: 4px;
+  }
+  .e4__stat-label {
+    font-size: 12px; font-weight: 700;
+    letter-spacing: 0.06em;
+    color: oklch(0.45 0.05 280);
+  }
+  .e4__sectionLabel {
+    margin: 0 0 14px;
+    font-size: 13px; font-weight: 800;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    color: oklch(0.45 0.05 280);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .e4__sectionLabel::after {
+    content: "";
+    flex: 1; height: 1px;
+    background: rgba(15,11,31,0.08);
+  }
+  .e4__profiles {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 28px;
+  }
+  .e4__profile {
+    border-radius: 14px;
+    overflow: hidden;
+    background: #FBF9F4;
+  }
+  .e4__profile-photo {
+    aspect-ratio: 4 / 5;
+    background-size: cover; background-position: center;
+  }
+  .e4__profile-name {
+    padding: 10px 12px 12px;
+    font-size: 14px; font-weight: 800;
+    color: #0F0B1F;
+  }
+  .e4__profile-name small {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px; font-weight: 600;
+    color: oklch(0.45 0.05 280);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  /* ============================================================
+     E5 — Verified status confirmation
+  ============================================================ */
+  .e5__badge {
+    width: 96px; height: 96px;
+    border-radius: 24px;
+    background: linear-gradient(160deg, #E2A664 0%, #CD7F32 100%);
+    margin: 8px auto 22px;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    box-shadow: 0 12px 32px rgba(205,127,50,0.40);
+  }
+  .e5__title {
+    margin: 0 0 12px;
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 38px; line-height: 1.0;
+    letter-spacing: -0.022em; font-weight: 400;
+    color: #0F0B1F;
+    text-align: center;
+  }
+  .e5__title em { font-style: normal; color: #CD7F32; }
+  .e5__lede {
+    margin: 0 0 28px;
+    font-size: 16px; line-height: 1.55;
+    color: oklch(0.45 0.05 280);
+    text-align: center;
+  }
+  .e5__tiers {
+    display: flex; flex-direction: column; gap: 10px;
+    margin-bottom: 24px;
+  }
+  .e5__tier {
+    display: flex; align-items: center; gap: 16px;
+    padding: 16px 18px;
+    border-radius: 14px;
+    border: 1.5px solid rgba(15,11,31,0.08);
+  }
+  .e5__tier--done { background: rgba(205,127,50,0.06); border-color: rgba(205,127,50,0.30); }
+  .e5__tier-dot {
+    width: 36px; height: 36px; border-radius: 50%;
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; color: #fff;
+    font-size: 14px;
+  }
+  .e5__tier-dot--bronze { background: #CD7F32; }
+  .e5__tier-dot--silver { background: #C0C0C0; color: #0F0B1F; }
+  .e5__tier-dot--gold   { background: #FFD700; color: #0F0B1F; }
+  .e5__tier-body { flex: 1; }
+  .e5__tier-name { font-weight: 800; color: #0F0B1F; font-size: 16px; }
+  .e5__tier-sub  { font-size: 13px; color: oklch(0.45 0.05 280); margin-top: 2px; }
+  .e5__tier-status {
+    font-size: 12px; font-weight: 800;
+    letter-spacing: 0.14em; text-transform: uppercase;
+  }
+  .e5__tier-status--done { color: #CD7F32; }
+  .e5__tier-status--next { color: #5524F5; }
+  .e5__tier-status--locked { color: oklch(0.60 0.05 280); }
+
+  /* ============================================================
+     E6 — Premium upgrade
+  ============================================================ */
+  .e6__hero {
+    position: relative;
+    background: #0F0B1F;
+    color: #fff;
+    padding: 36px 36px 32px;
+    overflow: hidden;
+  }
+  .e6__hero-mark { height: 32px; margin-bottom: 22px; display: block; }
+  .e6__hero h1 {
+    margin: 0 0 12px;
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 42px; line-height: 0.98;
+    letter-spacing: -0.025em; font-weight: 400;
+    color: #fff;
+  }
+  .e6__hero h1 em { font-style: normal; color: #D7FF81; }
+  .e6__hero p {
+    margin: 0;
+    font-size: 16px; line-height: 1.5;
+    color: rgba(255,255,255,0.78);
+    max-width: 460px;
+  }
+  .e6__features {
+    display: flex; flex-direction: column; gap: 12px;
+    margin: 0 0 24px;
+  }
+  .e6__feature {
+    display: flex; align-items: flex-start; gap: 14px;
+    padding: 14px 16px;
+    background: #FBF9F4;
+    border-radius: 12px;
+  }
+  .e6__feature-check {
+    width: 26px; height: 26px; border-radius: 50%;
+    background: #D7FF81;
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: #0F0B1F;
+  }
+  .e6__feature-body { flex: 1; padding-top: 2px; }
+  .e6__feature-title { font-size: 15px; font-weight: 800; color: #0F0B1F; }
+  .e6__feature-sub   { font-size: 13px; color: oklch(0.45 0.05 280); margin-top: 2px; line-height: 1.45; }
+  .e6__price { text-align: center; margin-bottom: 22px; }
+  .e6__price-amount {
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 54px; line-height: 1;
+    letter-spacing: -0.025em; font-weight: 400;
+    color: #0F0B1F;
+  }
+  .e6__price-amount span {
+    font-size: 22px; vertical-align: 6px;
+    color: oklch(0.45 0.05 280);
+  }
+  .e6__price-sub {
+    margin-top: 6px;
+    font-size: 13px; font-weight: 800;
+    letter-spacing: 0.10em; text-transform: uppercase;
+    color: #5524F5;
+  }
+
+  /* ============================================================
+     E7 — Someone liked you (premium tease)
+  ============================================================ */
+  .e7__title {
+    margin: 0 0 14px;
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 38px; line-height: 1.0;
+    letter-spacing: -0.022em; font-weight: 400;
+    color: #0F0B1F;
+  }
+  .e7__title em { font-style: normal; color: #5524F5; }
+  .e7__lede {
+    margin: 0 0 24px;
+    font-size: 16px; line-height: 1.55;
+    color: oklch(0.45 0.05 280);
+  }
+  .e7__lede strong { color: #0F0B1F; font-weight: 700; }
+  .e7__grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-bottom: 22px;
+  }
+  .e7__tile {
+    aspect-ratio: 1;
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+    background-size: cover;
+    background-position: center;
+  }
+  .e7__tile-blur { filter: blur(14px); transform: scale(1.2); }
+  .e7__tile-overlay {
+    position: absolute; inset: 0;
+    background: rgba(15,11,31,0.45);
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+  }
+  .e7__count-banner {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px;
+    padding: 18px 22px;
+    background: linear-gradient(160deg, rgba(85,36,245,0.10), rgba(215,255,129,0.10));
+    border-radius: 14px;
+    border: 1.5px dashed rgba(85,36,245,0.30);
+    margin-bottom: 22px;
+  }
+  .e7__count {
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 38px; line-height: 1;
+    letter-spacing: -0.02em; font-weight: 400;
+    color: #5524F5;
+  }
+  .e7__count-label {
+    font-size: 14px; font-weight: 700;
+    color: #0F0B1F;
+    text-align: right;
+    line-height: 1.3;
+  }
+  .e7__count-label small {
+    display: block;
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: oklch(0.45 0.05 280);
+    margin-top: 4px;
+  }
+
+  /* ============================================================
+     E8 — Security alert / new device login
+  ============================================================ */
+  .e8__warn {
+    width: 64px; height: 64px;
+    border-radius: 20px;
+    background: rgba(255,69,102,0.10);
+    color: #FF4566;
+    margin-bottom: 18px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .e8__title {
+    margin: 0 0 12px;
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 36px; line-height: 1.0;
+    letter-spacing: -0.022em; font-weight: 400;
+    color: #0F0B1F;
+  }
+  .e8__lede {
+    margin: 0 0 22px;
+    font-size: 16px; line-height: 1.55;
+    color: oklch(0.45 0.05 280);
+  }
+  .e8__details {
+    background: #FBF9F4;
+    border-radius: 14px;
+    padding: 18px 22px;
+    margin-bottom: 22px;
+  }
+  .e8__detail-row {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(15,11,31,0.06);
+  }
+  .e8__detail-row:last-child { border-bottom: none; padding-bottom: 0; }
+  .e8__detail-row:first-child { padding-top: 0; }
+  .e8__detail-label {
+    width: 100px; flex-shrink: 0;
+    font-size: 12px; font-weight: 800;
+    letter-spacing: 0.10em; text-transform: uppercase;
+    color: oklch(0.45 0.05 280);
+  }
+  .e8__detail-value {
+    flex: 1;
+    font-size: 15px; font-weight: 600;
+    color: #0F0B1F;
+  }
+  .e8__detail-value small {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px; font-weight: 500;
+    color: oklch(0.45 0.05 280);
+  }
+  .e8__yesno {
+    display: flex; flex-direction: column; gap: 10px;
+    margin-bottom: 22px;
+  }
+  .e8__legal {
+    font-size: 13px; line-height: 1.55;
+    color: oklch(0.45 0.05 280);
+    text-align: center;
+  }
+  .e8__legal a { color: #5524F5; font-weight: 600; }
+
+  /* ============================================================
+     E9 — Beta launch invite
+     Premium "ticket" feel — dark indigo hero, serial number,
+     dotted perforation, lime accents.
+  ============================================================ */
+  .e9__hero {
+    position: relative;
+    background: radial-gradient(ellipse 100% 80% at 50% 0%, #2A1F66 0%, #1A1340 60%, #0F0B1F 100%);
+    color: #fff;
+    padding: 40px 36px 32px;
+    text-align: center;
+    overflow: hidden;
+  }
+  .e9__hero-mark { height: 30px; display: block; margin: 0 auto 24px; }
+  .e9__hero-kicker {
+    display: inline-flex; align-items: center; gap: 10px;
+    padding: 8px 16px; border-radius: 999px;
+    background: rgba(215,255,129,0.12);
+    border: 1px solid rgba(215,255,129,0.40);
+    color: #D7FF81;
+    font-size: 12px; font-weight: 800;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    margin-bottom: 22px;
+  }
+  .e9__hero-kicker::before {
+    content: "";
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #D7FF81;
+    box-shadow: 0 0 10px rgba(215,255,129,0.7);
+  }
+  .e9__hero h1 {
+    margin: 0 0 14px;
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 56px; line-height: 0.92;
+    letter-spacing: -0.028em; font-weight: 400;
+    color: #fff;
+  }
+  .e9__hero h1 em { font-style: normal; color: #D7FF81; }
+  .e9__hero p {
+    margin: 0 auto;
+    font-size: 16px; line-height: 1.5;
+    color: rgba(255,255,255,0.78);
+    max-width: 420px;
+  }
+
+  /* Ticket card — lifted out of the hero with a perforation between
+     the lockup section (top) and the details (bottom). */
+  .e9__ticket {
+    margin: 32px 24px -20px;
+    background: #fff;
+    border-radius: 18px;
+    overflow: hidden;
+    box-shadow: 0 20px 50px rgba(15,11,31,0.40);
+    position: relative;
+  }
+  .e9__ticket-top {
+    padding: 22px 28px;
+    text-align: center;
+  }
+  .e9__ticket-pre {
+    font-size: 11px; font-weight: 800;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    color: oklch(0.45 0.05 280);
+    margin-bottom: 6px;
+  }
+  .e9__ticket-seat {
+    font-family: 'Ultra', Georgia, serif;
+    font-size: 44px; line-height: 1;
+    letter-spacing: -0.02em; font-weight: 400;
+    color: #0F0B1F;
+  }
+  .e9__ticket-seat span { color: #5524F5; }
+  .e9__ticket-post {
+    font-size: 12px; font-weight: 600;
+    color: oklch(0.45 0.05 280);
+    margin-top: 6px;
+  }
+  /* Perforation — dotted line + two cut-out circles on the edges */
+  .e9__perf {
+    position: relative;
+    height: 0;
+    border-top: 2px dashed rgba(15,11,31,0.18);
+  }
+  .e9__perf::before, .e9__perf::after {
+    content: "";
+    position: absolute; top: -14px;
+    width: 26px; height: 26px; border-radius: 50%;
+    background: #ECE9E0;
+  }
+  .e9__perf::before { left: -13px; }
+  .e9__perf::after  { right: -13px; }
+  .e9__ticket-bottom {
+    padding: 22px 28px 24px;
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 14px 24px;
+  }
+  .e9__tk-row { display: flex; flex-direction: column; gap: 2px; }
+  .e9__tk-row-label {
+    font-size: 11px; font-weight: 800;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: oklch(0.45 0.05 280);
+  }
+  .e9__tk-row-value {
+    font-size: 14px; font-weight: 700;
+    color: #0F0B1F;
+  }
+
+  /* Body content — what beta members get + activation CTA */
+  .e9__body { padding: 44px 36px 28px; }
+  .e9__intro {
+    margin: 0 0 22px;
+    font-size: 16px; line-height: 1.6;
+    color: oklch(0.40 0.05 280);
+    text-align: center;
+  }
+  .e9__intro strong { color: #0F0B1F; font-weight: 700; }
+  .e9__perks-title {
+    margin: 0 0 14px;
+    font-size: 12px; font-weight: 800;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    color: #5524F5;
+    text-align: center;
+  }
+  .e9__perks {
+    display: flex; flex-direction: column; gap: 10px;
+    margin-bottom: 28px;
+  }
+  .e9__perk {
+    display: flex; align-items: flex-start; gap: 14px;
+    padding: 14px 16px;
+    background: #FBF9F4;
+    border-radius: 12px;
+  }
+  .e9__perk-num {
+    width: 26px; height: 26px; border-radius: 50%;
+    background: #0F0B1F;
+    color: #D7FF81;
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 800;
+  }
+  .e9__perk-body { flex: 1; padding-top: 2px; }
+  .e9__perk-title { font-size: 15px; font-weight: 800; color: #0F0B1F; }
+  .e9__perk-sub   { font-size: 13px; color: oklch(0.45 0.05 280); margin-top: 2px; line-height: 1.45; }
+
+  .e9__expires {
+    margin-top: 18px;
+    padding: 12px 16px;
+    background: rgba(255,69,102,0.08);
+    border-left: 4px solid #FF4566;
+    border-radius: 0 10px 10px 0;
+    font-size: 13px; font-weight: 600;
+    color: #0F0B1F;
+  }
+  .e9__expires strong { color: #FF4566; }
+  .e9__quietnote {
+    margin: 20px 0 0;
+    font-size: 13px; line-height: 1.55;
+    color: oklch(0.45 0.05 280);
+    text-align: center;
+  }
+  .e9__quietnote a { color: #5524F5; font-weight: 600; }
+</style>
+</head>
+<body>
+  <main class="page">
+    <header class="page__head">
+      <div>
+        <h1>Email — <em>brand templates.</em></h1>
+        <p>Four transactional email templates for Ahavah, built on canonical brand assets. Each is rendered inside a desktop-client preview at standard 600 px responsive email width.</p>
+      </div>
+      <span class="head__chip">600 px · HTML email · v1</span>
+    </header>
+
+    <section class="emails">
+
+      <!-- =============================================================
+           E1 · WELCOME / VERIFY
+      ============================================================== -->
+      <article class="mail" data-screen-label="01 Welcome / verify">
+        <div class="mail__chrome">
+          <h2 class="mail__subject">
+            <svg class="mail__star" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.56 5.82 22 7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            Welcome to Ahavah — verify your email
+          </h2>
+          <div class="mail__meta">
+            <span class="mail__from">Ahavah &lt;hello@ahavah.app&gt;</span>
+            <span class="mail__sep">·</span>
+            <span>to you</span>
+            <span class="mail__sep">·</span>
+            <span class="mail__inbox-pill">Inbox · Updates</span>
+          </div>
+        </div>
+        <div class="mail__body">
+          <div class="mail__inner">
+            <div class="e">
+              <div class="e__head">
+                <span class="e__brand"><img src="assets/brand/logo-horizontal.png" alt="Ahavah"/></span>
+              </div>
+              <div class="e__body">
+                <span class="e__chip"><span class="e__chip-dot"></span>One last step</span>
+                <h1 class="e1__title">Welcome to <em>Ahavah,</em> Ehud.</h1>
+                <p class="e1__lede">We're glad you're here. Enter the six-digit code below in the app to verify your email and start matching.</p>
+
+                <div class="e1__code">
+                  <div class="e1__code-digit">4</div>
+                  <div class="e1__code-digit">9</div>
+                  <div class="e1__code-digit">2</div>
+                  <div class="e1__code-digit">7</div>
+                  <div class="e1__code-digit">3</div>
+                  <div class="e1__code-digit e1__code-digit--active">1</div>
+                </div>
+
+                <div class="e1__valid">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+                    <path d="M12 8v4l3 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+                  Valid for 15 minutes
+                </div>
+
+                <p class="e1__note" style="margin-top:24px">
+                  If you didn't sign up for Ahavah, you can safely ignore this email — no account will be created.
+                </p>
+              </div>
+              <div class="e__footer">
+                Ahavah · A dating app for the diaspora.<br/>
+                You're receiving this because you signed up at <a>ahavah.app</a>.
+                <div class="e__footer-links">
+                  <a>Help</a><a>Privacy</a><a>Terms</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mail__footnote">
+          <span class="mail__footnote-l">📩 Transactional · System notification</span>
+          <span class="mail__footnote-actions"><span>Reply</span><span>Forward</span></span>
+        </div>
+      </article>
+
+      <!-- =============================================================
+           E2 · NEW MATCH
+      ============================================================== -->
+      <article class="mail" data-screen-label="02 New match">
+        <div class="mail__chrome">
+          <h2 class="mail__subject">
+            <svg class="mail__star" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.56 5.82 22 7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            It's a match — say hi to Jada
+          </h2>
+          <div class="mail__meta">
+            <span class="mail__from">Ahavah &lt;matches@ahavah.app&gt;</span>
+            <span class="mail__sep">·</span>
+            <span>to you</span>
+            <span class="mail__sep">·</span>
+            <span class="mail__inbox-pill">Inbox · Matches</span>
+          </div>
+        </div>
+        <div class="mail__body">
+          <div class="mail__inner">
+            <div class="e">
+              <!-- hero -->
+              <div class="e2__hero">
+                <img class="e2__hero-mark" src="assets/brand/logo-horizontal-wht.png" alt="Ahavah"/>
+                <div class="e2__hero-cards">
+                  <div class="e2__hero-card e2__hero-card--a"></div>
+                  <div class="e2__hero-card e2__hero-card--b"></div>
+                </div>
+                <div class="e2__pill-row">
+                  <span class="e2__match-pill">It's a match!</span>
+                </div>
+              </div>
+
+              <div class="e__body">
+                <h1 class="e2__title">You and Jada liked each other.</h1>
+                <p class="e2__lede">
+                  Open the conversation while it's fresh. <strong>Most matches reply within 24 hours.</strong>
+                </p>
+
+                <div class="e2__actions">
+                  <a class="e__btn e__btn--full" href="#">Say hi to Jada →</a>
+                  <a class="e__btn e__btn--outline e__btn--full" href="#">View Jada's profile</a>
+                </div>
+
+                <p class="e2__tip">
+                  <strong>Conversation starter:</strong> Skip "hey." Ask about something in her profile — Sabbath traditions, her last trip, the music she's listening to.
+                </p>
+              </div>
+              <div class="e__footer">
+                You're receiving this because you matched with someone on Ahavah.<br/>
+                Adjust how often we email you in <a>Notification settings</a>.
+                <div class="e__footer-links">
+                  <a>Unsubscribe</a><a>Help</a><a>Privacy</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mail__footnote">
+          <span class="mail__footnote-l">💌 Engagement · Match notification</span>
+          <span class="mail__footnote-actions"><span>Reply</span><span>Forward</span></span>
+        </div>
+      </article>
+
+      <!-- =============================================================
+           E3 · NEW MESSAGE
+      ============================================================== -->
+      <article class="mail" data-screen-label="03 New message">
+        <div class="mail__chrome">
+          <h2 class="mail__subject">
+            <svg class="mail__star" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.56 5.82 22 7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            Aaliyah sent you a message
+          </h2>
+          <div class="mail__meta">
+            <span class="mail__from">Ahavah &lt;messages@ahavah.app&gt;</span>
+            <span class="mail__sep">·</span>
+            <span>to you</span>
+            <span class="mail__sep">·</span>
+            <span class="mail__inbox-pill">Inbox · Messages</span>
+          </div>
+        </div>
+        <div class="mail__body">
+          <div class="mail__inner">
+            <div class="e">
+              <div class="e__head">
+                <span class="e__brand"><img src="assets/brand/logo-horizontal.png" alt="Ahavah"/></span>
+              </div>
+              <div class="e__body">
+                <span class="e__chip"><span class="e__chip-dot"></span>New message</span>
+                <h1 class="e3__title">A note from <em>Aaliyah.</em></h1>
+
+                <div class="e3__sender">
+                  <div class="e3__avatar"></div>
+                  <div>
+                    <div class="e3__sender-name">
+                      Aaliyah, 27
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                        <path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+                      </svg>
+                    </div>
+                    <div class="e3__sender-meta">Brooklyn, US · Silver verified</div>
+                  </div>
+                </div>
+
+                <div class="e3__bubble">
+                  "Shabbat shalom! I saw you've been to Tzfat too — when did you go? I'm planning a trip back in the spring."
+                  <small>Sent 8 minutes ago</small>
+                </div>
+
+                <div class="e3__cta-row">
+                  <a class="e__btn" href="#">Reply</a>
+                  <a class="e__btn e__btn--outline" href="#">View profile</a>
+                </div>
+
+                <p class="e3__quietnote">
+                  Too many messages? <a>Pause notifications for 24 hours →</a>
+                </p>
+              </div>
+              <div class="e__footer">
+                Ahavah · A dating app for the diaspora.<br/>
+                You're receiving this because Aaliyah messaged you.
+                <div class="e__footer-links">
+                  <a>Unsubscribe</a><a>Help</a><a>Privacy</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mail__footnote">
+          <span class="mail__footnote-l">💬 Engagement · Message notification</span>
+          <span class="mail__footnote-actions"><span>Reply</span><span>Forward</span></span>
+        </div>
+      </article>
+
+      <!-- =============================================================
+           E4 · WEEKLY DIGEST / RE-ENGAGEMENT
+      ============================================================== -->
+      <article class="mail" data-screen-label="04 Weekly digest">
+        <div class="mail__chrome">
+          <h2 class="mail__subject">
+            <svg class="mail__star" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.56 5.82 22 7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            Your week on Ahavah — 7 liked you
+          </h2>
+          <div class="mail__meta">
+            <span class="mail__from">Ahavah &lt;digest@ahavah.app&gt;</span>
+            <span class="mail__sep">·</span>
+            <span>to you</span>
+            <span class="mail__sep">·</span>
+            <span class="mail__inbox-pill">Inbox · Promotions</span>
+          </div>
+        </div>
+        <div class="mail__body">
+          <div class="mail__inner">
+            <div class="e">
+              <div class="e__head">
+                <span class="e__brand"><img src="assets/brand/logo-horizontal.png" alt="Ahavah"/></span>
+              </div>
+              <div class="e__body">
+                <p class="e4__kicker">Week of May 13–19</p>
+                <h1 class="e4__title">You're catching <em>eyes</em>, Ehud.</h1>
+                <p class="e4__lede">Here's what happened on Ahavah while you were away. Worth a few minutes back in the app this week.</p>
+
+                <div class="e4__stats">
+                  <div class="e4__stat">
+                    <div class="e4__stat-num">7</div>
+                    <div class="e4__stat-label">Liked you</div>
+                  </div>
+                  <div class="e4__stat">
+                    <div class="e4__stat-num">3</div>
+                    <div class="e4__stat-label">New matches</div>
+                  </div>
+                  <div class="e4__stat">
+                    <div class="e4__stat-num">12</div>
+                    <div class="e4__stat-label">Profile views</div>
+                  </div>
+                </div>
+
+                <p class="e4__sectionLabel">Recommended for you</p>
+                <div class="e4__profiles">
+                  <div class="e4__profile">
+                    <div class="e4__profile-photo" style="background-image:url('assets/photo-jada.jpg');background-position:center 25%"></div>
+                    <div class="e4__profile-name">Jada, 30<small>Tobago, TT</small></div>
+                  </div>
+                  <div class="e4__profile">
+                    <div class="e4__profile-photo" style="background-image:url('assets/photo-user-1.jpg');background-position:center 25%"></div>
+                    <div class="e4__profile-name">Priya, 28<small>Mumbai, IN</small></div>
+                  </div>
+                  <div class="e4__profile">
+                    <div class="e4__profile-photo" style="background-image:url('assets/photo-user-2.jpg');background-position:center 30%"></div>
+                    <div class="e4__profile-name">Naomi, 26<small>Lagos, NG</small></div>
+                  </div>
+                </div>
+
+                <a class="e__btn e__btn--dark e__btn--full" href="#">Open Ahavah →</a>
+              </div>
+              <div class="e__footer">
+                You're receiving this weekly digest because notifications are on.<br/>
+                Want fewer? Switch to <a>monthly</a> · <a>off entirely</a>.
+                <div class="e__footer-links">
+                  <a>Unsubscribe</a><a>Help</a><a>Privacy</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mail__footnote">
+          <span class="mail__footnote-l">📰 Lifecycle · Weekly digest</span>
+          <span class="mail__footnote-actions"><span>Reply</span><span>Forward</span></span>
+        </div>
+      </article>
+
+    </section>
+
+      <!-- =============================================================
+           Row 2 (E5–E8)
+      ============================================================== -->
+    <section class="emails" style="margin-top:36px">
+
+      <!-- =============================================================
+           E5 · BRONZE VERIFIED
+      ============================================================== -->
+      <article class="mail" data-screen-label="05 Verified bronze">
+        <div class="mail__chrome">
+          <h2 class="mail__subject">
+            <svg class="mail__star" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.56 5.82 22 7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            You're Bronze verified — your profile just got more discoverable
+          </h2>
+          <div class="mail__meta">
+            <span class="mail__from">Ahavah &lt;trust@ahavah.app&gt;</span>
+            <span class="mail__sep">·</span><span>to you</span>
+            <span class="mail__sep">·</span><span class="mail__inbox-pill">Inbox · Updates</span>
+          </div>
+        </div>
+        <div class="mail__body">
+          <div class="mail__inner">
+            <div class="e">
+              <div class="e__head">
+                <span class="e__brand"><img src="assets/brand/logo-horizontal.png" alt="Ahavah"/></span>
+              </div>
+              <div class="e__body">
+                <div class="e5__badge">
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 2L4 5v6c0 5 3.5 9.5 8 11 4.5-1.5 8-6 8-11V5l-8-3z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                    <path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </div>
+                <h1 class="e5__title">You're <em>Bronze</em> verified.</h1>
+                <p class="e5__lede">Your selfie matched your photos. Real people only — that's what we promise everyone on Ahavah.</p>
+
+                <div class="e5__tiers">
+                  <div class="e5__tier e5__tier--done">
+                    <div class="e5__tier-dot e5__tier-dot--bronze">B</div>
+                    <div class="e5__tier-body">
+                      <div class="e5__tier-name">Bronze — Profile verified</div>
+                      <div class="e5__tier-sub">Selfie + photo cross-check</div>
+                    </div>
+                    <div class="e5__tier-status e5__tier-status--done">Earned</div>
+                  </div>
+                  <div class="e5__tier">
+                    <div class="e5__tier-dot e5__tier-dot--silver">S</div>
+                    <div class="e5__tier-body">
+                      <div class="e5__tier-name">Silver — Liveness verified</div>
+                      <div class="e5__tier-sub">3 quick selfies, different angles</div>
+                    </div>
+                    <div class="e5__tier-status e5__tier-status--next">Next →</div>
+                  </div>
+                  <div class="e5__tier">
+                    <div class="e5__tier-dot e5__tier-dot--gold">G</div>
+                    <div class="e5__tier-body">
+                      <div class="e5__tier-name">Gold — ID verified</div>
+                      <div class="e5__tier-sub">Government ID + face match</div>
+                    </div>
+                    <div class="e5__tier-status e5__tier-status--locked">Locked</div>
+                  </div>
+                </div>
+
+                <a class="e__btn e__btn--full" href="#">Go for Silver →</a>
+              </div>
+              <div class="e__footer">
+                Verified profiles get more matches and signal you're a real person.<br/>
+                Manage your tier any time in <a>Settings › Verification</a>.
+                <div class="e__footer-links">
+                  <a>Help</a><a>Privacy</a><a>Terms</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mail__footnote">
+          <span class="mail__footnote-l">🛡 Trust · Verification confirmation</span>
+          <span class="mail__footnote-actions"><span>Reply</span><span>Forward</span></span>
+        </div>
+      </article>
+
+      <!-- =============================================================
+           E6 · PREMIUM UPGRADE
+      ============================================================== -->
+      <article class="mail" data-screen-label="06 Premium upgrade">
+        <div class="mail__chrome">
+          <h2 class="mail__subject">
+            <svg class="mail__star" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.56 5.82 22 7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            Try Ahavah Premium — a coffee a month, every door open
+          </h2>
+          <div class="mail__meta">
+            <span class="mail__from">Ahavah &lt;hello@ahavah.app&gt;</span>
+            <span class="mail__sep">·</span><span>to you</span>
+            <span class="mail__sep">·</span><span class="mail__inbox-pill">Inbox · Promotions</span>
+          </div>
+        </div>
+        <div class="mail__body">
+          <div class="mail__inner">
+            <div class="e">
+              <div class="e6__hero">
+                <img class="e6__hero-mark" src="assets/brand/logo-horizontal-wht.png" alt="Ahavah"/>
+                <h1>Match more.<br/><em>Worry less.</em></h1>
+                <p>Premium opens every door on Ahavah — starting with the people who've already liked you.</p>
+              </div>
+              <div class="e__body">
+                <div class="e6__features">
+                  <div class="e6__feature">
+                    <span class="e6__feature-check"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5 9-12" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                    <div class="e6__feature-body">
+                      <div class="e6__feature-title">See everyone who liked you</div>
+                      <div class="e6__feature-sub">Full list, with photos and bios — not just the count.</div>
+                    </div>
+                  </div>
+                  <div class="e6__feature">
+                    <span class="e6__feature-check"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5 9-12" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                    <div class="e6__feature-body">
+                      <div class="e6__feature-title">Help build a Torah-observant community</div>
+                      <div class="e6__feature-sub">Your subscription keeps the lights on for everyone.</div>
+                    </div>
+                  </div>
+                  <div class="e6__feature">
+                    <span class="e6__feature-check"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5 9-12" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                    <div class="e6__feature-body">
+                      <div class="e6__feature-title">Cancel anytime</div>
+                      <div class="e6__feature-sub">From the billing portal. No phone trees.</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="e6__price">
+                  <div class="e6__price-amount"><span>$</span>2.92<span>/mo</span></div>
+                  <div class="e6__price-sub">Best value · annual plan</div>
+                </div>
+
+                <a class="e__btn e__btn--full" href="#">Try Premium →</a>
+              </div>
+              <div class="e__footer">
+                You're receiving promotional emails because you're an Ahavah member.<br/>
+                Want fewer offers? <a>Move me to monthly</a> or <a>opt out of promos</a>.
+                <div class="e__footer-links">
+                  <a>Unsubscribe</a><a>Help</a><a>Privacy</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mail__footnote">
+          <span class="mail__footnote-l">✨ Promotional · Subscription offer</span>
+          <span class="mail__footnote-actions"><span>Reply</span><span>Forward</span></span>
+        </div>
+      </article>
+
+      <!-- =============================================================
+           E7 · LIKED YOU (PREMIUM TEASE)
+      ============================================================== -->
+      <article class="mail" data-screen-label="07 Liked you">
+        <div class="mail__chrome">
+          <h2 class="mail__subject">
+            <svg class="mail__star" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.56 5.82 22 7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            9 people liked you on Ahavah
+          </h2>
+          <div class="mail__meta">
+            <span class="mail__from">Ahavah &lt;likes@ahavah.app&gt;</span>
+            <span class="mail__sep">·</span><span>to you</span>
+            <span class="mail__sep">·</span><span class="mail__inbox-pill">Inbox · Updates</span>
+          </div>
+        </div>
+        <div class="mail__body">
+          <div class="mail__inner">
+            <div class="e">
+              <div class="e__head">
+                <span class="e__brand"><img src="assets/brand/logo-horizontal.png" alt="Ahavah"/></span>
+              </div>
+              <div class="e__body">
+                <span class="e__chip"><span class="e__chip-dot"></span>Likes you</span>
+                <h1 class="e7__title">Nine people <em>like</em> you back, Ehud.</h1>
+                <p class="e7__lede">Three of them are already mutual matches. <strong>Six more are waiting for you to swipe right.</strong></p>
+
+                <div class="e7__grid">
+                  <div class="e7__tile" style="background-image:url('assets/photo-jada.jpg');background-position:center 30%"></div>
+                  <div class="e7__tile" style="background-image:url('assets/photo-match-her.jpg');background-position:center 20%"></div>
+                  <div class="e7__tile" style="background-image:url('assets/photo-user-1.jpg');background-position:center 25%"></div>
+                  <div class="e7__tile e7__tile-blur" style="background-image:url('assets/photo-user-2.jpg');background-position:center 25%">
+                    <div class="e7__tile-overlay">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="4" y="10" width="16" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3" stroke="currentColor" stroke-width="2"/></svg>
+                    </div>
+                  </div>
+                  <div class="e7__tile e7__tile-blur" style="background-image:url('assets/stock/couple-portrait.jpg');background-position:center 35%">
+                    <div class="e7__tile-overlay">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="4" y="10" width="16" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3" stroke="currentColor" stroke-width="2"/></svg>
+                    </div>
+                  </div>
+                  <div class="e7__tile e7__tile-blur" style="background-image:url('assets/stock/couple-african.jpg');background-position:center 25%">
+                    <div class="e7__tile-overlay">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="4" y="10" width="16" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3" stroke="currentColor" stroke-width="2"/></svg>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="e7__count-banner">
+                  <div class="e7__count">+6</div>
+                  <div class="e7__count-label">
+                    more profiles unlocked with Premium
+                    <small>See exactly who likes you</small>
+                  </div>
+                </div>
+
+                <a class="e__btn e__btn--full" href="#">Unlock with Premium →</a>
+                <p class="e3__quietnote" style="margin-top:18px">
+                  Or keep swiping — you'll see them anyway, eventually.
+                </p>
+              </div>
+              <div class="e__footer">
+                You're receiving this because someone liked your profile.<br/>
+                <a>Manage notifications</a> · <a>Stop these emails</a>
+                <div class="e__footer-links">
+                  <a>Help</a><a>Privacy</a><a>Terms</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mail__footnote">
+          <span class="mail__footnote-l">💙 Engagement · Likes-you tease</span>
+          <span class="mail__footnote-actions"><span>Reply</span><span>Forward</span></span>
+        </div>
+      </article>
+
+      <!-- =============================================================
+           E8 · SECURITY ALERT — new login
+      ============================================================== -->
+      <article class="mail" data-screen-label="08 Security alert">
+        <div class="mail__chrome">
+          <h2 class="mail__subject">
+            <svg class="mail__star" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.56 5.82 22 7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            New sign-in to your Ahavah account
+          </h2>
+          <div class="mail__meta">
+            <span class="mail__from">Ahavah &lt;security@ahavah.app&gt;</span>
+            <span class="mail__sep">·</span><span>to you</span>
+            <span class="mail__sep">·</span><span class="mail__inbox-pill">Inbox · Important</span>
+          </div>
+        </div>
+        <div class="mail__body">
+          <div class="mail__inner">
+            <div class="e">
+              <div class="e__head">
+                <span class="e__brand"><img src="assets/brand/logo-horizontal.png" alt="Ahavah"/></span>
+              </div>
+              <div class="e__body">
+                <div class="e8__warn">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 9v4M12 17h.01" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+                    <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                  </svg>
+                </div>
+                <h1 class="e8__title">New sign-in detected</h1>
+                <p class="e8__lede">We noticed someone signed into your Ahavah account from a device we haven't seen before. If this was you, no action needed.</p>
+
+                <div class="e8__details">
+                  <div class="e8__detail-row">
+                    <div class="e8__detail-label">Device</div>
+                    <div class="e8__detail-value">iPhone 15 · Safari<small>iOS 17.4</small></div>
+                  </div>
+                  <div class="e8__detail-row">
+                    <div class="e8__detail-label">Location</div>
+                    <div class="e8__detail-value">Brooklyn, NY<small>Approximate, from IP · 75.45.10.x</small></div>
+                  </div>
+                  <div class="e8__detail-row">
+                    <div class="e8__detail-label">When</div>
+                    <div class="e8__detail-value">Today · 9:34 AM<small>America/New_York</small></div>
+                  </div>
+                </div>
+
+                <div class="e8__yesno">
+                  <a class="e__btn e__btn--outline e__btn--full" href="#">This was me — mark trusted</a>
+                  <a class="e__btn e__btn--full" style="background:#FF4566;color:#fff" href="#">This wasn't me — lock my account</a>
+                </div>
+
+                <p class="e8__legal">
+                  We send this email any time a new device signs in.
+                  <a>Manage trusted devices</a> in your account settings.
+                </p>
+              </div>
+              <div class="e__footer">
+                Sent to keep your account secure. Ahavah will never ask for your password by email.
+                <div class="e__footer-links">
+                  <a>Help</a><a>Privacy</a><a>Terms</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mail__footnote">
+          <span class="mail__footnote-l">🔐 Trust · Security alert</span>
+          <span class="mail__footnote-actions"><span>Reply</span><span>Forward</span></span>
+        </div>
+      </article>
+
+      <!-- =============================================================
+           E9 · BETA LAUNCH INVITE
+      ============================================================== -->
+      <article class="mail" data-screen-label="09 Beta launch invite">
+        <div class="mail__chrome">
+          <h2 class="mail__subject">
+            <svg class="mail__star" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.56 5.82 22 7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            You're in. Welcome to the Ahavah private beta.
+          </h2>
+          <div class="mail__meta">
+            <span class="mail__from">Ahavah &lt;founders@ahavah.app&gt;</span>
+            <span class="mail__sep">·</span><span>to you</span>
+            <span class="mail__sep">·</span><span class="mail__inbox-pill">Inbox · Important</span>
+          </div>
+        </div>
+        <div class="mail__body">
+          <div class="mail__inner">
+            <div class="e">
+              <div class="e9__hero">
+                <img class="e9__hero-mark" src="assets/brand/logo-horizontal-wht.png" alt="Ahavah"/>
+                <span class="e9__hero-kicker">Private beta · Invitation</span>
+                <h1>You're <em>in,</em><br/>Ehud.</h1>
+                <p>You've been selected as one of the first 500 members of the Ahavah private beta. Welcome to the inside.</p>
+
+                <div class="e9__ticket">
+                  <div class="e9__ticket-top">
+                    <div class="e9__ticket-pre">Beta seat assigned</div>
+                    <div class="e9__ticket-seat"><span>#</span>247</div>
+                    <div class="e9__ticket-post">of 500 · founding members</div>
+                  </div>
+                  <div class="e9__perf"></div>
+                  <div class="e9__ticket-bottom">
+                    <div class="e9__tk-row">
+                      <span class="e9__tk-row-label">Member</span>
+                      <span class="e9__tk-row-value">Ehud Israel</span>
+                    </div>
+                    <div class="e9__tk-row">
+                      <span class="e9__tk-row-label">Cohort</span>
+                      <span class="e9__tk-row-value">May 2026 · Wave 02</span>
+                    </div>
+                    <div class="e9__tk-row">
+                      <span class="e9__tk-row-label">Access</span>
+                      <span class="e9__tk-row-value">iOS · Android · Web</span>
+                    </div>
+                    <div class="e9__tk-row">
+                      <span class="e9__tk-row-label">Invite code</span>
+                      <span class="e9__tk-row-value">AHV-BETA-247</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="e9__body">
+                <p class="e9__intro">
+                  <strong>You were chosen for a reason.</strong> Your faith, your location, your timing — you're shaping what Ahavah becomes for everyone after you.
+                </p>
+
+                <p class="e9__perks-title">What you get</p>
+                <div class="e9__perks">
+                  <div class="e9__perk">
+                    <span class="e9__perk-num">1</span>
+                    <div class="e9__perk-body">
+                      <div class="e9__perk-title">First access to every feature</div>
+                      <div class="e9__perk-sub">Translation, verification tiers, and tools we haven't shipped publicly yet.</div>
+                    </div>
+                  </div>
+                  <div class="e9__perk">
+                    <span class="e9__perk-num">2</span>
+                    <div class="e9__perk-body">
+                      <div class="e9__perk-title">Free Premium for life</div>
+                      <div class="e9__perk-sub">Founding members never pay for Premium. Ever.</div>
+                    </div>
+                  </div>
+                  <div class="e9__perk">
+                    <span class="e9__perk-num">3</span>
+                    <div class="e9__perk-body">
+                      <div class="e9__perk-title">A direct line to the founders</div>
+                      <div class="e9__perk-sub">Tell us what's working, what isn't, and what you wish existed. We read every reply.</div>
+                    </div>
+                  </div>
+                  <div class="e9__perk">
+                    <span class="e9__perk-num">4</span>
+                    <div class="e9__perk-body">
+                      <div class="e9__perk-title">The founding-member badge</div>
+                      <div class="e9__perk-sub">A permanent mark on your profile. Members joining after public launch will see it.</div>
+                    </div>
+                  </div>
+                </div>
+
+                <a class="e__btn e__btn--full" href="#">Activate my beta account →</a>
+
+                <div class="e9__expires">
+                  <strong>Heads up:</strong> Your seat is held for 72 hours. After that, we open it to the waitlist.
+                </div>
+
+                <p class="e9__quietnote">
+                  Questions? Just reply to this email — it goes straight to us.<br/>
+                  <a>— The Ahavah founding team</a>
+                </p>
+              </div>
+              <div class="e__footer">
+                You're receiving this because you joined the Ahavah waitlist at ahavah.app.<br/>
+                If this wasn't you, <a>let us know</a> and we'll release your seat.
+                <div class="e__footer-links">
+                  <a>Help</a><a>Privacy</a><a>Terms</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mail__footnote">
+          <span class="mail__footnote-l">✨ Lifecycle · Beta invitation</span>
+          <span class="mail__footnote-actions"><span>Reply</span><span>Forward</span></span>
+        </div>
+      </article>
+
+    </section>
+  </main>
+
+  <!-- DOM → SVG export panel (floating button bottom-right). -->
+  <script src="svg-export.js"></script>
+</body>
+</html>
