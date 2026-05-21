@@ -989,3 +989,5 @@ import service.api.moderation_routes  # noqa: E402,F401
 import service.api.reactions_routes  # noqa: E402,F401
 # Waitlist capture (2026-05-20) — public pre-signup form. Sibling module.
 import service.api.waitlist_routes  # noqa: E402,F401
+# Chat translation (2026-05-20) — on-demand tap-to-translate. Sibling module.
+import service.api.translation_routes  # noqa: E402,F401
