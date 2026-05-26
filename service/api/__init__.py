@@ -991,3 +991,6 @@ import service.api.reactions_routes  # noqa: E402,F401
 import service.api.waitlist_routes  # noqa: E402,F401
 # Chat translation (2026-05-20) — on-demand tap-to-translate. Sibling module.
 import service.api.translation_routes  # noqa: E402,F401
+# Public feedback (2026-05-26) — general feedback form, emailed to admin
+# (no DB). Sibling module.
+import service.api.feedback_routes  # noqa: E402,F401

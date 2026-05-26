@@ -283,6 +283,28 @@ class PostWaitlist(BaseModel):
         return EmailStr._validate(value.lower().strip())
 
 
+class PostFeedback(BaseModel):
+    """Public POST /feedback body. Emailed to admin (no DB). Email is optional
+    (anonymous-friendly); category is constrained; message is required."""
+    category: str = Field(pattern=r'^(idea|problem|praise|other)$')
+    message: str = Field(min_length=1, max_length=2000)
+    email: Optional[EmailStr] = None
+    path: Optional[str] = Field(default=None, max_length=512)
+    user_agent: Optional[str] = Field(default=None, max_length=2048)
+
+    @field_validator('message', mode='before')
+    def strip_message(cls, value):
+        return str(value or '').strip()
+
+    @field_validator('email', mode='before')
+    def normalize_email(cls, value):
+        # Empty string / whitespace -> None (field stays optional). A real
+        # value is lowercased + EmailStr-validated like the other models.
+        if value is None or not str(value).strip():
+            return None
+        return EmailStr._validate(str(value).lower().strip())
+
+
 class PostCheckOtp(BaseModel):
     otp: str = Field(pattern=r"^\d{6}$")
 
