@@ -284,13 +284,16 @@ class PostWaitlist(BaseModel):
 
 
 class PostFeedback(BaseModel):
-    """Public POST /feedback body. Emailed to admin (no DB). Email is optional
+    """Public POST /feedback body. Stored + emailed to admin. Email is optional
     (anonymous-friendly); category is constrained; message is required."""
     category: str = Field(pattern=r'^(idea|problem|praise|other)$')
     message: str = Field(min_length=1, max_length=2000)
     email: Optional[EmailStr] = None
     path: Optional[str] = Field(default=None, max_length=512)
     user_agent: Optional[str] = Field(default=None, max_length=2048)
+    # Honeypot: a hidden field real users never fill. Bots that fill it get
+    # silently dropped by the route. Capped so it can't be used to bloat input.
+    website: Optional[str] = Field(default=None, max_length=256)
 
     @field_validator('message', mode='before')
     def strip_message(cls, value):
