@@ -994,3 +994,5 @@ import service.api.translation_routes  # noqa: E402,F401
 # Public feedback (2026-05-26) — general feedback form, emailed to admin
 # (no DB). Sibling module.
 import service.api.feedback_routes  # noqa: E402,F401
+# Beta-tester opt-in (2026-05-26) — onboarding completion screen. Sibling module.
+import service.api.beta_routes  # noqa: E402,F401
