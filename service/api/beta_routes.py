@@ -29,4 +29,5 @@ def post_beta_tester(req: t.PostBetaTester):
         is_new = register_beta(tx, req.email, None)
     if is_new:
         send_beta_welcome_async(req.email)
-    return {'ok': True}
+    # isNew=false → already a beta tester (the card shows an "already in" state).
+    return {'ok': True, 'isNew': is_new}

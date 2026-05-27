@@ -27,7 +27,8 @@ def post_waitlist(req: t.PostWaitlist):
     # Fire-and-forget so the response isn't blocked on SMTP.
     if is_new:
         send_waitlist_welcome_async(req.email)
-    return {'ok': True}
+    # isNew=false → returning registrant (the web shows a "Welcome back" variant).
+    return {'ok': True, 'isNew': is_new}
 
 
 @get('/waitlist/count')
