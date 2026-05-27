@@ -14,6 +14,7 @@ from service.api.decorators import get, post, validate, shared_otp_limit, limite
 from database import api_tx
 from service.waitlist import upsert, count as waitlist_count, get as waitlist_get
 from emails.waitlist_welcome import send_waitlist_welcome_async
+from emails.waitlist_admin import send_new_signup_notice_async
 
 # Read-only existence probe — fires on the onboarding email step. Looser limit
 # than the OTP/signup limiter (it's a cheap read), but still bounded to blunt
@@ -31,11 +32,14 @@ def post_waitlist(req: t.PostWaitlist):
     answers = req.answers if isinstance(req.answers, dict) else {}
     with api_tx() as tx:
         is_new = upsert(tx, req.email, answers)
-    # Welcome email fires once, only on a brand-new signup (the landing posts
-    # {email} first, then the wizard re-upserts answers — we don't resend).
-    # Fire-and-forget so the response isn't blocked on SMTP.
+        total = waitlist_count(tx) if is_new else None
+    # On a brand-new signup (the landing posts {email} first, then the wizard
+    # re-upserts answers — we don't resend), fire two fire-and-forget emails so
+    # the response isn't blocked on SMTP: the welcome to the signer-upper, and
+    # a new-signup notice to the admin inbox.
     if is_new:
         send_waitlist_welcome_async(req.email)
+        send_new_signup_notice_async(req.email, answers, total)
     # isNew=false → returning registrant (the web shows a "Welcome back" variant).
     return {'ok': True, 'isNew': is_new}
 
