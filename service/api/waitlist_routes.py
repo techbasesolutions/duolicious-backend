@@ -10,10 +10,19 @@ onboarding-shaped JSONB blob persisted as-is for a magic-link launch flow.
 from __future__ import annotations
 
 import duotypes as t
-from service.api.decorators import get, post, validate, shared_otp_limit
+from service.api.decorators import get, post, validate, shared_otp_limit, limiter, _is_private_ip
 from database import api_tx
-from service.waitlist import upsert, count as waitlist_count
+from service.waitlist import upsert, count as waitlist_count, get as waitlist_get
 from emails.waitlist_welcome import send_waitlist_welcome_async
+
+# Read-only existence probe — fires on the onboarding email step. Looser limit
+# than the OTP/signup limiter (it's a cheap read), but still bounded to blunt
+# email-enumeration.
+waitlist_check_limit = limiter.shared_limit(
+    "20 per minute",
+    scope="waitlist_check",
+    exempt_when=_is_private_ip,
+)
 
 
 @post('/waitlist', limiter=shared_otp_limit)
@@ -37,3 +46,13 @@ def get_waitlist_count():
     with api_tx() as tx:
         n = waitlist_count(tx)
     return {'count': n}
+
+
+@post('/waitlist/check', limiter=waitlist_check_limit)
+@validate(t.PostWaitlistCheck)
+def post_waitlist_check(req: t.PostWaitlistCheck):
+    # Read-only: does this email already exist? Lets the web short-circuit a
+    # returning registrant at the email step (no write, so nothing is clobbered).
+    with api_tx() as tx:
+        row = waitlist_get(tx, req.email)
+    return {'exists': row is not None}
