@@ -1,4 +1,9 @@
-on: [push]
+# Ahavah fork note: this fork deploys to the DigitalOcean droplet via
+# deploy-ahavah.yml, NOT to Google Artifact Registry. The upstream Duolicious
+# GCP publish below has no GCP_CREDENTIALS / GCP_PROJECT_ID secrets in this repo,
+# so it failed on every push and sent failure emails. Set to manual-only to stop
+# that; it can still be run by hand from the Actions tab if ever needed.
+on: workflow_dispatch
 
 jobs:
   build-api:
