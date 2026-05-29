@@ -48,16 +48,32 @@ def _answer_rows(answers: Optional[dict]) -> str:
     return "".join(out)
 
 
-def new_signup_html(email: str, answers: Optional[dict], count: Optional[int], completed: bool = False) -> str:
+def new_signup_html(
+    email: str,
+    answers: Optional[dict],
+    count: Optional[int],
+    *,
+    mode: str = "signup",      # "signup" | "completed" | "beta"
+    beta: Optional[bool] = None,
+) -> str:
     safe_email = html.escape(email)
     when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    if completed:
+    if mode == "completed":
         chip_label = "Onboarding complete"
         count_line = "Someone completed onboarding."
+    elif mode == "beta":
+        chip_label = "New beta tester"
+        count_line = f"{count} beta testers now." if count else "New beta tester."
     else:
         chip_label = "New signup"
         count_line = f"Waitlist is now at {count}." if count else "New waitlist signup."
     email_cell = f'<a href="mailto:{safe_email}" style="color:{INDIGO};font-weight:600;text-decoration:none;">{safe_email}</a>'
+    # Beta-status row (only when known). Green Yes / muted No so it reads at a glance.
+    beta_row = ""
+    if beta is not None:
+        val = ('<span style="color:#3F8F2E;font-weight:700;">Yes</span>'
+               if beta else f'<span style="color:{MUTED};font-weight:700;">No</span>')
+        beta_row = _row("Beta tester", val)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -79,6 +95,7 @@ def new_signup_html(email: str, answers: Optional[dict], count: Optional[int], c
       <tr><td style="padding:12px 32px 28px;">
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
           {_row("Email", email_cell)}
+          {beta_row}
           {_answer_rows(answers)}
         </table>
       </td></tr>
@@ -90,7 +107,7 @@ def new_signup_html(email: str, answers: Optional[dict], count: Optional[int], c
 </html>"""
 
 
-def send_new_signup_notice(email: str, answers: Optional[dict] = None, count: Optional[int] = None) -> None:
+def send_new_signup_notice(email: str, answers: Optional[dict] = None, count: Optional[int] = None, beta: Optional[bool] = None) -> None:
     """Synchronous send to the admin inbox. Skips sample addresses. Best-effort."""
     if not email or email.endswith("@example.com"):
         return
@@ -98,13 +115,13 @@ def send_new_signup_notice(email: str, answers: Optional[dict] = None, count: Op
 
     aws_smtp.send(
         subject="New Ahavah waitlist signup",
-        body=new_signup_html(email, answers, count),
+        body=new_signup_html(email, answers, count, mode="signup", beta=beta),
         to_addr=TO_ADDR,
         from_addr=FROM_ADDR,
     )
 
 
-def send_new_signup_notice_async(email: str, answers: Optional[dict] = None, count: Optional[int] = None) -> None:
+def send_new_signup_notice_async(email: str, answers: Optional[dict] = None, count: Optional[int] = None, beta: Optional[bool] = None) -> None:
     """Fire-and-forget so the signup response isn't blocked; failures swallowed
     (the row is already saved)."""
     if not email or email.endswith("@example.com"):
@@ -112,14 +129,14 @@ def send_new_signup_notice_async(email: str, answers: Optional[dict] = None, cou
 
     def _go() -> None:
         try:
-            send_new_signup_notice(email, answers, count)
+            send_new_signup_notice(email, answers, count, beta)
         except Exception:
             print(traceback.format_exc())
 
     threading.Thread(target=_go, daemon=True).start()
 
 
-def send_onboarding_complete_notice(email: str, answers: Optional[dict] = None) -> None:
+def send_onboarding_complete_notice(email: str, answers: Optional[dict] = None, beta: Optional[bool] = None) -> None:
     """Synchronous admin notice: a signer-upper completed the demographic
     onboarding (waitlist row gained answers). Best-effort."""
     if not email or email.endswith("@example.com"):
@@ -128,20 +145,48 @@ def send_onboarding_complete_notice(email: str, answers: Optional[dict] = None) 
 
     aws_smtp.send(
         subject="Ahavah onboarding completed",
-        body=new_signup_html(email, answers, None, completed=True),
+        body=new_signup_html(email, answers, None, mode="completed", beta=beta),
         to_addr=TO_ADDR,
         from_addr=FROM_ADDR,
     )
 
 
-def send_onboarding_complete_notice_async(email: str, answers: Optional[dict] = None) -> None:
+def send_beta_optin_notice(email: str, count: Optional[int] = None) -> None:
+    """Synchronous admin notice when someone opts into the beta cohort."""
+    if not email or email.endswith("@example.com"):
+        return
+    from smtp import aws_smtp
+
+    aws_smtp.send(
+        subject="New Ahavah beta tester",
+        body=new_signup_html(email, None, count, mode="beta", beta=True),
+        to_addr=TO_ADDR,
+        from_addr=FROM_ADDR,
+    )
+
+
+def send_beta_optin_notice_async(email: str, count: Optional[int] = None) -> None:
+    """Fire-and-forget; failures swallowed (the beta_signup row is the truth)."""
+    if not email or email.endswith("@example.com"):
+        return
+
+    def _go() -> None:
+        try:
+            send_beta_optin_notice(email, count)
+        except Exception:
+            print(traceback.format_exc())
+
+    threading.Thread(target=_go, daemon=True).start()
+
+
+def send_onboarding_complete_notice_async(email: str, answers: Optional[dict] = None, beta: Optional[bool] = None) -> None:
     """Fire-and-forget; failures swallowed (the row is already saved)."""
     if not email or email.endswith("@example.com"):
         return
 
     def _go() -> None:
         try:
-            send_onboarding_complete_notice(email, answers)
+            send_onboarding_complete_notice(email, answers, beta)
         except Exception:
             print(traceback.format_exc())
 

@@ -20,6 +20,7 @@ _Q_REGISTER = """
 """
 
 _Q_COUNT = "SELECT count(*) AS n FROM beta_signup"
+_Q_EXISTS = "SELECT 1 FROM beta_signup WHERE email = %(email)s"
 
 
 def register(tx, email: str, person_id) -> bool:
@@ -31,3 +32,8 @@ def register(tx, email: str, person_id) -> bool:
 
 def count(tx) -> int:
     return tx.execute(_Q_COUNT).fetchone()["n"]
+
+
+def is_beta(tx, email: str) -> bool:
+    """True if this email has opted into the beta cohort."""
+    return tx.execute(_Q_EXISTS, dict(email=_norm(email))).fetchone() is not None

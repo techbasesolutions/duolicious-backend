@@ -13,6 +13,7 @@ import duotypes as t
 from service.api.decorators import get, post, validate, shared_otp_limit, limiter, _is_private_ip
 from database import api_tx
 from service.waitlist import upsert, count as waitlist_count, get as waitlist_get
+from service.beta import is_beta
 from emails.waitlist_welcome import send_waitlist_welcome_async
 from emails.waitlist_admin import (
     send_new_signup_notice_async,
@@ -36,18 +37,19 @@ def post_waitlist(req: t.PostWaitlist):
     with api_tx() as tx:
         res = upsert(tx, req.email, answers)
         total = waitlist_count(tx)
+        beta_flag = is_beta(tx, req.email)
     is_new = res["inserted"]
     # On a brand-new signup (the landing posts {email} first, then the wizard
     # re-upserts answers), fire fire-and-forget emails so the response isn't
     # blocked on SMTP: the welcome to the signer-upper + a new-signup notice
-    # to the admin inbox.
+    # to the admin inbox. The admin report carries the beta-tester status.
     if is_new:
         send_waitlist_welcome_async(req.email)
-        send_new_signup_notice_async(req.email, answers, total)
+        send_new_signup_notice_async(req.email, answers, total, beta_flag)
     # When the row gains answers for the first time (the wizard completion),
     # notify the admin inbox that someone completed onboarding.
     if res["became_complete"]:
-        send_onboarding_complete_notice_async(req.email, answers)
+        send_onboarding_complete_notice_async(req.email, answers, beta_flag)
     # isNew=false → returning registrant (the web shows a "Welcome back" variant).
     return {'ok': True, 'isNew': is_new}
 
