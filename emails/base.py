@@ -48,12 +48,18 @@ def button(label: str, href: str, *, variant: str = "lime", full: bool = True) -
 # (the glyphs are baked into the image, i.e. "outlined"). `width` is the CSS
 # width in px; the PNG itself is exported at 2x for retina. `alt` carries the
 # title text so screen readers and image-off clients still get the words.
-def title_image(file_name: str, alt: str, width: int) -> str:
-    src = f"{EMAIL_ASSET_ORIGIN}/email/{file_name}"
+def title_image(file_name: str, file_name_dark: str, alt: str, width: int) -> str:
+    base_style = (
+        f"width:{width}px;max-width:100%;height:auto;"
+        "margin:18px 0 16px;border:0;outline:none;text-decoration:none;"
+    )
+    light = f"{EMAIL_ASSET_ORIGIN}/email/{file_name}"       # dark ink, for light bg
+    dark = f"{EMAIL_ASSET_ORIGIN}/email/{file_name_dark}"   # white ink, for dark bg
+    # Swap mirrors the logo light/dark swap (see _STYLE). Clients that ignore
+    # prefers-color-scheme just show the light (dark-ink) image on the light card.
     return (
-        f'<img src="{src}" alt="{alt}" width="{width}" '
-        f'style="display:block;width:{width}px;max-width:100%;height:auto;'
-        f'margin:18px 0 16px;border:0;outline:none;text-decoration:none;"/>'
+        f'<img class="e-title-light" src="{light}" alt="{alt}" width="{width}" style="display:block;{base_style}"/>'
+        f'<img class="e-title-dark" src="{dark}" alt="{alt}" width="{width}" style="display:none;{base_style}"/>'
     )
 
 
@@ -90,8 +96,11 @@ _STYLE = f"""
     .e-callout {{ background:#262017 !important; color:#F4FBE3 !important; }}
     .e-logo-light {{ display:none !important; }}
     .e-logo-dark  {{ display:block !important; }}
+    .e-title-light {{ display:none !important; }}
+    .e-title-dark  {{ display:block !important; }}
   }}
   .e-logo-dark {{ display:none; }}
+  .e-title-dark {{ display:none; }}
 """
 
 

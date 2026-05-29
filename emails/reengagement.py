@@ -37,7 +37,7 @@ def _body(email: str) -> str:
     return f"""
 {chip("Before launch")}
 
-{title_image("title-reengage.png", "Help us prepare your matches.", 528)}
+{title_image("title-reengage.png", "title-reengage-wht.png", "Help us prepare your matches.", 528)}
 
 <p class="e-text" style="margin:0 0 16px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
   Thank you for joining the Ahavah waitlist. We are building Torah-observant
