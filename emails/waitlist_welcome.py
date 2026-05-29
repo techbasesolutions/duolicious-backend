@@ -42,7 +42,7 @@ _BODY = f"""
   and covenant.
 </p>
 <p class="e-text" style="margin:0 0 28px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
-  We launch <strong style="color:{INK};font-weight:700;">Summer 2026</strong>.
+  We launch <strong class="e-strong" style="color:{INK};font-weight:700;">Summer 2026</strong>.
   We'll email your sign-in link the moment invites open.
 </p>
 

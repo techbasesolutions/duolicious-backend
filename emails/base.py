@@ -93,6 +93,7 @@ _STYLE = f"""
     .e-foot  {{ background:#1A1340 !important; border-color:rgba(255,255,255,0.08) !important; color:#A8A2C8 !important; }}
     .e-title, .e-h2 {{ color:#ffffff !important; }}
     .e-text  {{ color:#C9C4E0 !important; }}
+    .e-strong {{ color:#ffffff !important; }}
     .e-callout {{ background:#262017 !important; color:#F4FBE3 !important; }}
     .e-logo-light {{ display:none !important; }}
     .e-logo-dark  {{ display:block !important; }}
