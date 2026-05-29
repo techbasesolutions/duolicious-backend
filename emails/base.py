@@ -42,6 +42,21 @@ def button(label: str, href: str, *, variant: str = "lime", full: bool = True) -
     </table>"""
 
 
+# Outlined display title. Ultra (the canonical title face) does not load in most
+# email clients, so they fall back to a generic serif and lose the brand look.
+# Instead we reference a pre-rendered PNG of the title in the real Ultra face
+# (the glyphs are baked into the image, i.e. "outlined"). `width` is the CSS
+# width in px; the PNG itself is exported at 2x for retina. `alt` carries the
+# title text so screen readers and image-off clients still get the words.
+def title_image(file_name: str, alt: str, width: int) -> str:
+    src = f"{EMAIL_ASSET_ORIGIN}/email/{file_name}"
+    return (
+        f'<img src="{src}" alt="{alt}" width="{width}" '
+        f'style="display:block;width:{width}px;max-width:100%;height:auto;'
+        f'margin:18px 0 16px;border:0;outline:none;text-decoration:none;"/>'
+    )
+
+
 # Canonical .e__chip: indigo uppercase pill, 12px/800, 0.16em, leading dot.
 def chip(label: str) -> str:
     return (
