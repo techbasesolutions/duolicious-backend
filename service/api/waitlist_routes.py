@@ -55,8 +55,14 @@ def get_waitlist_count():
 @post('/waitlist/check', limiter=waitlist_check_limit)
 @validate(t.PostWaitlistCheck)
 def post_waitlist_check(req: t.PostWaitlistCheck):
-    # Read-only: does this email already exist? Lets the web short-circuit a
-    # returning registrant at the email step (no write, so nothing is clobbered).
+    # Read-only: does this email already exist, and is it a *completed* signup?
+    # The landing hero posts {email} first (an empty-answers row), then redirects
+    # into the wizard. If we short-circuited on mere existence, that early-capture
+    # row would skip every demographic step. So `complete` is true only when the
+    # row carries answers — the web short-circuits to "already in" only then,
+    # otherwise it walks the wizard and upserts the answers over the empty row.
     with api_tx() as tx:
         row = waitlist_get(tx, req.email)
-    return {'exists': row is not None}
+    answers = row.get('answers') if row else None
+    complete = isinstance(answers, dict) and len(answers) > 0
+    return {'exists': row is not None, 'complete': complete}
