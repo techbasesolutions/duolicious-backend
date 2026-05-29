@@ -9,7 +9,7 @@ from PIL import Image
 import io
 import boto3
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from service.config import API_BASE_URL, EMAIL_DOMAIN, PRODUCT_NAME
+from service.config import API_BASE_URL, EMAIL_DOMAIN, PRODUCT_NAME, SIGNUPS_OPEN, SIGNUP_ALLOWED_DOMAINS
 from service.person.sql import *
 from service.search.sql import *
 from commonsql import *
@@ -262,6 +262,12 @@ def post_request_otp(req: t.PostRequestOtp):
 
     if not check_and_update_bad_domains(req.email):
         return 'Disposable email', 400
+
+    # Pre-launch gate: signups are closed to the public until launch. Emails on
+    # an allowed domain (the team's own) bypass so they can test sign-in via the
+    # API. See service.config.
+    if not SIGNUPS_OPEN and normalize_email(req.email).rpartition("@")[2] not in SIGNUP_ALLOWED_DOMAINS:
+        return 'Signups are not open yet', 403
 
     session_token = secrets.token_hex(64)
     session_token_hash = sha512(session_token)

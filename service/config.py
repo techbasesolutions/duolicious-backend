@@ -83,3 +83,16 @@ EMAIL_DOMAIN: str = os.environ.get(
     "AHAVAH_EMAIL_DOMAIN",
     "ahavah.app",
 )
+
+
+# Pre-launch signup gate. Until launch, /request-otp is closed to the public so
+# no account can be created before the allotted time. Defaults to CLOSED; flip
+# AHAVAH_SIGNUPS_OPEN=true at launch. SIGNUP_ALLOWED_DOMAINS is a comma-separated
+# list of email domains (e.g. the team's own domain) that bypass the gate to
+# test sign-in via the API.
+SIGNUPS_OPEN: bool = os.environ.get("AHAVAH_SIGNUPS_OPEN", "false").strip().lower() == "true"
+SIGNUP_ALLOWED_DOMAINS: frozenset = frozenset(
+    d.strip().lower().lstrip("@")
+    for d in os.environ.get("AHAVAH_SIGNUP_ALLOWED_DOMAINS", "").split(",")
+    if d.strip()
+)
