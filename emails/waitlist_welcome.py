@@ -17,12 +17,12 @@ from emails.base import (
     button,
     chip,
     callout,
+    title_image,
     INK,
     INK_SOFT,
     INDIGO,
     LIME,
     MUTED,
-    SERIF,
     SANS,
 )
 
@@ -34,9 +34,7 @@ PREHEADER = "You're on the list. Ahavah launches Summer 2026. Founding members g
 _BODY = f"""
 {chip("You're on the list")}
 
-<h1 class="e-title" style="margin:18px 0 14px;font-family:{SERIF};font-size:44px;line-height:1.0;letter-spacing:-0.022em;font-weight:400;color:{INK};">
-  Welcome to <span style="color:{INDIGO};">Ahavah</span>.
-</h1>
+{title_image("title-welcome.png", "title-welcome-wht.png", "Welcome to Ahavah.", 528)}
 
 <p class="e-text" style="margin:0 0 16px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
   Thank you for joining. Ahavah is Torah-observant matchmaking for serious
@@ -52,9 +50,7 @@ _BODY = f"""
 
 <hr style="height:1px;background:rgba(15,11,31,0.08);border:none;margin:0 0 28px;"/>
 
-<h2 class="e-h2" style="margin:0 0 10px;font-family:{SERIF};font-size:26px;line-height:1.06;letter-spacing:-0.01em;font-weight:400;color:{INK};">
-  Know someone else seeking marriage?
-</h2>
+{title_image("subhead-welcome.png", "subhead-welcome-wht.png", "Know someone else seeking marriage?", 528)}
 <p class="e-text" style="margin:0 0 24px;font-family:{SANS};font-size:15px;line-height:1.6;color:{INK_SOFT};">
   Ahavah grows by word of mouth. Share it with believers who are serious about
   marriage, family, and building a Torah-based home.

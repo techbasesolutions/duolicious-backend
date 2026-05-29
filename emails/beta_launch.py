@@ -13,11 +13,10 @@ from emails.base import (
     button,
     chip,
     callout,
-    INK,
+    title_image,
     INK_SOFT,
     INDIGO,
     MUTED,
-    SERIF,
     SANS,
 )
 
@@ -29,9 +28,7 @@ PREHEADER = "The Ahavah beta is open. Sign in with your email to get started."
 _BODY = f"""
 {chip("Beta is live")}
 
-<h1 class="e-title" style="margin:18px 0 14px;font-family:{SERIF};font-size:44px;line-height:1.0;letter-spacing:-0.022em;font-weight:400;color:{INK};">
-  The beta is <span style="color:{INDIGO};">open</span>.
-</h1>
+{title_image("title-beta-launch.png", "title-beta-launch-wht.png", "The beta is open.", 528)}
 
 <p class="e-text" style="margin:0 0 16px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
   You signed up to test Ahavah, Torah-observant matchmaking for serious

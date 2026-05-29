@@ -14,11 +14,10 @@ from emails.base import (
     render,
     chip,
     callout,
-    INK,
+    title_image,
     INK_SOFT,
     INDIGO,
     MUTED,
-    SERIF,
     SANS,
 )
 
@@ -31,9 +30,7 @@ PREHEADER = f"You're in. We'll email your sign-in link on {SIGN_IN_DATE}."
 _BODY = f"""
 {chip("Beta tester")}
 
-<h1 class="e-title" style="margin:18px 0 14px;font-family:{SERIF};font-size:44px;line-height:1.0;letter-spacing:-0.022em;font-weight:400;color:{INK};">
-  You're <span style="color:{INDIGO};">in</span>.
-</h1>
+{title_image("title-beta-welcome.png", "title-beta-welcome-wht.png", "You're in.", 528)}
 
 <p class="e-text" style="margin:0 0 16px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
   Thank you for signing up to test Ahavah. You're on the beta list, helping shape
