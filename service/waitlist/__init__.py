@@ -28,14 +28,30 @@ _Q_GET = """
 """
 
 
-def upsert(tx, email: str, answers: dict) -> bool:
-    """Insert or update the waitlist row. Returns True iff this was a brand-new
-    signup (so the caller can fire the welcome email exactly once per email)."""
+_Q_PREV = "SELECT answers FROM waitlist_signup WHERE email = %(email)s"
+
+
+def upsert(tx, email: str, answers: dict) -> dict:
+    """Insert or update the waitlist row.
+
+    Returns {"inserted": bool, "became_complete": bool}:
+      - inserted: this was a brand-new row (fire the welcome email once).
+      - became_complete: the row went from no answers to having answers, i.e.
+        the signer-upper just completed the demographic wizard (fire the
+        admin "completed onboarding" notice once).
+    """
+    norm = normalize_email(email)
+    prev = tx.execute(_Q_PREV, dict(email=norm)).fetchone()
+    prev_complete = bool(prev and prev["answers"])
+    now_complete = bool(answers)
     row = tx.execute(_Q_UPSERT, dict(
-        email=normalize_email(email),
+        email=norm,
         answers=json.dumps(answers or {}),
     )).fetchone()
-    return bool(row and row["inserted"])
+    return {
+        "inserted": bool(row and row["inserted"]),
+        "became_complete": now_complete and not prev_complete,
+    }
 
 
 def get(tx, email: str) -> dict | None:

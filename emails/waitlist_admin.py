@@ -48,10 +48,15 @@ def _answer_rows(answers: Optional[dict]) -> str:
     return "".join(out)
 
 
-def new_signup_html(email: str, answers: Optional[dict], count: Optional[int]) -> str:
+def new_signup_html(email: str, answers: Optional[dict], count: Optional[int], completed: bool = False) -> str:
     safe_email = html.escape(email)
     when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    count_line = f"Waitlist is now at {count}." if count else "New waitlist signup."
+    if completed:
+        chip_label = "Onboarding complete"
+        count_line = "Someone completed onboarding."
+    else:
+        chip_label = "New signup"
+        count_line = f"Waitlist is now at {count}." if count else "New waitlist signup."
     email_cell = f'<a href="mailto:{safe_email}" style="color:{INDIGO};font-weight:600;text-decoration:none;">{safe_email}</a>'
 
     return f"""<!doctype html>
@@ -67,7 +72,7 @@ def new_signup_html(email: str, answers: Optional[dict], count: Optional[int]) -
   <tr><td align="center" style="padding:24px 12px;">
     <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;background:#ffffff;border-radius:14px;overflow:hidden;">
       <tr><td style="padding:28px 32px 8px;font-family:{SANS};">
-        <span style="display:inline-block;padding:7px 13px;border-radius:999px;background:#EDE8FE;color:{INDIGO};font-size:12px;font-weight:800;letter-spacing:0.16em;text-transform:uppercase;">&#9679;&nbsp; New signup</span>
+        <span style="display:inline-block;padding:7px 13px;border-radius:999px;background:#EDE8FE;color:{INDIGO};font-size:12px;font-weight:800;letter-spacing:0.16em;text-transform:uppercase;">&#9679;&nbsp; {html.escape(chip_label)}</span>
         <h1 style="margin:16px 0 4px;font-family:{SANS};font-size:24px;font-weight:800;letter-spacing:-0.01em;color:{INK};">{count_line}</h1>
         <p style="margin:0;font-family:{SANS};font-size:13px;color:{MUTED};">{when}</p>
       </td></tr>
@@ -108,6 +113,35 @@ def send_new_signup_notice_async(email: str, answers: Optional[dict] = None, cou
     def _go() -> None:
         try:
             send_new_signup_notice(email, answers, count)
+        except Exception:
+            print(traceback.format_exc())
+
+    threading.Thread(target=_go, daemon=True).start()
+
+
+def send_onboarding_complete_notice(email: str, answers: Optional[dict] = None) -> None:
+    """Synchronous admin notice: a signer-upper completed the demographic
+    onboarding (waitlist row gained answers). Best-effort."""
+    if not email or email.endswith("@example.com"):
+        return
+    from smtp import aws_smtp
+
+    aws_smtp.send(
+        subject="Ahavah onboarding completed",
+        body=new_signup_html(email, answers, None, completed=True),
+        to_addr=TO_ADDR,
+        from_addr=FROM_ADDR,
+    )
+
+
+def send_onboarding_complete_notice_async(email: str, answers: Optional[dict] = None) -> None:
+    """Fire-and-forget; failures swallowed (the row is already saved)."""
+    if not email or email.endswith("@example.com"):
+        return
+
+    def _go() -> None:
+        try:
+            send_onboarding_complete_notice(email, answers)
         except Exception:
             print(traceback.format_exc())
 

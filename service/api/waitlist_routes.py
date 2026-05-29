@@ -14,7 +14,10 @@ from service.api.decorators import get, post, validate, shared_otp_limit, limite
 from database import api_tx
 from service.waitlist import upsert, count as waitlist_count, get as waitlist_get
 from emails.waitlist_welcome import send_waitlist_welcome_async
-from emails.waitlist_admin import send_new_signup_notice_async
+from emails.waitlist_admin import (
+    send_new_signup_notice_async,
+    send_onboarding_complete_notice_async,
+)
 
 # Read-only existence probe — fires on the onboarding email step. Looser limit
 # than the OTP/signup limiter (it's a cheap read), but still bounded to blunt
@@ -31,15 +34,20 @@ waitlist_check_limit = limiter.shared_limit(
 def post_waitlist(req: t.PostWaitlist):
     answers = req.answers if isinstance(req.answers, dict) else {}
     with api_tx() as tx:
-        is_new = upsert(tx, req.email, answers)
-        total = waitlist_count(tx) if is_new else None
+        res = upsert(tx, req.email, answers)
+        total = waitlist_count(tx)
+    is_new = res["inserted"]
     # On a brand-new signup (the landing posts {email} first, then the wizard
-    # re-upserts answers — we don't resend), fire two fire-and-forget emails so
-    # the response isn't blocked on SMTP: the welcome to the signer-upper, and
-    # a new-signup notice to the admin inbox.
+    # re-upserts answers), fire fire-and-forget emails so the response isn't
+    # blocked on SMTP: the welcome to the signer-upper + a new-signup notice
+    # to the admin inbox.
     if is_new:
         send_waitlist_welcome_async(req.email)
         send_new_signup_notice_async(req.email, answers, total)
+    # When the row gains answers for the first time (the wizard completion),
+    # notify the admin inbox that someone completed onboarding.
+    if res["became_complete"]:
+        send_onboarding_complete_notice_async(req.email, answers)
     # isNew=false → returning registrant (the web shows a "Welcome back" variant).
     return {'ok': True, 'isNew': is_new}
 
