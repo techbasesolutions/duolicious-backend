@@ -9,6 +9,9 @@ test/output
 
 node_modules
 
+# design handoff dump (do not commit)
+Ahavah-Claude Design/
+
 # Production secrets — never commit. Template lives at .env.production.template.
 .env
 .env.local
