@@ -15,6 +15,11 @@ name: Deploy ahavah/main → droplet
 #                     (matches /root/.ssh/authorized_keys on droplet)
 #   DEPLOY_HOST     — droplet's IPv6 address
 #   DEPLOY_USER     — `root`
+#   DEPLOY_HOST_KEY — droplet's public host key (ssh-keyscan output for
+#                     both the IPv4 and IPv6 addresses, newline-separated).
+#                     Pinning prevents MITM during BGP/DNS hijack windows.
+#                     Refresh by ssh-keyscan-ing the droplet and updating
+#                     the secret if/when the droplet's host key rotates.
 #
 # Migrations: any new file in `migrations/*.sql` is applied via
 # `docker exec ... psql -f` BEFORE the api rebuild. All migrations in
@@ -49,14 +54,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Install SSH key
+      - name: Install SSH key + pin host key
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519_ahavah
           chmod 600 ~/.ssh/id_ed25519_ahavah
+          # Pin the droplet's host pubkey so ssh refuses a swapped key
+          # (BGP/DNS hijack defense). Secret is a multi-line ssh-keyscan
+          # output covering IPv4 + IPv6 addresses.
+          printf '%s\n' "$DEPLOY_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
       - name: Deploy via SSH
         env:
@@ -64,8 +75,8 @@ jobs:
           SSH_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           ssh -i ~/.ssh/id_ed25519_ahavah \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile=~/.ssh/known_hosts \
               -o ConnectTimeout=30 \
               "${SSH_USER}@${SSH_HOST}" \
               'bash -s' <<'REMOTE_SCRIPT'
