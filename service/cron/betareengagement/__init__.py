@@ -66,6 +66,18 @@ _Q_MARK_SENT = """
      WHERE email = %(email)s
 """
 
+# Outbox-pattern claim: stamp the row BEFORE the SMTP call so a process
+# restart / concurrent tick / scaled-out cron cannot double-send. Returns
+# the email iff this tick won the claim; another tick that already
+# claimed it gets an empty result and skips (audit DI #7).
+_Q_CLAIM = """
+    UPDATE beta_signup
+       SET reengagement_sent_at = NOW()
+     WHERE email = %(email)s
+       AND reengagement_sent_at IS NULL
+    RETURNING email
+"""
+
 
 async def send_beta_reengagement_once():
     """Find eligible beta testers and send one re-engagement email each."""
@@ -86,18 +98,27 @@ async def send_beta_reengagement_once():
     for row in rows:
         email = row['email']
         masked = mask_email(email)
+
+        # Outbox claim first — stamp atomically so a concurrent tick or
+        # process restart cannot re-send this row even if our SMTP call
+        # crashes mid-flight. Trade-off: a Resend HTTPS failure leaves
+        # the row stamped and we won't retry, which is acceptable for a
+        # low-criticality nudge (audit DI #7).
+        async with api_tx() as tx:
+            claim = (await tx.execute(_Q_CLAIM, dict(email=email))).fetchone()
+        if not claim:
+            # Another tick already claimed it (or row got stamped between
+            # _Q_PICK and now). Skip.
+            print(f'beta_reengagement: skip (already claimed) {masked}')
+            continue
+
         try:
             # send_reengagement is sync (smtp + best-effort). Push to a
             # thread so we don't block the cron event loop on SMTP latency.
             await asyncio.to_thread(send_reengagement, email)
+            print(f'beta_reengagement: sent {masked}')
         except Exception as e:
-            # Don't stamp on failure; we'll retry on the next tick.
-            print(f'beta_reengagement: send failed for {masked}: {e!r}')
-            continue
-
-        async with api_tx() as tx:
-            await tx.execute(_Q_MARK_SENT, dict(email=email))
-        print(f'beta_reengagement: sent + stamped {masked}')
+            print(f'beta_reengagement: send failed (already claimed) for {masked}: {e!r}')
 
 
 async def send_beta_reengagement_forever():

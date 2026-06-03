@@ -10,7 +10,7 @@ brand-new row, fires the confirmation email promising a June 15 sign-in link.
 from __future__ import annotations
 
 import duotypes as t
-from service.api.decorators import post, validate, limiter, _is_private_ip
+from service.api.decorators import post, validate, limiter, shared_recipient_limit, _is_private_ip
 from database import api_tx
 from service.beta import register as register_beta, count as beta_count
 from emails.beta_welcome import send_beta_welcome_async
@@ -23,7 +23,7 @@ beta_limit = limiter.shared_limit(
 )
 
 
-@post('/beta-tester', limiter=beta_limit)
+@post('/beta-tester', limiter=[beta_limit, shared_recipient_limit])
 @validate(t.PostBetaTester)
 def post_beta_tester(req: t.PostBetaTester):
     with api_tx() as tx:

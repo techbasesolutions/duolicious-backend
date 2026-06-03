@@ -10,7 +10,7 @@ onboarding-shaped JSONB blob persisted as-is for a magic-link launch flow.
 from __future__ import annotations
 
 import duotypes as t
-from service.api.decorators import get, post, validate, shared_otp_limit, limiter, _is_private_ip
+from service.api.decorators import get, post, validate, shared_otp_limit, shared_recipient_limit, limiter, _is_private_ip
 from database import api_tx
 from service.waitlist import upsert, count as waitlist_count, get as waitlist_get
 from service.beta import is_beta
@@ -30,7 +30,7 @@ waitlist_check_limit = limiter.shared_limit(
 )
 
 
-@post('/waitlist', limiter=shared_otp_limit)
+@post('/waitlist', limiter=[shared_otp_limit, shared_recipient_limit])
 @validate(t.PostWaitlist)
 def post_waitlist(req: t.PostWaitlist):
     answers = req.answers if isinstance(req.answers, dict) else {}

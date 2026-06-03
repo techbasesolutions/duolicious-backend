@@ -282,6 +282,62 @@ class PostWaitlist(BaseModel):
     def validate_email(cls, value):
         return EmailStr._validate(value.lower().strip())
 
+    @field_validator('answers', mode='before')
+    def validate_answers(cls, value):
+        """Constrain the jsonb blob so a malicious client can't shove
+        arbitrary keys, multi-megabyte strings, or unknown fields into
+        waitlist_signup.answers. Allowed keys mirror the wizard's
+        ahavah-web/src/app/waitlist/page.tsx schema; everything else is
+        silently dropped. Max body ~8KB so the row stays cheap to read
+        (audit Data Integrity #5)."""
+        if value is None or value == "":
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError('answers must be an object')
+
+        # Tightest known shape — mirrors WaitlistAnswers in the wizard.
+        ALLOWED = frozenset({
+            'gender',
+            'intent',
+            'has_children',
+            'wants_children',
+            'family_view',
+            'ethnicity',
+            'nationality',
+            'country',
+            'referral',
+            'age',
+            'date_of_birth',
+        })
+
+        cleaned: dict = {}
+        for k, v in value.items():
+            if not isinstance(k, str) or k not in ALLOWED:
+                continue
+            # Per-value cap: small primitives and short lists only.
+            if isinstance(v, str):
+                if len(v) > 256:
+                    raise ValueError(f'answers.{k} too long')
+                cleaned[k] = v
+            elif isinstance(v, bool) or isinstance(v, int):
+                cleaned[k] = v
+            elif isinstance(v, list):
+                if len(v) > 16:
+                    raise ValueError(f'answers.{k} too many entries')
+                if any(not isinstance(x, str) or len(x) > 64 for x in v):
+                    raise ValueError(f'answers.{k} contains invalid entries')
+                cleaned[k] = v
+            elif v is None:
+                continue
+            else:
+                raise ValueError(f'answers.{k} has unsupported type')
+
+        # Total payload cap as a defense in depth.
+        import json as _json
+        if len(_json.dumps(cleaned)) > 4096:
+            raise ValueError('answers too large')
+        return cleaned
+
 
 class PostWaitlistCheck(BaseModel):
     """Public POST /waitlist/check body — read-only existence probe for the

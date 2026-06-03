@@ -294,7 +294,10 @@ RETURNING
 Q_MAYBE_DELETE_ONBOARDEE = """
 WITH valid_session AS (
     UPDATE duo_session
-    SET signed_in = TRUE
+    SET signed_in = TRUE,
+        otp = NULL,
+        otp_expiry = NOW(),
+        otp_attempts = 0
     WHERE
         session_token_hash = %(session_token_hash)s AND
         otp = %(otp)s AND
@@ -311,7 +314,10 @@ WITH valid_session AS (
     UPDATE
         duo_session
     SET
-        signed_in = TRUE
+        signed_in = TRUE,
+        otp = NULL,
+        otp_expiry = NOW(),
+        otp_attempts = 0
     WHERE
         session_token_hash = %(session_token_hash)s
     AND
@@ -423,6 +429,45 @@ FROM
 Q_DELETE_DUO_SESSION = """
 DELETE FROM duo_session
 WHERE session_token_hash = %(session_token_hash)s
+"""
+
+# Increment the per-session OTP-failure counter. After OTP_MAX_ATTEMPTS
+# (5) failures we null the OTP so further /check-otp calls cannot brute-
+# force it; the user must /request-otp again. Returns `locked` so the
+# caller can give a clearer 401.
+Q_INCREMENT_OTP_ATTEMPTS = """
+UPDATE duo_session
+   SET otp_attempts = otp_attempts + 1,
+       otp        = CASE WHEN otp_attempts + 1 >= 5 THEN NULL ELSE otp END,
+       otp_expiry = CASE WHEN otp_attempts + 1 >= 5 THEN NOW() ELSE otp_expiry END
+ WHERE session_token_hash = %(session_token_hash)s
+RETURNING otp_attempts, (otp_attempts >= 5) AS locked
+"""
+
+# Wipe every duo_session row for a person — called on user-initiated
+# delete (audit Auth #2). After this the stolen-token blast radius is
+# zero; the user re-authenticates via /request-otp next time. Returns
+# the count for log visibility.
+Q_DELETE_DUO_SESSIONS_FOR_PERSON = """
+WITH d AS (
+    DELETE FROM duo_session
+     WHERE person_id = %(person_id)s
+    RETURNING 1
+)
+SELECT count(*) AS n FROM d
+"""
+
+# Wipe every duo_session row for a person EXCEPT the current one — called
+# on change_email_verify so an attacker with a stolen token loses access
+# while the user keeps their current device. Returns count.
+Q_DELETE_DUO_SESSIONS_FOR_PERSON_EXCEPT = """
+WITH d AS (
+    DELETE FROM duo_session
+     WHERE person_id = %(person_id)s
+       AND session_token_hash <> %(keep_session_token_hash)s
+    RETURNING 1
+)
+SELECT count(*) AS n FROM d
 """
 
 Q_FINISH_ONBOARDING = f"""

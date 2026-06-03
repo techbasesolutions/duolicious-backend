@@ -138,6 +138,31 @@ shared_otp_limit = limiter.shared_limit(
     exempt_when=_is_private_ip,
 )
 
+
+def _recipient_email_key() -> str:
+    """Rate-limit key based on the request body's `email` field. Used to
+    bound how often ANY caller can trigger a mail-send to a specific
+    recipient (audit Email #1: inbox-bomb prevention). Falls back to the
+    client IP for non-JSON requests so the limiter never crashes."""
+    try:
+        body = request.get_json(silent=True) or {}
+        email = (body.get("email") or "").strip().lower()
+    except Exception:
+        email = ""
+    return f"to:{email}" if email else _get_remote_address()
+
+
+# Per-recipient mail-send cap across /request-otp, /waitlist, /beta-tester.
+# 5/hour + 20/day per *target* email prevents N-IP botnets from spraying
+# verified-sender mail at a single victim's inbox. Bypassed on private IPs
+# so local/CI tests aren't affected.
+shared_recipient_limit = limiter.shared_limit(
+    "5 per hour; 20 per day",
+    scope="recipient",
+    key_func=_recipient_email_key,
+    exempt_when=_is_private_ip,
+)
+
 def limiter_account():
     return getattr(g, 'normalized_email', _get_remote_address())
 
@@ -212,9 +237,13 @@ def validate(RequestType):
                 )
 
                 return json_err, 400
-            except Exception as e:
+            except Exception:
+                # Stack trace and exception details go to logs only; the
+                # response body is a generic 500 so file paths, library
+                # versions, and env config don't leak to the client
+                # (audit Auth LOW: validate-500-info-leak).
                 print(traceback.format_exc())
-                return str(e), 500
+                return 'Internal server error', 500
             return func(req, *args, **kwargs)
         go1.__name__ = func.__name__
         return go1
@@ -313,23 +342,32 @@ def require_auth(expected_onboarding_status, expected_sign_in_status, auth='requ
         return go1
     return go2
 
+def _wrap_limiters(func, limiter):
+    """`limiter` may be None, a single decorator (back-compat), or a list of
+    decorators (e.g. [shared_otp_limit, shared_recipient_limit]). Each is
+    applied innermost-first; both fire on every request."""
+    if limiter is None:
+        return func
+    limiters = limiter if isinstance(limiter, (list, tuple)) else [limiter]
+    wrapped = func
+    for L in reversed(limiters):
+        wrapped = L(wrapped)
+    return wrapped
+
+
 def make_decorator(flask_decorator):
     def go2(
             rule,
             limiter=None,
             **kwargs
     ):
-        maybe_limiter = limiter or (lambda x: x)
-
         def go1(func):
             return flask_decorator(
                 rule,
                 strict_slashes=False,
                 **kwargs,
             )(
-                maybe_limiter(
-                    return_empty_string(func)
-                )
+                _wrap_limiters(return_empty_string(func), limiter)
             )
         return go1
     return go2
@@ -343,22 +381,21 @@ def make_auth_decorator(flask_decorator):
             auth='required',
             **kwargs
     ):
-        maybe_limiter = limiter or (lambda x: x)
-
         def go1(func):
             return flask_decorator(
                 rule,
                 strict_slashes=False,
                 **kwargs,
             )(
-                maybe_limiter(
+                _wrap_limiters(
                     require_auth(
                         expected_onboarding_status,
                         expected_sign_in_status,
                         auth=auth,
                     )(
                         return_empty_string(func)
-                    )
+                    ),
+                    limiter,
                 )
             )
         return go1

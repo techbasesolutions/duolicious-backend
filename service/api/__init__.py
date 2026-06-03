@@ -45,6 +45,7 @@ from service.api.decorators import (
     validate,
     limiter,
     shared_otp_limit,
+    shared_recipient_limit,
     disable_ip_rate_limit,
     disable_account_rate_limit,
     limiter_account,
@@ -176,7 +177,7 @@ def init_db():
 
     migrate_unnormalized_emails()
 
-@post('/request-otp', limiter=shared_otp_limit)
+@post('/request-otp', limiter=[shared_otp_limit, shared_recipient_limit])
 @validate(t.PostRequestOtp)
 def post_request_otp(req: t.PostRequestOtp):
     limit = "40 per day"
@@ -389,7 +390,10 @@ def get_me_by_session(s: t.SessionInfo):
 
 @get('/me/<person_id>')
 def get_me_by_id(person_id: str):
-    return person.get_me(person_id_as_str=person_id)
+    # Unauthenticated lookup by UUID — used by chat WS flow + a few moderator
+    # surfaces that already know the UUID. We DO NOT return the email here;
+    # it would let any caller who has a UUID harvest the address (audit Auth #6).
+    return person.get_me(person_id_as_str=person_id, include_email=False)
 
 @aget('/prospect-profile/<prospect_uuid>', auth='optional')
 def get_prospect_profile(

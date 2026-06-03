@@ -257,17 +257,20 @@ def _send_otp(email: str, otp: str):
     )
 
 def post_request_otp(req: t.PostRequestOtp):
+    # Pre-launch gate FIRST: signups closed to the public until launch.
+    # Run before firehol + disposable so closed-beta callers don't probe
+    # those side-effecting tables and so the response shape is identical
+    # for every disallowed (banned/disposable/disallowed-domain) case
+    # behind a single 403 (audit Auth #3).
+    norm = normalize_email(req.email)
+    if not SIGNUPS_OPEN and norm.rpartition("@")[2] not in SIGNUP_ALLOWED_DOMAINS:
+        return 'Signups are not open yet', 403
+
     if not request.remote_addr or firehol.matches(request.remote_addr):
         return 'IP address blocked', 460
 
     if not check_and_update_bad_domains(req.email):
         return 'Disposable email', 400
-
-    # Pre-launch gate: signups are closed to the public until launch. Emails on
-    # an allowed domain (the team's own) bypass so they can test sign-in via the
-    # API. See service.config.
-    if not SIGNUPS_OPEN and normalize_email(req.email).rpartition("@")[2] not in SIGNUP_ALLOWED_DOMAINS:
-        return 'Signups are not open yet', 403
 
     session_token = secrets.token_hex(64)
     session_token_hash = sha512(session_token)
@@ -333,6 +336,15 @@ def post_check_otp(req: t.PostCheckOtp, s: t.SessionInfo):
         row = tx.fetchone()
 
         if not row:
+            # Wrong OTP. Increment the per-session attempt counter and
+            # null the OTP after 5 failures so it cannot be brute-forced
+            # within its 10-minute lifetime (audit Auth #1).
+            attempts_row = tx.execute(
+                Q_INCREMENT_OTP_ATTEMPTS,
+                dict(session_token_hash=s.session_token_hash),
+            ).fetchone()
+            if attempts_row and attempts_row.get('locked'):
+                return 'Too many attempts. Request a new code.', 401
             return 'Invalid OTP', 401
 
         club_params = dict(
@@ -622,6 +634,7 @@ def post_finish_onboarding(s: t.SessionInfo):
 def get_me(
     person_id_as_int: int | None = None,
     person_id_as_str: str | None = None,
+    include_email: bool = True,
 ):
     """Returns the current user's basic profile for the /me endpoint.
 
@@ -629,6 +642,10 @@ def get_me(
     personality-trait-bearing implementation with a minimal name + person_id
     response. The `personality` array is now empty; clients should not depend
     on its contents (they shouldn't anyway, post Q&A strip).
+
+    `include_email`: only the authed /me path passes True. The public
+    /me/<uuid> path passes False so an attacker who knows a UUID cannot
+    harvest the address (audit Auth #6).
     """
     if person_id_as_int is None and person_id_as_str is None:
         raise ValueError('pass an arg, please')
@@ -660,7 +677,7 @@ def get_me(
     if not row:
         return '', 404
 
-    return {
+    out = {
         'name': row['person_name'],
         'person_id': row['person_id'],
         # The chat WebSocket SASL flow needs the bare uuid; /check-otp only
@@ -668,13 +685,15 @@ def get_me(
         # OTP time (i.e. NOT fresh onboardees). Returning it here lets the
         # frontend backfill `ahavah.my-uuid` on first /me after graduation.
         'person_uuid': row['person_uuid'],
-        # Account-management surface fields. The frontend's
-        # /settings/account renders these as the current values; without
-        # them we showed hardcoded fakes ("ehud@example.com", etc.).
-        'email': row['email'],
         'primary_language': row.get('primary_language'),
         'personality': [],   # populated when matching system relands in Phase 1+
     }
+    if include_email:
+        # Account-management surface fields. The frontend's
+        # /settings/account renders these as the current values; without
+        # them we showed hardcoded fakes ("ehud@example.com", etc.).
+        out['email'] = row['email']
+    return out
 
 def get_prospect_profile(s: Optional[t.SessionInfo], prospect_uuid):
     params = dict(
@@ -821,6 +840,14 @@ def delete_or_ban_account(
                 dict(person_id=s.person_id),
             )
             _email_row = cur.fetchone()
+            # Wipe every duo_session for this person so a token stolen
+            # before the delete can no longer authenticate during the
+            # 7-day grace window (audit Auth #2). User re-authenticates
+            # via /request-otp on cancel-deletion.
+            tx.execute(
+                Q_DELETE_DUO_SESSIONS_FOR_PERSON,
+                dict(person_id=s.person_id),
+            )
         else:
             raise ValueError('At least one parameter must not be None')
 
@@ -1055,6 +1082,17 @@ def change_email_verify(s: t.SessionInfo, otp: str):
                 new_email=new_email,
                 normalized_email=normalize_email(new_email),
                 person_id=s.person_id,
+            ),
+        )
+        # Email change implies an account-control event — wipe every OTHER
+        # duo_session for this person so a stolen-pre-change token loses
+        # access. Keep the caller's current session so the user stays
+        # signed in on this device (audit Auth #2).
+        tx.execute(
+            Q_DELETE_DUO_SESSIONS_FOR_PERSON_EXCEPT,
+            dict(
+                person_id=s.person_id,
+                keep_session_token_hash=s.session_token_hash,
             ),
         )
 
