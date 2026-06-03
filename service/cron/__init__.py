@@ -1,4 +1,5 @@
 from service.cron.autodeactivate2 import autodeactivate2_forever
+from service.cron.betareengagement import send_beta_reengagement_forever
 from service.cron.checkphotos import check_photos_forever
 from service.cron.garbagerecords import delete_garbage_records_forever
 from service.cron.notifications import send_notifications_forever
@@ -58,6 +59,11 @@ async def main():
         # Phase W: hard-delete pending-deletion person rows past the
         # 7-day grace window. Runs hourly.
         hard_delete_expired_forever(),
+
+        # Re-engagement: beta testers who joined >=7 days ago but still
+        # have no waitlist demographics — send the follow-up once. Runs
+        # every 6 hours; gated by beta_signup.reengagement_sent_at.
+        send_beta_reengagement_forever(),
 
         check_connections_forever(),
 
