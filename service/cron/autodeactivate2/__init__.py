@@ -29,7 +29,8 @@ def maybe_send_email(email: str):
         to_addr=email,
     )
 
-    print('autodeactivate2: sending deactivation email to', email)
+    from emails.base import mask_email
+    print('autodeactivate2: sending deactivation email to', mask_email(email))
     aws_smtp.send(**send_args)
 
 async def autodeactivate2_once():

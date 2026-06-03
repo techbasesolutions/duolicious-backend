@@ -876,7 +876,8 @@ def _send_deletion_pending_email(email: str, name: str, deletion_requested_at):
             body=body,
             to_addr=email,
         )
-        print(f'delete_or_ban_account: deletion email sent to {email}')
+        from emails.base import mask_email
+        print(f'delete_or_ban_account: deletion email sent to {mask_email(email)}')
     except Exception:
         import traceback
         print('_send_deletion_pending_email: failed:')

@@ -123,11 +123,15 @@ def send_mobile_notification(row: PersonNotification):
         )
 
 async def send_notification(row: PersonNotification):
+    # Log only person_uuid + channel + has_intro/has_chat flags. The full
+    # row carries email + push token (bearer-equivalents) which should not
+    # land in stdout / log aggregators.
+    sketch = f"person_uuid={row.person_uuid} intro={row.has_intro} chat={row.has_chat}"
     if not row.token:
-        print('Sending email notification:', str(row))
+        print('Sending email notification:', sketch)
         return await send_email_notification(row)
 
-    print('Sending mobile notification:', str(row))
+    print('Sending mobile notification:', sketch)
     send_mobile_notification(row)
 
 async def update_last_notification_time(row: PersonNotification):

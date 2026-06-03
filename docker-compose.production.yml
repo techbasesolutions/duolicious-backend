@@ -30,7 +30,7 @@ services:
   postgres:
     ports: !reset []
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env.production}
       POSTGRES_USER: postgres
       POSTGRES_DB: postgres
     volumes:
@@ -57,7 +57,7 @@ services:
       DUO_DB_HOST: postgres
       DUO_DB_PORT: 5432
       DUO_DB_USER: postgres
-      DUO_DB_PASS: ${POSTGRES_PASSWORD}
+      DUO_DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env.production}
       DUO_REDIS_HOST: redis
       DUO_REDIS_PORT: 6379
       DUO_REDIS_PASS: ${REDIS_PASSWORD}
@@ -65,7 +65,7 @@ services:
       DUO_SMTP_HOST: smtp.resend.com
       DUO_SMTP_PORT: "587"
       DUO_SMTP_USER: resend
-      DUO_SMTP_PASS: ${DUO_SMTP_PASS}
+      DUO_SMTP_PASS: ${DUO_SMTP_PASS:?DUO_SMTP_PASS must be set in .env.production}
       DUO_USE_RESEND_API: ${DUO_USE_RESEND_API}
       DUO_DISABLE_FIREHOL: ${DUO_DISABLE_FIREHOL}
       DUO_RESEND_FROM_OVERRIDE: ${DUO_RESEND_FROM_OVERRIDE}
@@ -114,7 +114,7 @@ services:
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
       TWILIO_VERIFY_SERVICE_SID: ${TWILIO_VERIFY_SERVICE_SID}
       # Session secret (used by service code that signs/verifies)
-      SESSION_TOKEN_SECRET: ${SESSION_TOKEN_SECRET}
+      SESSION_TOKEN_SECRET: ${SESSION_TOKEN_SECRET:?SESSION_TOKEN_SECRET must be set in .env.production}
 
   chat:
     volumes: !reset []
@@ -126,7 +126,7 @@ services:
       DUO_DB_HOST: postgres
       DUO_DB_PORT: 5432
       DUO_DB_USER: postgres
-      DUO_DB_PASS: ${POSTGRES_PASSWORD}
+      DUO_DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env.production}
       DUO_REDIS_HOST: redis
       DUO_REDIS_PORT: 6379
       DUO_REDIS_PASS: ${REDIS_PASSWORD}
@@ -137,7 +137,7 @@ services:
       DUO_BOTO_ENDPOINT_URL: ${DUO_BOTO_ENDPOINT_URL}
       DUO_CHAT_PORTS: ${DUO_CHAT_PORTS}
       AHAVAH_XMPP_DOMAIN: ${AHAVAH_XMPP_DOMAIN}
-      SESSION_TOKEN_SECRET: ${SESSION_TOKEN_SECRET}
+      SESSION_TOKEN_SECRET: ${SESSION_TOKEN_SECRET:?SESSION_TOKEN_SECRET must be set in .env.production}
 
   cron:
     volumes: !reset []
@@ -146,13 +146,13 @@ services:
       DUO_DB_HOST: postgres
       DUO_DB_PORT: 5432
       DUO_DB_USER: postgres
-      DUO_DB_PASS: ${POSTGRES_PASSWORD}
+      DUO_DB_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env.production}
       DUO_DB_API_NAME: duo_api
       # Resend SMTP (override base smtp:1025)
       DUO_SMTP_HOST: smtp.resend.com
       DUO_SMTP_PORT: "587"
       DUO_SMTP_USER: resend
-      DUO_SMTP_PASS: ${DUO_SMTP_PASS}
+      DUO_SMTP_PASS: ${DUO_SMTP_PASS:?DUO_SMTP_PASS must be set in .env.production}
       DUO_USE_RESEND_API: ${DUO_USE_RESEND_API}
       DUO_DISABLE_FIREHOL: ${DUO_DISABLE_FIREHOL}
       DUO_RESEND_FROM_OVERRIDE: ${DUO_RESEND_FROM_OVERRIDE}

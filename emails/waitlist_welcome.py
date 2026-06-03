@@ -18,6 +18,7 @@ from emails.base import (
     chip,
     callout,
     title_image,
+    is_suppressed_send,
     INK,
     INK_SOFT,
     INDIGO,
@@ -89,7 +90,7 @@ def waitlist_welcome_html() -> str:
 def send_waitlist_welcome(email: str) -> None:
     """Synchronous send. Skips sample addresses. Best-effort (aws_smtp retries
     then gives up without raising)."""
-    if not email or email.endswith("@example.com"):
+    if is_suppressed_send(email):
         return
     from smtp import aws_smtp
 
@@ -104,7 +105,7 @@ def send_waitlist_welcome(email: str) -> None:
 def send_waitlist_welcome_async(email: str) -> None:
     """Fire-and-forget so the signup request returns immediately. Failures are
     swallowed (the welcome is non-critical; the row is already saved)."""
-    if not email or email.endswith("@example.com"):
+    if is_suppressed_send(email):
         return
 
     def _go() -> None:

@@ -14,6 +14,7 @@ from emails.base import (
     chip,
     callout,
     title_image,
+    is_suppressed_send,
     INK_SOFT,
     INDIGO,
     MUTED,
@@ -58,7 +59,7 @@ def beta_launch_html() -> str:
 def send_beta_launch(email: str) -> None:
     """Synchronous send. Skips sample addresses. Best-effort (aws_smtp retries
     then gives up without raising)."""
-    if not email or email.endswith("@example.com"):
+    if is_suppressed_send(email):
         return
     from smtp import aws_smtp
 

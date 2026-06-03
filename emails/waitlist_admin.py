@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from service.config import EMAIL_DOMAIN
+from emails.base import is_suppressed_send
 
 TO_ADDR = "admin@techbaseltd.com"
 FROM_ADDR = f"waitlist@{EMAIL_DOMAIN}"
@@ -109,7 +110,7 @@ def new_signup_html(
 
 def send_new_signup_notice(email: str, answers: Optional[dict] = None, count: Optional[int] = None, beta: Optional[bool] = None) -> None:
     """Synchronous send to the admin inbox. Skips sample addresses. Best-effort."""
-    if not email or email.endswith("@example.com"):
+    if is_suppressed_send(email):
         return
     from smtp import aws_smtp
 
@@ -124,7 +125,7 @@ def send_new_signup_notice(email: str, answers: Optional[dict] = None, count: Op
 def send_new_signup_notice_async(email: str, answers: Optional[dict] = None, count: Optional[int] = None, beta: Optional[bool] = None) -> None:
     """Fire-and-forget so the signup response isn't blocked; failures swallowed
     (the row is already saved)."""
-    if not email or email.endswith("@example.com"):
+    if is_suppressed_send(email):
         return
 
     def _go() -> None:
@@ -139,7 +140,7 @@ def send_new_signup_notice_async(email: str, answers: Optional[dict] = None, cou
 def send_onboarding_complete_notice(email: str, answers: Optional[dict] = None, beta: Optional[bool] = None) -> None:
     """Synchronous admin notice: a signer-upper completed the demographic
     onboarding (waitlist row gained answers). Best-effort."""
-    if not email or email.endswith("@example.com"):
+    if is_suppressed_send(email):
         return
     from smtp import aws_smtp
 
@@ -153,7 +154,7 @@ def send_onboarding_complete_notice(email: str, answers: Optional[dict] = None, 
 
 def send_beta_optin_notice(email: str, count: Optional[int] = None) -> None:
     """Synchronous admin notice when someone opts into the beta cohort."""
-    if not email or email.endswith("@example.com"):
+    if is_suppressed_send(email):
         return
     from smtp import aws_smtp
 
@@ -167,7 +168,7 @@ def send_beta_optin_notice(email: str, count: Optional[int] = None) -> None:
 
 def send_beta_optin_notice_async(email: str, count: Optional[int] = None) -> None:
     """Fire-and-forget; failures swallowed (the beta_signup row is the truth)."""
-    if not email or email.endswith("@example.com"):
+    if is_suppressed_send(email):
         return
 
     def _go() -> None:
@@ -181,7 +182,7 @@ def send_beta_optin_notice_async(email: str, count: Optional[int] = None) -> Non
 
 def send_onboarding_complete_notice_async(email: str, answers: Optional[dict] = None, beta: Optional[bool] = None) -> None:
     """Fire-and-forget; failures swallowed (the row is already saved)."""
-    if not email or email.endswith("@example.com"):
+    if is_suppressed_send(email):
         return
 
     def _go() -> None:

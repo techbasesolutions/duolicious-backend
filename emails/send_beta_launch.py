@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 
 from database import api_tx
+from emails.base import is_suppressed_send
 from emails.beta_launch import send_beta_launch, SUBJECT, FROM_ADDR
 
 
@@ -50,7 +51,7 @@ def main() -> None:
     sent = skipped = 0
     print(f"Sending to {len(rs)} recipient(s)...")
     for e in rs:
-        if e.endswith("@example.com"):
+        if is_suppressed_send(e):
             print(f"   skip (sample) {e}")
             skipped += 1
             continue

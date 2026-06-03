@@ -5,6 +5,10 @@
 # that; it can still be run by hand from the Actions tab if ever needed.
 on: workflow_dispatch
 
+# Defensive — workflow is manual-only and unused, but lock the token anyway.
+permissions:
+  contents: read
+
 jobs:
   build-api:
     runs-on: ubuntu-latest

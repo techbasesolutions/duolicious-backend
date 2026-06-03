@@ -31,6 +31,11 @@ on:
       - ahavah/main
   workflow_dispatch:  # allow manual re-run from the Actions tab
 
+# Lock down the GITHUB_TOKEN — this workflow only needs to clone the repo
+# (read) and reach the droplet via SSH (no GitHub API write needed).
+permissions:
+  contents: read
+
 concurrency:
   # If a second push arrives before the first finishes, cancel the
   # in-flight deploy and run the newer commit. Avoids racing two
@@ -88,14 +93,14 @@ jobs:
             docker compose -f docker-compose.yml \
                            -f docker-compose.production.yml \
                            --env-file .env.production \
-                           build api chat
+                           build api chat cron
             echo "::endgroup::"
 
-            echo "::group::recreate api+chat"
+            echo "::group::recreate api+chat+cron"
             docker compose -f docker-compose.yml \
                            -f docker-compose.production.yml \
                            --env-file .env.production \
-                           up -d api chat
+                           up -d api chat cron
             echo "::endgroup::"
 
             echo "::group::health check"

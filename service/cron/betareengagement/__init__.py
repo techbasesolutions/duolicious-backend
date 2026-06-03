@@ -28,6 +28,7 @@ import asyncio
 import os
 import random
 
+from emails.base import mask_email, suppressed_sql_pattern
 from emails.reengagement import send_reengagement
 
 
@@ -54,7 +55,7 @@ _Q_PICK = """
      WHERE b.reengagement_sent_at IS NULL
        AND b.created_at < NOW() - (%(days)s || ' days')::INTERVAL
        AND (w.answers IS NULL OR w.answers = '{}'::jsonb)
-       AND b.email NOT LIKE %(sample)s
+       AND NOT (b.email ILIKE ANY(%(suppressed)s))
      ORDER BY b.created_at
      LIMIT 100
 """
@@ -71,7 +72,10 @@ async def send_beta_reengagement_once():
     async with api_tx() as tx:
         cur = await tx.execute(
             _Q_PICK,
-            dict(days=BETA_REENGAGEMENT_GRACE_DAYS, sample='%@example.com'),
+            dict(
+                days=BETA_REENGAGEMENT_GRACE_DAYS,
+                suppressed=suppressed_sql_pattern(),
+            ),
         )
         rows = await cur.fetchall()
 
@@ -81,18 +85,19 @@ async def send_beta_reengagement_once():
     print(f'beta_reengagement: {len(rows)} candidate(s) to email')
     for row in rows:
         email = row['email']
+        masked = mask_email(email)
         try:
             # send_reengagement is sync (smtp + best-effort). Push to a
             # thread so we don't block the cron event loop on SMTP latency.
             await asyncio.to_thread(send_reengagement, email)
         except Exception as e:
             # Don't stamp on failure; we'll retry on the next tick.
-            print(f'beta_reengagement: send failed for {email}: {e!r}')
+            print(f'beta_reengagement: send failed for {masked}: {e!r}')
             continue
 
         async with api_tx() as tx:
             await tx.execute(_Q_MARK_SENT, dict(email=email))
-        print(f'beta_reengagement: sent + stamped {email}')
+        print(f'beta_reengagement: sent + stamped {masked}')
 
 
 async def send_beta_reengagement_forever():

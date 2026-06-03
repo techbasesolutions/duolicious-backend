@@ -17,6 +17,53 @@ EMAIL_ASSET_ORIGIN: str = os.environ.get(
 LOGO_URL: str = f"{EMAIL_ASSET_ORIGIN}/email/logo-horizontal.png"          # dark ink (on light)
 LOGO_WHITE_URL: str = f"{EMAIL_ASSET_ORIGIN}/email/logo-horizontal-wht.png"  # white (on dark)
 
+
+# --- Send suppression ------------------------------------------------------
+# Domains that must NEVER receive a real send from any /send_*/ script or cron.
+# `example.com` is the RFC-2606 documentation TLD (sample addresses); we also
+# suppress our own team domain by default so QA inboxes don't get hit by the
+# bulk reengagement / beta-launch cron. Override via env at boot.
+_SUPPRESSED = tuple(
+    d.strip().lower().lstrip("@")
+    for d in os.environ.get(
+        "AHAVAH_SEND_SUPPRESSED_DOMAINS",
+        "example.com,techbaseltd.com",
+    ).split(",")
+    if d.strip()
+)
+
+
+def is_suppressed_send(email: str | None) -> bool:
+    """True if `email` is on the no-send suppression list. Used by every
+    send_* helper and by the betareengagement cron's SQL filter."""
+    if not email:
+        return True
+    e = email.strip().lower()
+    return any(e.endswith("@" + d) or e == d for d in _SUPPRESSED)
+
+
+def suppressed_sql_pattern() -> list[str]:
+    """List of `%@domain` LIKE patterns for SQL WHERE clauses. The cron uses
+    this to exclude suppressed addresses at SELECT time rather than per-row."""
+    return [f"%@{d}" for d in _SUPPRESSED]
+
+
+def mask_email(email: str | None) -> str:
+    """Privacy-safe email rendering for log lines + error reports.
+
+    `john.doe@example.com` -> `j***e@example.com`. Keeps the domain (useful
+    for debugging delivery issues per-provider) but masks the local-part so
+    a leaked log doesn't enumerate user identities. Empty / malformed
+    addresses render as `<unknown>` instead of empty string."""
+    if not email or "@" not in email:
+        return "<unknown>"
+    local, _, domain = email.partition("@")
+    if len(local) <= 2:
+        masked = local[0] + "*" if local else "*"
+    else:
+        masked = f"{local[0]}***{local[-1]}"
+    return f"{masked}@{domain}"
+
 # Tokens (canonical)
 INK = "#0F0B1F"
 INK_SOFT = "#565273"     # ≈ canonical oklch(0.40 0.05 280) lede

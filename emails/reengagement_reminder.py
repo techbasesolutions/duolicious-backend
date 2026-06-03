@@ -22,6 +22,7 @@ from emails.base import (
     button,
     chip,
     title_image,
+    is_suppressed_send,
     INK_SOFT,
     INDIGO,
     MUTED,
@@ -91,7 +92,7 @@ def reengagement_reminder_html(email: str) -> str:
 
 def send_reengagement_reminder(email: str) -> None:
     """Synchronous best-effort send. Skips sample addresses."""
-    if not email or email.endswith("@example.com"):
+    if is_suppressed_send(email):
         return
     from smtp import aws_smtp
 

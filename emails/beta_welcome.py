@@ -15,6 +15,7 @@ from emails.base import (
     chip,
     callout,
     title_image,
+    is_suppressed_send,
     INK_SOFT,
     INDIGO,
     MUTED,
@@ -56,7 +57,7 @@ def beta_welcome_html() -> str:
 
 
 def send_beta_welcome(email: str) -> None:
-    if not email or email.endswith("@example.com"):
+    if is_suppressed_send(email):
         return
     from smtp import aws_smtp
     aws_smtp.send(subject=SUBJECT, body=beta_welcome_html(), to_addr=email, from_addr=FROM_ADDR)
@@ -65,7 +66,7 @@ def send_beta_welcome(email: str) -> None:
 def send_beta_welcome_async(email: str) -> None:
     """Fire-and-forget so the request returns immediately; failures are swallowed
     (the beta_signup row is the source of truth)."""
-    if not email or email.endswith("@example.com"):
+    if is_suppressed_send(email):
         return
 
     def _go() -> None:

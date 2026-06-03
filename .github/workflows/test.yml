@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+# Test runner needs read-only access to source. No write actions.
+permissions:
+  contents: read
+
 jobs:
   mypy:
     runs-on: ubuntu-latest
