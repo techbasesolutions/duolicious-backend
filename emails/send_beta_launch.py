@@ -21,7 +21,9 @@ from emails.beta_launch import send_beta_launch, SUBJECT, FROM_ADDR
 def recipients() -> list[str]:
     with api_tx() as tx:
         rows = tx.execute(
-            "SELECT email FROM beta_signup ORDER BY created_at"
+            "SELECT email FROM beta_signup "
+            "WHERE unsubscribed_at IS NULL "
+            "ORDER BY created_at"
         ).fetchall()
     return [r["email"] for r in rows]
 

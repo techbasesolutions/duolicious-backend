@@ -26,7 +26,8 @@ def incomplete_recipients() -> list[str]:
     with api_tx() as tx:
         rows = tx.execute(
             "SELECT email FROM waitlist_signup "
-            "WHERE answers IS NULL OR answers = '{}'::jsonb "
+            "WHERE (answers IS NULL OR answers = '{}'::jsonb) "
+            "  AND unsubscribed_at IS NULL "
             "ORDER BY created_at"
         ).fetchall()
     return [r["email"] for r in rows]

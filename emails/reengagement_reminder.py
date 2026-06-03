@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from service.config import EMAIL_DOMAIN
+from service.config import EMAIL_DOMAIN, WEB_BASE_URL
 from emails.base import (
     render,
     button,
@@ -28,6 +28,7 @@ from emails.base import (
     MUTED,
     SANS,
 )
+from service.unsubscribe import make_url as _unsub_url
 
 SUBJECT = "A minute when you have one?"
 FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
@@ -65,7 +66,7 @@ def _body(email: str) -> str:
 
 
 def _footer(email: str) -> str:
-    unsub = f"mailto:admin@ahavah.app?subject={quote('Unsubscribe ' + email)}"
+    unsub = _unsub_url("waitlist", email, WEB_BASE_URL)
     link_style = f"color:{MUTED};font-weight:600;text-decoration:underline;"
     return f"""
 Ahavah. Torah-observant matchmaking for the diaspora.<br/>
@@ -96,9 +97,13 @@ def send_reengagement_reminder(email: str) -> None:
         return
     from smtp import aws_smtp
 
+    unsub = _unsub_url("waitlist", email, WEB_BASE_URL)
     aws_smtp.send(
         subject=SUBJECT,
         body=reengagement_reminder_html(email),
         to_addr=email,
         from_addr=FROM_ADDR,
+        list_unsubscribe=(
+            f"<mailto:admin@ahavah.app?subject=Unsubscribe>, <{unsub}>"
+        ),
     )

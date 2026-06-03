@@ -55,6 +55,8 @@ _Q_PICK = """
      WHERE b.reengagement_sent_at IS NULL
        AND b.created_at < NOW() - (%(days)s || ' days')::INTERVAL
        AND (w.answers IS NULL OR w.answers = '{}'::jsonb)
+       AND b.unsubscribed_at IS NULL
+       AND (w.unsubscribed_at IS NULL)
        AND NOT (b.email ILIKE ANY(%(suppressed)s))
      ORDER BY b.created_at
      LIMIT 100

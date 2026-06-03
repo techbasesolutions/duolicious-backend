@@ -1000,3 +1000,6 @@ import service.api.translation_routes  # noqa: E402,F401
 import service.api.feedback_routes  # noqa: E402,F401
 # Beta-tester opt-in (2026-05-26) — onboarding completion screen. Sibling module.
 import service.api.beta_routes  # noqa: E402,F401
+# One-click unsubscribe (2026-06-03) — token-backed /u/<token> for both GET
+# (recipient clicks footer link) and POST (Gmail/Yahoo RFC 8058 one-click).
+import service.api.unsubscribe_routes  # noqa: E402,F401

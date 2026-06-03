@@ -11,7 +11,7 @@ from __future__ import annotations
 import threading
 import traceback
 
-from service.config import EMAIL_DOMAIN
+from service.config import EMAIL_DOMAIN, WEB_BASE_URL
 from emails.base import (
     render,
     button,
@@ -26,6 +26,7 @@ from emails.base import (
     MUTED,
     SANS,
 )
+from service.unsubscribe import make_url as _unsub_url
 
 SUBJECT = "You're on the Ahavah waitlist"
 FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
@@ -64,41 +65,50 @@ _BODY = f"""
 </p>
 """
 
-_FOOTER = f"""
+def _footer(email: str) -> str:
+    unsub = _unsub_url("waitlist", email, WEB_BASE_URL)
+    link_style = f"color:{MUTED};font-weight:600;text-decoration:underline;"
+    return f"""
 Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
 You're receiving this because you joined the waitlist at
 <a href="{SHARE_URL}" style="color:{INDIGO};font-weight:600;text-decoration:none;">ahavah.app</a>.
 <div style="margin-top:14px;">
-  <a href="{SHARE_URL}/faq" style="color:{MUTED};font-weight:600;text-decoration:underline;">Help</a>
+  <a href="{SHARE_URL}/faq" style="{link_style}">Help</a>
   &nbsp;&nbsp;&middot;&nbsp;&nbsp;
-  <a href="{SHARE_URL}/privacy" style="color:{MUTED};font-weight:600;text-decoration:underline;">Privacy</a>
+  <a href="{SHARE_URL}/privacy" style="{link_style}">Privacy</a>
   &nbsp;&nbsp;&middot;&nbsp;&nbsp;
-  <a href="{SHARE_URL}/legal/terms" style="color:{MUTED};font-weight:600;text-decoration:underline;">Terms</a>
+  <a href="{SHARE_URL}/legal/terms" style="{link_style}">Terms</a>
+  &nbsp;&nbsp;&middot;&nbsp;&nbsp;
+  <a href="{unsub}" style="{link_style}">Unsubscribe</a>
 </div>
 """
 
 
-def waitlist_welcome_html() -> str:
+def waitlist_welcome_html(email: str) -> str:
     return render(
         title=SUBJECT,
         preheader=PREHEADER,
         body_html=_BODY,
-        footer_html=_FOOTER,
+        footer_html=_footer(email),
     )
 
 
 def send_waitlist_welcome(email: str) -> None:
-    """Synchronous send. Skips sample addresses. Best-effort (aws_smtp retries
-    then gives up without raising)."""
+    """Synchronous send. Skips sample/suppressed addresses. Best-effort
+    (aws_smtp retries then gives up without raising)."""
     if is_suppressed_send(email):
         return
     from smtp import aws_smtp
 
+    unsub = _unsub_url("waitlist", email, WEB_BASE_URL)
     aws_smtp.send(
         subject=SUBJECT,
-        body=waitlist_welcome_html(),
+        body=waitlist_welcome_html(email),
         to_addr=email,
         from_addr=FROM_ADDR,
+        list_unsubscribe=(
+            f"<mailto:admin@ahavah.app?subject=Unsubscribe>, <{unsub}>"
+        ),
     )
 
 

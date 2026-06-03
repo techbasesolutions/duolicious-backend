@@ -38,6 +38,17 @@ RESEND_API_URL: str = "https://api.resend.com/emails"
 # without domain verification). Unset to restore caller-supplied from.
 RESEND_FROM_OVERRIDE: str = os.environ.get("DUO_RESEND_FROM_OVERRIDE", "")
 
+# Production safety: if RESEND_FROM_OVERRIDE leaks into prod past launch,
+# every welcome / OTP / launch mail goes from a non-branded address and
+# silently tanks the ahavah.app sender reputation. Log a loud warning at
+# import time so it's visible in container boot logs (audit Email LOW).
+if RESEND_FROM_OVERRIDE and os.environ.get("DUO_ENV") == "prod":
+    print(
+        f"WARNING: DUO_RESEND_FROM_OVERRIDE is set ({RESEND_FROM_OVERRIDE!r}) "
+        f"in production — every outbound From will be rewritten. Unset this "
+        f"env var in .env.production before public launch."
+    )
+
 
 class Smtp:
     def __init__(
@@ -98,6 +109,8 @@ class Smtp:
         body: str,
         to_addr: str,
         from_addr: str | None = None,
+        reply_to: str | None = None,
+        list_unsubscribe: str | None = None,
     ) -> None:
         # Phase W: branch to Resend HTTPS API when DUO_USE_RESEND_API=true.
         # See module docstring for context (DO blocks outbound SMTP ports).
@@ -107,6 +120,8 @@ class Smtp:
                 body=body,
                 to_addr=to_addr,
                 from_addr=from_addr,
+                reply_to=reply_to,
+                list_unsubscribe=list_unsubscribe,
             )
             return
 
@@ -123,6 +138,13 @@ class Smtp:
         msg["From"] = f"{PRODUCT_NAME} <{_from_addr}>"
         msg["To"] = to_addr
         msg["Subject"] = subject
+        if reply_to:
+            msg["Reply-To"] = reply_to
+        if list_unsubscribe:
+            # RFC 8058 one-click unsubscribe; required by Gmail/Yahoo for
+            # bulk senders since Feb 2024 (audit Email MED).
+            msg["List-Unsubscribe"] = list_unsubscribe
+            msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
         msg.attach(MIMEText(body, "html"))
 
         self._smtp.sendmail(
@@ -138,6 +160,8 @@ class Smtp:
         body: str,
         to_addr: str,
         from_addr: str | None = None,
+        reply_to: str | None = None,
+        list_unsubscribe: str | None = None,
     ) -> None:
         """Send via Resend's HTTPS API (port 443) instead of SMTP.
 
@@ -157,12 +181,19 @@ class Smtp:
         _from_addr: str = (
             RESEND_FROM_OVERRIDE or from_addr or f"no-reply@{EMAIL_DOMAIN}"
         )
-        payload = {
+        payload: dict = {
             "from": f"{PRODUCT_NAME} <{_from_addr}>",
             "to": [to_addr],
             "subject": subject,
             "html": body,
         }
+        if reply_to:
+            payload["reply_to"] = reply_to
+        if list_unsubscribe:
+            payload["headers"] = {
+                "List-Unsubscribe": list_unsubscribe,
+                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+            }
         resp = requests.post(
             RESEND_API_URL,
             json=payload,
@@ -184,12 +215,21 @@ class Smtp:
         body: str,
         to_addr: str,
         from_addr: str | None = None,
+        reply_to: str | None = None,
+        list_unsubscribe: str | None = None,
         retries: int | None = None,
         backoff: int | None = None,
     ) -> None:
         """Send an email, retrying on failure.
 
         Back‑off doubles on every failed attempt: *backoff* × 2^(n - 1).
+
+        Optional headers:
+          reply_to:         set Reply-To: so replies route to a human
+                            inbox (e.g. user feedback → user's email).
+          list_unsubscribe: RFC 8058 one-click unsubscribe — required by
+                            Gmail/Yahoo for bulk senders. Format:
+                            "<mailto:unsub@...>, <https://...?token=...>"
         """
         max_attempts: int = 1 + (2 if retries is None else retries)
 
@@ -201,6 +241,8 @@ class Smtp:
                         body=body,
                         to_addr=to_addr,
                         from_addr=from_addr,
+                        reply_to=reply_to,
+                        list_unsubscribe=list_unsubscribe,
                     )
                 return  # Success
             except Exception:

@@ -20,7 +20,9 @@ from emails.waitlist_welcome import send_waitlist_welcome, SUBJECT, FROM_ADDR
 def recipients() -> list[str]:
     with api_tx() as tx:
         rows = tx.execute(
-            "SELECT email FROM waitlist_signup ORDER BY created_at"
+            "SELECT email FROM waitlist_signup "
+            "WHERE unsubscribed_at IS NULL "
+            "ORDER BY created_at"
         ).fetchall()
     return [r["email"] for r in rows]
 

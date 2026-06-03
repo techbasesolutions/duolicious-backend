@@ -7,7 +7,7 @@ dark-mode aware via emails.base. Best-effort send (aws_smtp retries then gives u
 without raising)."""
 from __future__ import annotations
 
-from service.config import EMAIL_DOMAIN
+from service.config import EMAIL_DOMAIN, WEB_BASE_URL
 from emails.base import (
     render,
     button,
@@ -20,6 +20,7 @@ from emails.base import (
     MUTED,
     SANS,
 )
+from service.unsubscribe import make_url as _unsub_url
 
 SIGN_IN_URL = "https://ahavah.app/auth/sign-in"
 SUBJECT = "Ahavah beta is open"
@@ -45,27 +46,36 @@ _BODY = f"""
 </p>
 """
 
-_FOOTER = f"""
+def _footer(email: str) -> str:
+    unsub = _unsub_url("beta", email, WEB_BASE_URL)
+    return f"""
 Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
 You're receiving this because you joined the Ahavah beta at
 <a href="https://ahavah.app" style="color:{INDIGO};font-weight:600;text-decoration:none;">ahavah.app</a>.
+<div style="margin-top:14px;">
+  <a href="{unsub}" style="color:{MUTED};font-weight:600;text-decoration:underline;">Unsubscribe</a>
+</div>
 """
 
 
-def beta_launch_html() -> str:
-    return render(title=SUBJECT, preheader=PREHEADER, body_html=_BODY, footer_html=_FOOTER)
+def beta_launch_html(email: str) -> str:
+    return render(title=SUBJECT, preheader=PREHEADER, body_html=_BODY, footer_html=_footer(email))
 
 
 def send_beta_launch(email: str) -> None:
-    """Synchronous send. Skips sample addresses. Best-effort (aws_smtp retries
-    then gives up without raising)."""
+    """Synchronous send. Skips sample/suppressed addresses. Best-effort
+    (aws_smtp retries then gives up without raising)."""
     if is_suppressed_send(email):
         return
     from smtp import aws_smtp
 
+    unsub = _unsub_url("beta", email, WEB_BASE_URL)
     aws_smtp.send(
         subject=SUBJECT,
-        body=beta_launch_html(),
+        body=beta_launch_html(email),
         to_addr=email,
         from_addr=FROM_ADDR,
+        list_unsubscribe=(
+            f"<mailto:admin@ahavah.app?subject=Unsubscribe>, <{unsub}>"
+        ),
     )
