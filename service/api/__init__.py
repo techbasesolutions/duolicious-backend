@@ -805,21 +805,25 @@ def get_stats():
 def get_gender_stats():
     return person.get_gender_stats(ttl_hash=get_ttl_hash(seconds=60))
 
+# GET serves a confirmation form; POST actually fires the destructive action.
+# Splitting prevents link-warmers (Gmail prefetcher, Microsoft SafeLinks, etc)
+# from triggering the ban / photo deletion just by following the URL in the
+# admin email (audit Auth #7).
 @get('/admin/ban-link/<token>')
 def get_admin_ban_link(token: str):
     return person.get_admin_ban_link(token)
 
-@get('/admin/ban/<token>')
-def get_admin_ban(token: str):
-    return person.get_admin_ban(token)
+@post('/admin/ban/<token>')
+def post_admin_ban(token: str):
+    return person.post_admin_ban(token)
 
 @get('/admin/delete-photo-link/<token>')
 def get_admin_delete_photo_link(token: str):
     return person.get_admin_delete_photo_link(token)
 
-@get('/admin/delete-photo/<token>')
-def get_admin_delete_photo(token: str):
-    return person.get_admin_delete_photo(token)
+@post('/admin/delete-photo/<token>')
+def post_admin_delete_photo(token: str):
+    return person.post_admin_delete_photo(token)
 
 @aget('/export-data-token')
 def get_export_data_token(s: t.SessionInfo):

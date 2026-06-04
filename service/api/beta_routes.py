@@ -10,9 +10,11 @@ brand-new row, fires the confirmation email promising a June 15 sign-in link.
 from __future__ import annotations
 
 import duotypes as t
+from flask import request
 from service.api.decorators import post, validate, limiter, shared_recipient_limit, _is_private_ip
 from database import api_tx
 from service.beta import register as register_beta, count as beta_count
+from service.antibot import is_honeypot_hit, verify_turnstile
 from emails.beta_welcome import send_beta_welcome_async
 from emails.waitlist_admin import send_beta_optin_notice_async
 
@@ -26,6 +28,12 @@ beta_limit = limiter.shared_limit(
 @post('/beta-tester', limiter=[beta_limit, shared_recipient_limit])
 @validate(t.PostBetaTester)
 def post_beta_tester(req: t.PostBetaTester):
+    # Honeypot — silently pretend success.
+    if is_honeypot_hit(req.website):
+        return {'ok': True, 'isNew': False}
+    # Turnstile — no-op when TURNSTILE_SECRET_KEY unset.
+    if not verify_turnstile(req.turnstile_token, request.remote_addr):
+        return 'Verification failed', 403
     with api_tx() as tx:
         is_new = register_beta(tx, req.email, None)
         total = beta_count(tx)

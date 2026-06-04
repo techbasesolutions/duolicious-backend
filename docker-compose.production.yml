@@ -99,6 +99,9 @@ services:
       # bypass the gate (the team's own domain) to test sign-in.
       AHAVAH_SIGNUPS_OPEN: ${AHAVAH_SIGNUPS_OPEN:-false}
       AHAVAH_SIGNUP_ALLOWED_DOMAINS: ${AHAVAH_SIGNUP_ALLOWED_DOMAINS:-}
+      # Cloudflare Turnstile secret — zero-config rollout: no-op when blank,
+      # active when set. Honeypot is always on regardless.
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
       # Optional integrations (no-op when empty)
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       SENTRY_DSN: ${SENTRY_DSN}

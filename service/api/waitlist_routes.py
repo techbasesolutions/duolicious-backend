@@ -10,10 +10,12 @@ onboarding-shaped JSONB blob persisted as-is for a magic-link launch flow.
 from __future__ import annotations
 
 import duotypes as t
+from flask import request
 from service.api.decorators import get, post, validate, shared_otp_limit, shared_recipient_limit, limiter, _is_private_ip
 from database import api_tx
 from service.waitlist import upsert, count as waitlist_count, get as waitlist_get
 from service.beta import is_beta
+from service.antibot import is_honeypot_hit, verify_turnstile
 from emails.waitlist_welcome import send_waitlist_welcome_async
 from emails.waitlist_admin import (
     send_new_signup_notice_async,
@@ -33,6 +35,12 @@ waitlist_check_limit = limiter.shared_limit(
 @post('/waitlist', limiter=[shared_otp_limit, shared_recipient_limit])
 @validate(t.PostWaitlist)
 def post_waitlist(req: t.PostWaitlist):
+    # Honeypot — silently pretend success so bots can't detect rejection.
+    if is_honeypot_hit(req.website):
+        return {'ok': True, 'isNew': False}
+    # Turnstile — no-op when TURNSTILE_SECRET_KEY unset.
+    if not verify_turnstile(req.turnstile_token, request.remote_addr):
+        return 'Verification failed', 403
     answers = req.answers if isinstance(req.answers, dict) else {}
     with api_tx() as tx:
         res = upsert(tx, req.email, answers)

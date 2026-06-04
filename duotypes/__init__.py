@@ -264,6 +264,13 @@ class PostRequestOtp(BaseModel):
         min_length=1,
         max_length=CLUB_MAX_LEN,
     )
+    # Honeypot: real users never fill `website`. The handler silently drops
+    # requests that do (matches the /feedback pattern).
+    website: Optional[str] = Field(default=None, max_length=256)
+    # Optional Cloudflare Turnstile token. Validated server-side only when
+    # TURNSTILE_SECRET_KEY is configured; otherwise ignored (zero-config
+    # rollout — flip the env var to activate without code changes).
+    turnstile_token: Optional[str] = Field(default=None, max_length=4096)
 
     @field_validator('email', mode='before')
     def validate_email(cls, value):
@@ -277,6 +284,9 @@ class PostRequestOtp(BaseModel):
 class PostWaitlist(BaseModel):
     email: EmailStr
     answers: dict = {}
+    # Honeypot + Turnstile (same rationale as PostRequestOtp).
+    website: Optional[str] = Field(default=None, max_length=256)
+    turnstile_token: Optional[str] = Field(default=None, max_length=4096)
 
     @field_validator('email', mode='before')
     def validate_email(cls, value):
@@ -354,6 +364,9 @@ class PostBetaTester(BaseModel):
     user just entered on the waitlist completion screen; there is no account yet
     (person_id is recorded as NULL)."""
     email: EmailStr
+    # Honeypot + Turnstile (same rationale as PostRequestOtp).
+    website: Optional[str] = Field(default=None, max_length=256)
+    turnstile_token: Optional[str] = Field(default=None, max_length=4096)
 
     @field_validator('email', mode='before')
     def validate_email(cls, value):

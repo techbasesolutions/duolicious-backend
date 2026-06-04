@@ -1,4 +1,5 @@
 import os
+from html import escape as html_escape
 from database import api_tx, fetchall_sets
 from typing import Any, Optional, Iterable, Tuple, Literal
 import duotypes as t
@@ -257,6 +258,13 @@ def _send_otp(email: str, otp: str):
     )
 
 def post_request_otp(req: t.PostRequestOtp):
+    # Honeypot: bots that scrape the form and submit every field hit this.
+    # Real users never see the field. Return a success-shaped response so
+    # the bot can't tell it was rejected.
+    from service.antibot import is_honeypot_hit, verify_turnstile
+    if is_honeypot_hit(req.website):
+        return dict(session_token=secrets.token_hex(64))
+
     # Pre-launch gate FIRST: signups closed to the public until launch.
     # Run before firehol + disposable so closed-beta callers don't probe
     # those side-effecting tables and so the response shape is identical
@@ -265,6 +273,12 @@ def post_request_otp(req: t.PostRequestOtp):
     norm = normalize_email(req.email)
     if not SIGNUPS_OPEN and norm.rpartition("@")[2] not in SIGNUP_ALLOWED_DOMAINS:
         return 'Signups are not open yet', 403
+
+    # Turnstile gate (no-op when TURNSTILE_SECRET_KEY unset — zero-config
+    # rollout). Closed-beta allow-listed callers go through above; only
+    # public callers reach here, so the verify is gated on launch.
+    if not verify_turnstile(req.turnstile_token, request.remote_addr):
+        return 'Verification failed', 403
 
     if not request.remote_addr or firehol.matches(request.remote_addr):
         return 'IP address blocked', 460
@@ -2261,6 +2275,28 @@ def get_gender_stats(ttl_hash=None):
     with api_tx('READ COMMITTED') as tx:
         return tx.execute(Q_GENDER_STATS).fetchone()
 
+def _confirm_form_html(action_path: str, token: str, button_label: str) -> str:
+    """Tiny confirmation form. GET serves this; POST performs the action.
+    Splitting prevents link-warmers (Gmail prefetcher, Microsoft SafeLinks,
+    corporate antivirus URL scanners) from firing the destructive action
+    by prefetching the GET URL before the admin manually clicks (audit
+    Auth #7). The POST requires an actual click."""
+    safe_token = html_escape(token)
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/>
+<meta name="robots" content="noindex, nofollow"/>
+<title>Confirm admin action</title>
+<style>body{{font-family:system-ui,sans-serif;background:#0a0a0a;color:#f4f4f5;display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}}
+form{{background:#111114;border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:28px;max-width:420px;width:100%}}
+button{{margin-top:14px;width:100%;padding:14px;border:0;border-radius:10px;background:#f4f4f5;color:#0a0a0a;font-weight:700;font-size:15px;cursor:pointer}}
+button:hover{{background:#fff}}p{{margin:0 0 8px;color:#a1a1aa;font-size:13px}}</style></head>
+<body><form method="post" action="{action_path}/{safe_token}">
+<p>You're about to perform an irreversible admin action.</p>
+<p>Token: <code>{safe_token}</code></p>
+<button type="submit">Confirm</button>
+</form></body></html>"""
+
+
 def get_admin_ban_link(token: str):
     params = dict(token=token)
 
@@ -2283,18 +2319,23 @@ def get_admin_ban_link(token: str):
         return err_invalid_token
 
     if rows:
-        link = f'{API_BASE_URL}/admin/ban/{token}'
-        return f'<a href="{link}">Click to confirm. Token: {token}</a>'
+        # Render a POST-form confirmation page instead of an anchor link.
+        # The action endpoint /admin/ban now only fires on POST so link-
+        # prefetchers can't trigger the ban (audit Auth #7).
+        return _confirm_form_html('/admin/ban', token, 'Confirm ban')
     else:
         return err_invalid_token
 
-def get_admin_ban(token: str):
-    rows = delete_or_ban_account(s=None, admin_ban_token=token)
 
+def post_admin_ban(token: str):
+    """POST /admin/ban/<token> — destructive. GET on this path is rejected
+    (the confirmation form lives at /admin/ban-link/<token>)."""
+    rows = delete_or_ban_account(s=None, admin_ban_token=token)
     if rows:
         return f'Banned {rows}'
     else:
         return 'Ban failed; User already banned or token invalid', 401
+
 
 def get_admin_delete_photo_link(token: str):
     params = dict(token=token)
@@ -2307,12 +2348,13 @@ def get_admin_delete_photo_link(token: str):
         return 'Invalid token', 401
 
     if rows:
-        link = f'{API_BASE_URL}/admin/delete-photo/{token}'
-        return f'<a href="{link}">Click to confirm. Token {token}</a>'
+        return _confirm_form_html('/admin/delete-photo', token, 'Confirm delete')
     else:
         return 'Invalid token', 401
 
-def get_admin_delete_photo(token: str):
+
+def post_admin_delete_photo(token: str):
+    """POST /admin/delete-photo/<token> — destructive. GET is rejected."""
     params = dict(token=token)
 
     with api_tx('READ COMMITTED') as tx:
