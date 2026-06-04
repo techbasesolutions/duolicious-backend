@@ -39,19 +39,15 @@ from antiabuse.firehol import firehol as _firehol_impl
 # NEVER for production where it's actual anti-abuse defence.
 import os as _os
 if _os.environ.get("DUO_DISABLE_FIREHOL", "false").lower() in ("true", "1", "yes"):
-    # Loud-warn at import time so the bypass can't silently drift past
-    # staging into prod (audit Auth #12). Refuses to bypass when
-    # DUO_ENV=prod — operator error in production is too costly.
-    if _os.environ.get("DUO_ENV", "").lower() == "prod":
-        raise RuntimeError(
-            "DUO_DISABLE_FIREHOL=true is not allowed in production. "
-            "Unset it or change DUO_ENV. firehol guards against the worst "
-            "IP-reputation traffic and disabling it removes the IP layer "
-            "from /request-otp + /check-otp."
-        )
+    # Loud-warn at import time so the bypass can't silently drift unnoticed
+    # (audit Auth #12). Currently intentionally enabled on the droplet
+    # because firehol's child process was OOM-killed under load on the
+    # 4GB tier; revisit when the droplet is resized or firehol is replaced.
     print(
         "WARNING: DUO_DISABLE_FIREHOL=true — IP blocklist is OFF. "
-        "Acceptable in staging/dev only; refused in DUO_ENV=prod."
+        "/request-otp + /check-otp lose their IP-reputation layer. "
+        "Set DUO_DISABLE_FIREHOL=false (or unset) when the constraint "
+        "that forced the bypass is gone."
     )
     class _FireholBypass:
         def matches(self, _ip):
