@@ -291,11 +291,15 @@ RETURNING
     otp.otp
 """
 
+-- One-shot OTP: setting otp_expiry = NOW() in the success path means a
+-- replayed submit of the same OTP in the next tx will fail the
+-- `otp_expiry > NOW()` clause. Cannot null the otp column itself —
+-- duo_session.otp is NOT NULL in the schema. otp_attempts reset because
+-- once you're in you're in.
 Q_MAYBE_DELETE_ONBOARDEE = """
 WITH valid_session AS (
     UPDATE duo_session
     SET signed_in = TRUE,
-        otp = NULL,
         otp_expiry = NOW(),
         otp_attempts = 0
     WHERE
@@ -315,7 +319,6 @@ WITH valid_session AS (
         duo_session
     SET
         signed_in = TRUE,
-        otp = NULL,
         otp_expiry = NOW(),
         otp_attempts = 0
     WHERE
@@ -432,13 +435,13 @@ WHERE session_token_hash = %(session_token_hash)s
 """
 
 # Increment the per-session OTP-failure counter. After OTP_MAX_ATTEMPTS
-# (5) failures we null the OTP so further /check-otp calls cannot brute-
-# force it; the user must /request-otp again. Returns `locked` so the
-# caller can give a clearer 401.
+# (5) failures we expire the OTP so further /check-otp calls cannot
+# brute-force it (the WHERE-clause `otp_expiry > NOW()` will reject any
+# replay); the user must /request-otp again. Cannot null the otp column
+# (NOT NULL constraint) — expiring it is functionally equivalent.
 Q_INCREMENT_OTP_ATTEMPTS = """
 UPDATE duo_session
    SET otp_attempts = otp_attempts + 1,
-       otp        = CASE WHEN otp_attempts + 1 >= 5 THEN NULL ELSE otp END,
        otp_expiry = CASE WHEN otp_attempts + 1 >= 5 THEN NOW() ELSE otp_expiry END
  WHERE session_token_hash = %(session_token_hash)s
 RETURNING otp_attempts, (otp_attempts >= 5) AS locked
