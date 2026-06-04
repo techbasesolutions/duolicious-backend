@@ -297,27 +297,32 @@ class PostWaitlist(BaseModel):
         """Constrain the jsonb blob so a malicious client can't shove
         arbitrary keys, multi-megabyte strings, or unknown fields into
         waitlist_signup.answers. Allowed keys mirror the wizard's
-        ahavah-web/src/app/waitlist/page.tsx schema; everything else is
-        silently dropped. Max body ~8KB so the row stays cheap to read
-        (audit Data Integrity #5)."""
+        ahavah-web/src/lib/waitlist.ts `WaitlistAnswers` type; everything
+        else is silently dropped. Max body ~4KB so the row stays cheap to
+        read (audit Data Integrity #5)."""
         if value is None or value == "":
             return {}
         if not isinstance(value, dict):
             raise ValueError('answers must be an object')
 
-        # Tightest known shape — mirrors WaitlistAnswers in the wizard.
+        # Tightest known shape — keep in sync with WaitlistAnswers in
+        # ahavah-web/src/lib/waitlist.ts. Mismatch here silently drops
+        # the user's demographic answers — the row stays empty and the
+        # cron later spams them with the "complete your onboarding"
+        # re-engagement email. Verified against actual prod payloads
+        # 2026-06-04.
         ALLOWED = frozenset({
-            'gender',
+            'sex',
+            'country',
+            'region',
+            'assembly',
             'intent',
-            'has_children',
-            'wants_children',
-            'family_view',
+            'relocate_willing',
+            'family',
             'ethnicity',
             'nationality',
-            'country',
-            'referral',
-            'age',
-            'date_of_birth',
+            'referral_source',
+            'referral_other',
         })
 
         cleaned: dict = {}
