@@ -42,11 +42,13 @@ permissions:
   contents: read
 
 concurrency:
-  # If a second push arrives before the first finishes, cancel the
-  # in-flight deploy and run the newer commit. Avoids racing two
-  # docker builds against the same daemon.
+  # Serialize deploys but let an in-flight run finish before the next
+  # starts. cancel-in-progress=true would risk killing a deploy between
+  # `git reset --hard` and `docker compose up -d`, leaving prod with new
+  # source + old containers (audit Infra #10). Slower (subsequent pushes
+  # queue) but never leaves a half-deployed droplet.
   group: deploy-ahavah-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:

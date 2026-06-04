@@ -111,7 +111,9 @@ def send_feedback(
     user_agent: Optional[str] = None,
 ) -> None:
     """Synchronous send to the admin inbox. Best-effort (aws_smtp retries then
-    gives up without raising)."""
+    gives up without raising). When the user left an email, Reply-To routes
+    the admin's reply directly to them instead of bouncing off the noreply
+    feedback@ alias (audit Email #7)."""
     from smtp import aws_smtp
 
     cat_label = _CATEGORY_LABELS.get(category, category)
@@ -120,6 +122,7 @@ def send_feedback(
         body=feedback_html(category, message, email, path, user_agent),
         to_addr=TO_ADDR,
         from_addr=FROM_ADDR,
+        reply_to=email if email else None,
     )
 
 

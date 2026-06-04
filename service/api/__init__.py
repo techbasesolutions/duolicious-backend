@@ -232,6 +232,14 @@ def post_check_otp(req: t.PostCheckOtp, s: t.SessionInfo):
 def post_sign_out(s: t.SessionInfo):
     return person.post_sign_out(s)
 
+
+@apost('/sign-out-everywhere', expected_onboarding_status=None)
+def post_sign_out_everywhere(s: t.SessionInfo):
+    """Revoke every active session for the authenticated person, including
+    the caller's. Lets a user kill a stolen token they no longer control
+    (audit Auth #8)."""
+    return person.post_sign_out_everywhere(s)
+
 @apost('/check-session-token', expected_onboarding_status=None)
 def post_check_session_token(s: t.SessionInfo):
     return person.post_check_session_token(s)
@@ -438,24 +446,37 @@ def get_blocked(s: t.SessionInfo):
 @apost('/skip/by-uuid/<prospect_uuid>')
 @validate(t.PostSkip)
 def post_skip_by_uuid(req: t.PostSkip, s: t.SessionInfo, prospect_uuid: str):
-    limit = "1 per 5 seconds; 20 per day"
-    scope = "report"
-
+    # Tight per-account limits on the abuse-report path so a malicious user
+    # cannot mass-report. Skip-without-report is a more frequent UI action
+    # so it gets a looser ceiling (60/min default still applies), but is
+    # still capped so a bot can't farm a recommendation algorithm by
+    # skipping millions of profiles a day (audit Auth #11 — was inverted).
     if req.report_reason:
         with (
             limiter.limit(
-                limit,
-                scope=scope,
+                "1 per 5 seconds; 20 per day",
+                scope="report",
                 exempt_when=disable_ip_rate_limit),
             limiter.limit(
-                limit,
-                scope=scope,
+                "1 per 5 seconds; 20 per day",
+                scope="report",
                 key_func=limiter_account,
                 exempt_when=disable_account_rate_limit)
         ):
             return person.post_skip_by_uuid(req, s, prospect_uuid)
     else:
-        return person.post_skip_by_uuid(req, s, prospect_uuid)
+        with (
+            limiter.limit(
+                "200 per hour",
+                scope="skip",
+                exempt_when=disable_ip_rate_limit),
+            limiter.limit(
+                "200 per hour",
+                scope="skip",
+                key_func=limiter_account,
+                exempt_when=disable_account_rate_limit)
+        ):
+            return person.post_skip_by_uuid(req, s, prospect_uuid)
 
 # TODO: Delete
 @apost('/unskip/<int:prospect_person_id>')
@@ -573,7 +594,18 @@ def post_change_email_request(req: t.PostChangeEmailRequest, s: t.SessionInfo):
     user submits it via /account/change-email-verify to complete the swap."""
     return person.change_email_request(s, req.new_email)
 
-@apost('/account/change-email-verify')
+# Bound the OTP brute-force on change-email — 24-bit code, 15-min window,
+# default 60/min was too permissive (10k+ attempts/window). 5/hour per
+# account is plenty for a legitimate user retrying a code (audit Auth #10).
+_change_email_verify_limit = limiter.shared_limit(
+    "5 per hour",
+    scope="change_email_verify",
+    key_func=limiter_account,
+    exempt_when=disable_account_rate_limit,
+)
+
+
+@apost('/account/change-email-verify', limiter=_change_email_verify_limit)
 @validate(t.PostChangeEmailVerify)
 def post_change_email_verify(req: t.PostChangeEmailVerify, s: t.SessionInfo):
     """Verify the OTP sent by /account/change-email-request and swap

@@ -39,6 +39,20 @@ from antiabuse.firehol import firehol as _firehol_impl
 # NEVER for production where it's actual anti-abuse defence.
 import os as _os
 if _os.environ.get("DUO_DISABLE_FIREHOL", "false").lower() in ("true", "1", "yes"):
+    # Loud-warn at import time so the bypass can't silently drift past
+    # staging into prod (audit Auth #12). Refuses to bypass when
+    # DUO_ENV=prod — operator error in production is too costly.
+    if _os.environ.get("DUO_ENV", "").lower() == "prod":
+        raise RuntimeError(
+            "DUO_DISABLE_FIREHOL=true is not allowed in production. "
+            "Unset it or change DUO_ENV. firehol guards against the worst "
+            "IP-reputation traffic and disabling it removes the IP layer "
+            "from /request-otp + /check-otp."
+        )
+    print(
+        "WARNING: DUO_DISABLE_FIREHOL=true — IP blocklist is OFF. "
+        "Acceptable in staging/dev only; refused in DUO_ENV=prod."
+    )
     class _FireholBypass:
         def matches(self, _ip):
             return False
@@ -255,6 +269,9 @@ def _send_otp(email: str, otp: str):
         body=otp_template(otp),
         to_addr=email,
         from_addr=f'noreply-otp@{EMAIL_DOMAIN}',
+        # Route confused-user replies to a human address instead of the
+        # noreply alias (which has no inbound MX) — audit Email #9.
+        reply_to=f'hello@{EMAIL_DOMAIN}',
     )
 
 def post_request_otp(req: t.PostRequestOtp):
@@ -299,6 +316,13 @@ def post_request_otp(req: t.PostRequestOtp):
     )
 
     with api_tx() as tx:
+        # Purge any stale UNSIGNED-IN sessions for this email first so the
+        # zoo of pre-auth bearers doesn't grow unbounded across attempts
+        # (audit Auth #5). Signed-in sessions on other devices stay.
+        tx.execute(
+            Q_PURGE_STALE_UNSIGNED_SESSIONS,
+            dict(normalized_email=params['normalized_email']),
+        )
         rows = tx.execute(Q_INSERT_DUO_SESSION, params).fetchall()
 
     try:
@@ -389,6 +413,18 @@ def post_sign_out(s: t.SessionInfo):
 
     with api_tx('READ COMMITTED') as tx:
         tx.execute(Q_DELETE_DUO_SESSION, params)
+
+
+def post_sign_out_everywhere(s: t.SessionInfo):
+    """Wipe EVERY duo_session row for this person — including the caller's
+    own. Used when a user wants to revoke a stolen token they no longer
+    control (audit Auth #8). Returns the count for the client to display."""
+    with api_tx('READ COMMITTED') as tx:
+        row = tx.execute(
+            Q_DELETE_DUO_SESSIONS_FOR_PERSON,
+            dict(person_id=s.person_id),
+        ).fetchone()
+    return {'revoked': (row or {}).get('n', 0)}
 
 def post_check_session_token(s: t.SessionInfo):
     params = dict(

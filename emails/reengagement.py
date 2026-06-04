@@ -35,7 +35,12 @@ SITE = "https://ahavah.app"
 
 
 def _body(email: str) -> str:
-    link = f"{SITE}/waitlist?email={quote(email)}"
+    # urllib.parse.quote URL-encodes safely but does NOT escape HTML
+    # attribute characters. Wrap with html.escape so a malformed email
+    # that somehow bypasses Pydantic can't break out of the href quote
+    # (audit Email #11 — defense in depth).
+    import html as _html
+    link = _html.escape(f"{SITE}/waitlist?email={quote(email)}", quote=True)
     return f"""
 {chip("Before launch")}
 

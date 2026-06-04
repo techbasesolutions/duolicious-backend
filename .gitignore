@@ -2,6 +2,10 @@ __pycache__
 *.swo
 *.swp
 
+# Agent scratch — workflows / plans dumps. Never committed; tracked
+# only locally for in-session reference.
+docs/superpowers/
+
 venv/
 
 test/input

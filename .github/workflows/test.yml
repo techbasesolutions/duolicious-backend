@@ -2,6 +2,13 @@ on:
   push:
     branches:
       - main
+  # Note: pull_request from forks runs the PR's docker build with no
+  # access to repo secrets (workflow uses inline fake values). Fork PRs
+  # CAN still consume CI minutes by running arbitrary code inside the
+  # docker build context. The repo's Settings → Actions → "Fork pull
+  # request workflows from outside collaborators" SHOULD be set to
+  # "Require approval for first-time contributors" (audit Infra #7).
+  # That gating lives in repo settings, not this file.
   pull_request:
     branches:
       - main

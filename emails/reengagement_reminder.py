@@ -37,7 +37,8 @@ SITE = "https://ahavah.app"
 
 
 def _body(email: str) -> str:
-    link = f"{SITE}/waitlist?email={quote(email)}"
+    import html as _html
+    link = _html.escape(f"{SITE}/waitlist?email={quote(email)}", quote=True)
     return f"""
 {chip("One last nudge")}
 

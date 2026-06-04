@@ -470,6 +470,19 @@ WITH d AS (
 SELECT count(*) AS n FROM d
 """
 
+# Purge stale UNSIGNED-IN duo_session rows for a given normalized email.
+# Each /request-otp mints a new row; without this, abandoned OTPs (the
+# user got distracted or never opened the mail) sit as valid bearers
+# with a fresh OTP slot for 6 months. Called at the top of post_request_otp
+# before the new row is created so an attacker who triggered /request-otp
+# for the victim can't replay against an accumulated zoo of pre-auth
+# sessions (audit Auth #5 leftover).
+Q_PURGE_STALE_UNSIGNED_SESSIONS = """
+DELETE FROM duo_session
+ WHERE normalized_email = %(normalized_email)s
+   AND signed_in = FALSE
+"""
+
 Q_FINISH_ONBOARDING = f"""
 WITH onboardee_location AS (
     SELECT
