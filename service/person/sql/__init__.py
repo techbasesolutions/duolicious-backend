@@ -291,11 +291,11 @@ RETURNING
     otp.otp
 """
 
--- One-shot OTP: setting otp_expiry = NOW() in the success path means a
--- replayed submit of the same OTP in the next tx will fail the
--- `otp_expiry > NOW()` clause. Cannot null the otp column itself —
--- duo_session.otp is NOT NULL in the schema. otp_attempts reset because
--- once you're in you're in.
+# One-shot OTP: setting otp_expiry = NOW() in the success path means a
+# replayed submit of the same OTP in the next tx will fail the
+# `otp_expiry > NOW()` clause. Cannot null the otp column itself --
+# duo_session.otp is NOT NULL in the schema. otp_attempts reset because
+# once you're in you're in.
 Q_MAYBE_DELETE_ONBOARDEE = """
 WITH valid_session AS (
     UPDATE duo_session
