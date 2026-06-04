@@ -291,16 +291,16 @@ RETURNING
     otp.otp
 """
 
-# One-shot OTP: setting otp_expiry = NOW() in the success path means a
-# replayed submit of the same OTP in the next tx will fail the
-# `otp_expiry > NOW()` clause. Cannot null the otp column itself --
-# duo_session.otp is NOT NULL in the schema. otp_attempts reset because
-# once you're in you're in.
+# Mark the session signed-in and reset the attempt counter, but do NOT
+# expire the OTP here -- Q_MAYBE_SIGN_IN runs IMMEDIATELY after this in
+# the same /check-otp request and needs to re-match the same OTP. The
+# one-shot replay-prevention `otp_expiry = NOW()` lives on Q_MAYBE_SIGN_IN
+# (the second/last query in the chain) so the OTP is dead for any
+# subsequent /check-otp tx but still usable by the rest of THIS tx.
 Q_MAYBE_DELETE_ONBOARDEE = """
 WITH valid_session AS (
     UPDATE duo_session
     SET signed_in = TRUE,
-        otp_expiry = NOW(),
         otp_attempts = 0
     WHERE
         session_token_hash = %(session_token_hash)s AND
