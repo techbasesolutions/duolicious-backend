@@ -315,9 +315,11 @@ def post_request_otp(req: t.PostRequestOtp):
         # Purge any stale UNSIGNED-IN sessions for this email first so the
         # zoo of pre-auth bearers doesn't grow unbounded across attempts
         # (audit Auth #5). Signed-in sessions on other devices stay.
+        # Matches on duo_session.email (the literal stored value); future
+        # cleanup work could also normalize case + dot/plus aliases SQL-side.
         tx.execute(
             Q_PURGE_STALE_UNSIGNED_SESSIONS,
-            dict(normalized_email=params['normalized_email']),
+            dict(email=req.email),
         )
         rows = tx.execute(Q_INSERT_DUO_SESSION, params).fetchall()
 

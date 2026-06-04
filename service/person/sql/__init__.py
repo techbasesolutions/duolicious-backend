@@ -470,16 +470,23 @@ WITH d AS (
 SELECT count(*) AS n FROM d
 """
 
-# Purge stale UNSIGNED-IN duo_session rows for a given normalized email.
-# Each /request-otp mints a new row; without this, abandoned OTPs (the
-# user got distracted or never opened the mail) sit as valid bearers
-# with a fresh OTP slot for 6 months. Called at the top of post_request_otp
-# before the new row is created so an attacker who triggered /request-otp
-# for the victim can't replay against an accumulated zoo of pre-auth
-# sessions (audit Auth #5 leftover).
+# Purge stale UNSIGNED-IN duo_session rows for a given email. Each
+# /request-otp mints a new row; without this, abandoned OTPs (the user
+# got distracted or never opened the mail) sit as valid bearers with a
+# fresh OTP slot for 6 months. Called at the top of post_request_otp
+# before the new row is created so an attacker who triggered
+# /request-otp for the victim can't replay against an accumulated zoo
+# of pre-auth sessions (audit Auth #5 leftover).
+#
+# 2026-06-04 fix: was matching on `normalized_email` but duo_session has
+# no such column (the normalization lives only at INSERT time in the
+# CTE that resolves bad-domain / ban lookups). Matches on the literal
+# `email` column instead; that's enough for the common case (retries
+# from the same client typing the same form) and avoids the 500 storm
+# that hit production for ~1.5h.
 Q_PURGE_STALE_UNSIGNED_SESSIONS = """
 DELETE FROM duo_session
- WHERE normalized_email = %(normalized_email)s
+ WHERE email = %(email)s
    AND signed_in = FALSE
 """
 
