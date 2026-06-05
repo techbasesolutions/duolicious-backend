@@ -2,9 +2,12 @@ __pycache__
 *.swo
 *.swp
 
-# Agent scratch — workflows / plans dumps. Never committed; tracked
-# only locally for in-session reference.
-docs/superpowers/
+# Agent scratch under docs/superpowers/ — exclude everything by default,
+# but ALLOW the specs/ and plans/ subdirs which hold deliberate, committable
+# design + implementation artifacts.
+docs/superpowers/*
+!docs/superpowers/specs/
+!docs/superpowers/plans/
 
 venv/
 
