@@ -8,6 +8,7 @@ __pycache__
 docs/superpowers/*
 !docs/superpowers/specs/
 !docs/superpowers/plans/
+!docs/superpowers/handovers/
 
 venv/
 
