@@ -11,6 +11,7 @@ import io
 import boto3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from service.config import API_BASE_URL, EMAIL_DOMAIN, PRODUCT_NAME, SIGNUPS_OPEN, SIGNUP_ALLOWED_DOMAINS
+from service import entitlements
 from service.person.sql import *
 from service.search.sql import *
 from commonsql import *
@@ -689,6 +690,13 @@ def post_finish_onboarding(s: t.SessionInfo):
             tx.execute(Q_UPSERT_SEARCH_PREFERENCE_CLUB, club_params)
 
         clubs = tx.execute(Q_GET_SESSION_CLUBS, club_params).fetchone()
+
+    # Founding-member 6-month Premium grant. Promised in
+    # emails/waitlist_welcome.py and the public site copy. Eligible:
+    # email is in beta_signup or has a completed waitlist_signup row.
+    # Idempotent via entitlements.grant(); harmless for non-founders.
+    # Opens its own tx, so called AFTER the api_tx above commits.
+    entitlements.grant_founding_member_if_eligible(row['person_id'], s.email)
 
     chat_params = dict(
         person_id=row['person_id'],

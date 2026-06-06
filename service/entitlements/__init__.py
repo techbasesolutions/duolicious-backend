@@ -223,3 +223,55 @@ def expire_stale(now: Optional[datetime] = None) -> int:
         )
         # psycopg's cursor exposes rowcount on UPDATE.
         return result.rowcount if hasattr(result, 'rowcount') else 0
+
+
+# ---------------------------------------------------------------------------
+# Founding-member Premium grant
+# ---------------------------------------------------------------------------
+
+from datetime import timedelta
+
+_FOUNDING_MEMBER_PREMIUM_DAYS = 183  # ~6 months
+
+_Q_IS_FOUNDING_MEMBER = """
+    SELECT (
+        EXISTS (
+            SELECT 1 FROM beta_signup
+             WHERE email = %(email)s
+               AND unsubscribed_at IS NULL
+        ) OR EXISTS (
+            SELECT 1 FROM waitlist_signup
+             WHERE email = %(email)s
+               AND answers IS NOT NULL
+               AND answers <> '{}'::jsonb
+        )
+    ) AS is_founding
+"""
+
+
+def grant_founding_member_if_eligible(person_id: int, email: str) -> bool:
+    """Grant the 6-month Premium founding-member perk promised in
+    emails/waitlist_welcome.py and the public website copy.
+
+    Eligibility: email is in beta_signup (not unsubscribed) OR has a
+    completed waitlist_signup row (non-empty answers jsonb).
+
+    Returns True iff entitlements changed (granted for the first time).
+    Idempotent: re-calling for the same person is safe — grant() bumps
+    expiry only when later, and doesn't double-append the entitlement.
+
+    Opens its own api_tx for the eligibility check, then delegates to
+    grant() which opens another tx. Caller must NOT be holding an
+    api_tx when calling this (will deadlock or open a nested tx).
+    """
+    if not person_id or not email:
+        return False
+
+    with api_tx('read committed') as tx:
+        row = tx.execute(_Q_IS_FOUNDING_MEMBER, dict(email=email)).fetchone()
+
+    if not row or not row['is_founding']:
+        return False
+
+    expires_at = datetime.now(timezone.utc) + timedelta(days=_FOUNDING_MEMBER_PREMIUM_DAYS)
+    return grant(person_id, 'premium', expires_at=expires_at)
