@@ -159,3 +159,37 @@ def attribute(
         dict(inviter_email=inviter_email, invitee_email=invitee_norm),
     ).fetchone()
     return dict(row) if row else None
+
+
+_Q_ALREADY_CREDITED = """
+    SELECT 1 FROM token_ledger
+     WHERE reason = 'referral'
+       AND metadata->>'referral_id' = %(referral_id)s
+     LIMIT 1
+"""
+
+
+def _credit_one(tx, person_uuid: str, referral_id: str) -> bool:
+    """Idempotent +5 token credit. Returns True if a new ledger row was
+    inserted, False if a row already exists for this referral_id (safe
+    no-op, never should happen but defends against concurrent /finish-
+    onboarding races on the same email).
+
+    Caller is responsible for flipping the referral row to
+    status='credited' AFTER this returns True."""
+    if tx.execute(
+        _Q_ALREADY_CREDITED, dict(referral_id=referral_id)
+    ).fetchone() is not None:
+        return False
+
+    # Avoid a circular import — service.tokens depends on nothing in
+    # service.referrals but the inverse needs late binding.
+    from service.tokens import credit
+    credit(
+        tx,
+        person_uuid,
+        5,
+        reason="referral",
+        metadata={"referral_id": referral_id},
+    )
+    return True

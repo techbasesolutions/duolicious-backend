@@ -55,3 +55,13 @@ def test_is_well_formed_code_rejects_garbage():
     # Empty / None
     assert _is_well_formed_code("") is False
     assert _is_well_formed_code(None) is False
+
+
+def test_credit_one_pre_check_query_is_parameterized():
+    """Defense-in-depth: the pre-check query must use a named parameter
+    for referral_id, not string-format it (audit Data Integrity #9 lesson).
+    Pure structural check — runs without a DB."""
+    from service.referrals import _Q_ALREADY_CREDITED
+    assert "%(referral_id)s" in _Q_ALREADY_CREDITED
+    assert "format" not in _Q_ALREADY_CREDITED.lower()
+    assert "f'" not in _Q_ALREADY_CREDITED
