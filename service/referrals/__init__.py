@@ -86,18 +86,31 @@ def mint_code(tx, email: str) -> Optional[str]:
     last_err: Optional[Exception] = None
     for _ in range(_MAX_MINT_RETRIES):
         code = _random_code()
+        # SAVEPOINT wraps each attempt so a unique-violation does not
+        # poison the outer tx (psycopg leaves the tx in a failed state
+        # until ROLLBACK, after which all further commands are skipped
+        # with "current transaction is aborted"). The caller may be
+        # mid-flight in a multi-statement api_tx (e.g. the CLI backfill
+        # loop in emails/send_referral_intro.py), so we must keep that
+        # tx alive across collisions.
+        tx.execute("SAVEPOINT mint_code_attempt")
         try:
             cur = tx.execute(_Q_SET_CODE, dict(email=norm, code=code))
             if cur.rowcount == 1:
+                tx.execute("RELEASE SAVEPOINT mint_code_attempt")
                 return code
-            # rowcount=0 means someone else minted a code for this row
-            # between our SELECT and UPDATE; re-read.
+            # rowcount=0 → someone else minted a code for this row
+            # between our SELECT and UPDATE. Re-read and return.
+            tx.execute("RELEASE SAVEPOINT mint_code_attempt")
             row2 = tx.execute(_Q_GET_EXISTING_CODE, dict(email=norm)).fetchone()
             if row2 and row2["referral_code"]:
                 return row2["referral_code"]
         except Exception as e:
-            # Unique-violation on the partial index (rare); retry with
-            # a fresh random code.
+            # Unique-violation on the partial index (rare; 34B keyspace
+            # vs ~20 codes in flight). Roll back this attempt's savepoint
+            # so the outer tx stays usable, then retry with a fresh
+            # random code.
+            tx.execute("ROLLBACK TO SAVEPOINT mint_code_attempt")
             last_err = e
     raise ReferralCodeCollision(
         f"could not mint referral_code for {norm!r} after "
@@ -132,7 +145,11 @@ def attribute(
     ).fetchone()
     if inviter_row is None:
         return None  # unknown code
-    inviter_email = inviter_row["email"]
+    # service.beta.register stores emails normalized, but service.referrals
+    # does not own that invariant. Normalize defensively so the self-
+    # referral check is robust against any future writer that bypasses
+    # service.beta.
+    inviter_email = _normalize_email(inviter_row["email"])
 
     if inviter_email == invitee_norm:
         return None  # self-referral, silently void
