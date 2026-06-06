@@ -279,7 +279,7 @@ class PostRequestOtp(BaseModel):
         default=None,
         min_length=7,
         max_length=7,
-        pattern=r"^[0-9A-HJ-NP-TV-Z]+$",  # Crockford: no I/L/O/U
+        pattern=r"^[0-9A-HJKM-NP-TV-Z]+$",  # Crockford: no I/L/O/U
     )
 
     @field_validator('email', mode='before')
@@ -387,7 +387,7 @@ class PostBetaTester(BaseModel):
         default=None,
         min_length=7,
         max_length=7,
-        pattern=r"^[0-9A-HJ-NP-TV-Z]+$",
+        pattern=r"^[0-9A-HJKM-NP-TV-Z]+$",
     )
 
     @field_validator('email', mode='before')
