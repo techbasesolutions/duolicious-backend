@@ -58,6 +58,12 @@ _Q_PICK = """
        AND b.unsubscribed_at IS NULL
        AND (w.unsubscribed_at IS NULL)
        AND NOT (b.email ILIKE ANY(%(suppressed)s))
+       -- A user can land in beta_signup via "Count me in" without ever
+       -- filling the waitlist demographic survey, then go straight to
+       -- /auth/sign-up and create a real account. They look "incomplete"
+       -- by the waitlist-answers check but are fully onboarded in the
+       -- person table. Don't nudge them.
+       AND NOT EXISTS (SELECT 1 FROM person p WHERE p.email = b.email)
      ORDER BY b.created_at
      LIMIT 100
 """
