@@ -255,20 +255,22 @@ Phase 1 + Phase 2 + Premium grant + click tracking + cron fix are all SHIPPED. T
 - `<ReferralCard>` FE component on the /waitlist completion screen — surfaces the user's own code + share button + funnel inline. Spec exists in the plan as Task 18 step but was deferred; Phase 1's email blast covers the introduction. Build only if you want an in-app pre-launch share surface.
 - `POST /referrals/code` public endpoint for the pre-launch card — also deferred, depends on the card.
 
-### Review-pass findings worth picking up (none are blockers; ranked by signal-vs-effort)
+### Review-pass findings — all addressed in this session
 
-| Issue | Where | Why pick up | Effort |
-|---|---|---|---|
-| `POST /referral-click` has NO rate limiting. Other public POSTs use `shared_otp_limit`. A malicious actor could pound the endpoint to inflate metrics. | `service/api/referral_click_route.py` | Easy abuse vector, easy fix | 5 min |
-| `credit_pending_for_invitee`'s third parameter `invitee_person_uuid` is never used (the credit goes to the INVITER, not invitee). Misleading. | `service/referrals/__init__.py:222` | Maintenance hazard — looks intentional but isn't | 5 min |
-| `_Q_IS_FOUNDING_MEMBER` checks `beta_signup.unsubscribed_at IS NULL` but NOT `waitlist_signup.unsubscribed_at IS NULL` — inconsistent. | `service/entitlements/__init__.py:236` | Minor; semantic question whether unsubscribe should void the perk | 5 min |
-| `from datetime import timedelta` is at module-line 232, not the top of `entitlements/__init__.py`. Lint may flag it. | `service/entitlements/__init__.py:232` | Cosmetic, but breaks the top-of-file import idiom | 2 min |
-| Click logging adds 400-800ms latency to every `/i/<code>` redirect (await + 800ms timeout). Investigate Next 16 `after()` API for true fire-and-forget. | `ahavah-web/src/app/i/[code]/route.ts` | UX: noticeable on slow connections | 20 min |
-| No unit tests for: `_credit_one`, `credit_pending_for_{invitee,inviter}`, `get_my_stats`, `grant_founding_member_if_eligible`, `_classify_ua`. Integration-tested only via live smoke. | `tests/test_referrals.py` | Regression risk during refactors | 30 min |
-| POSTGRES_PASSWORD drift never fully diagnosed; "fixed" by ALTER USER to match env. Could happen again. | `/opt/ahavah-api/.env.production` | Unknown unknown — investigate before next deploy | 1 hr |
-| Brief api outage during allowlist update (~5 min). Root cause documented in §7.6 (wrong compose flags) but the underlying postgres password drift is a separate issue. | (incident) | Process documentation already done; no code change needed | done |
+The first review pass surfaced 8 issues. All are now resolved (mostly via the small follow-up commits at the end of the session):
 
-None of the above are SHIP BLOCKERS — the code works as smoke-tested. Pick up at your discretion.
+| Issue | Resolution | Commit |
+|---|---|---|
+| `POST /referral-click` had no rate limiting | Added 60/min per-IP `_click_log_limit`. Per-IP is weak against the Vercel-egress legitimate-traffic pathway but useful as defense-in-depth against direct-curl abuse. | `4019fa5` |
+| `credit_pending_for_invitee` had an unused `invitee_person_uuid` parameter | Dropped the param + updated the single call site. Docstring now explicitly notes the credit goes to the inviter (looked up from the referral row), not the invitee. | `ff16e75` |
+| Founding-member eligibility check was asymmetric (`beta_signup.unsubscribed_at` filtered, waitlist's wasn't) | Removed the unsubscribe filter from both. Founding-member status is about WHEN you joined; unsubscribing from marketing emails shouldn't void six months of Premium that someone earned by joining early. | `8828a12` |
+| `from datetime import timedelta` was at line 232 (mid-file) | Moved to top-of-file imports block. | `8828a12` |
+| Click logging added 400-800ms latency on every `/i/<code>` redirect | Switched to Next 16's `after()` from `next/server` — the canonical pattern for post-response work in Route Handlers. Per docs, runs even on redirect, doesn't block, doesn't make the route dynamic. Click logging is now invisible to user-perceived latency. | `769ffca` (FE) |
+| No unit tests for `_classify_ua` | Added `tests/test_referral_click.py` with 23 parameterized assertions covering empty/None, 10 bot signatures, 3 mobile signatures, 3 desktop signatures, and one priority test for bot-check-before-mobile-check. DB-touching pieces remain integration-tested only; documented why in the test file's docstring. | `5fb4748` |
+| POSTGRES_PASSWORD "drift" | Phantom issue — re-tracing the incident showed there was no actual drift, just env substitution drift from missing docker-compose flags. The ALTER USER I ran during diagnosis was a harmless red herring. Documented in §7.6. | — |
+| API outage (~5 min) during allowlist update | Process documentation already in §7.6. No code change. | — |
+
+If any of these resolutions surfaces a regression in production, the relevant commit + section above should make rollback obvious.
 
 ## 7. Critical gotchas (read these BEFORE Phase 2 work)
 
