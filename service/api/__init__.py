@@ -1038,6 +1038,9 @@ import service.api.feedback_routes  # noqa: E402,F401
 import service.api.beta_routes  # noqa: E402,F401
 # Beta referrals (2026-06-05) — GET /referrals/me for authed callers.
 import service.api.referrals_routes  # noqa: E402,F401
+# Referral-link click logging (2026-06-06) — POST /referral-click fired by
+# the /i/<code> Route Handler so we can see clicks even without signup.
+import service.api.referral_click_route  # noqa: E402,F401
 # One-click unsubscribe (2026-06-03) — token-backed /u/<token> for both GET
 # (recipient clicks footer link) and POST (Gmail/Yahoo RFC 8058 one-click).
 import service.api.unsubscribe_routes  # noqa: E402,F401

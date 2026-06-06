@@ -402,6 +402,21 @@ class PostBetaTester(BaseModel):
         return EmailStr._validate(str(value).lower().strip())
 
 
+class PostReferralClick(BaseModel):
+    """Public POST /referral-click body. Fire-and-forget click logger hit by
+    ahavah-web's /i/<code> Route Handler so we can see whether referral links
+    are being clicked even when the user never signs up."""
+    # The code as requested in the URL, normalized to uppercase by the
+    # route handler before posting. May not pass the Crockford regex —
+    # we still record the click for visibility into bot/tamper traffic.
+    code: str = Field(min_length=1, max_length=64)
+    # Whether the code passed the route handler's Crockford check.
+    # Lets us filter "real" clicks from regex-rejected hits in queries.
+    well_formed: bool = False
+    # Raw User-Agent — for classifying mobile/desktop/bot in queries.
+    user_agent: Optional[str] = Field(default=None, max_length=512)
+
+
 class PostFeedback(BaseModel):
     """Public POST /feedback body. Stored + emailed to admin. Email is optional
     (anonymous-friendly); category is constrained; message is required."""
