@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from database import api_tx
@@ -229,16 +229,18 @@ def expire_stale(now: Optional[datetime] = None) -> int:
 # Founding-member Premium grant
 # ---------------------------------------------------------------------------
 
-from datetime import timedelta
-
 _FOUNDING_MEMBER_PREMIUM_DAYS = 183  # ~6 months
 
+# Founding-member status is about WHEN you joined, not your current
+# email-subscription preferences. unsubscribed_at gates marketing
+# emails, not the perk — unsubscribing shouldn't void six months of
+# Premium someone earned by joining early. So the eligibility check
+# is intentionally indifferent to unsubscribed_at on both tables.
 _Q_IS_FOUNDING_MEMBER = """
     SELECT (
         EXISTS (
             SELECT 1 FROM beta_signup
              WHERE email = %(email)s
-               AND unsubscribed_at IS NULL
         ) OR EXISTS (
             SELECT 1 FROM waitlist_signup
              WHERE email = %(email)s
