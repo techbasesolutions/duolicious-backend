@@ -271,6 +271,16 @@ class PostRequestOtp(BaseModel):
     # TURNSTILE_SECRET_KEY is configured; otherwise ignored (zero-config
     # rollout — flip the env var to activate without code changes).
     turnstile_token: Optional[str] = Field(default=None, max_length=4096)
+    # Referral code from /i/<code> landing route, surfaced in
+    # localStorage and forwarded by the FE on every public POST that
+    # might create a new account. Crockford base32, 7 chars, optional.
+    # See docs/superpowers/specs/2026-06-05-beta-referrals-design.md.
+    inviter_code: Optional[str] = Field(
+        default=None,
+        min_length=7,
+        max_length=7,
+        pattern=r"^[0-9A-HJ-NP-TV-Z]+$",  # Crockford: no I/L/O/U
+    )
 
     @field_validator('email', mode='before')
     def validate_email(cls, value):
@@ -372,6 +382,13 @@ class PostBetaTester(BaseModel):
     # Honeypot + Turnstile (same rationale as PostRequestOtp).
     website: Optional[str] = Field(default=None, max_length=256)
     turnstile_token: Optional[str] = Field(default=None, max_length=4096)
+    # See PostRequestOtp.inviter_code docstring.
+    inviter_code: Optional[str] = Field(
+        default=None,
+        min_length=7,
+        max_length=7,
+        pattern=r"^[0-9A-HJ-NP-TV-Z]+$",
+    )
 
     @field_validator('email', mode='before')
     def validate_email(cls, value):
