@@ -201,7 +201,21 @@ Deleting a beta_signup row CASCADE-deletes the referral rows where they're the I
 
 Gmail's image proxy caches PNGs aggressively. If you re-render a title PNG (e.g. for a Phase 2 email), bump the URL query param: `title-foo.png?v=2`. We caught this in Phase 1 smoke when the un-clipped re-rendered PNG was still showing the old clipped version in Gmail.
 
-### 7.6 The CLI's pre-flight backfill is REQUIRED
+### 7.6 NEVER recreate the api container without the production compose flags
+
+`docker compose up -d --force-recreate api` (or `restart api`) uses ONLY the base `docker-compose.yml`, which has `DUO_DB_PASS: password` hardcoded. The real password lives in `docker-compose.production.yml` via `${POSTGRES_PASSWORD}` substitution from `.env.production`. Without the override, the api spawns with literal-string password "password" → fails on initapi.py's `psycopg.connect` → exits → 502 at the proxy.
+
+ALWAYS use:
+```bash
+cd /opt/ahavah-api
+docker compose -f docker-compose.yml -f docker-compose.production.yml --env-file .env.production up -d <service>
+```
+
+This bit me on 2026-06-06 while widening the signup allowlist. Took ~5 min of outage to diagnose. Same trap applies to chat + cron services (all of them have prod-only env values in the override). The GHA deploy uses the right flags automatically; the trap is when you SSH in and run compose by hand.
+
+Bonus: there's a latent bug in `database/initapi.py:34-37` — the `except psycopg.errors.OperationalError:` clause prints `e` but `e` isn't bound (no `as e`), so on real auth failure it raises a NameError instead of retrying. Worth fixing when you're in that area.
+
+### 7.7 The CLI's pre-flight backfill is REQUIRED
 
 `emails/send_referral_intro.py::_backfill_and_target_codes()` runs `mint_code` on every targeted row BEFORE returning the list. This ensures no email is sent without a code. If you write a new email-blast CLI, replicate that pattern: never separate "compute recipient list" from "ensure each recipient has the data the template needs."
 
