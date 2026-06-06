@@ -193,3 +193,54 @@ def _credit_one(tx, person_uuid: str, referral_id: str) -> bool:
         metadata={"referral_id": referral_id},
     )
     return True
+
+
+_Q_FLIP_INVITEE_GRADUATED = """
+    UPDATE referral
+       SET status = 'graduated', graduated_at = NOW()
+     WHERE invitee_email = %(invitee_email)s
+       AND status = 'pending'
+    RETURNING id, inviter_email
+"""
+
+_Q_INVITER_PERSON_UUID = """
+    SELECT uuid::TEXT AS uuid FROM person
+     WHERE normalized_email = %(email)s
+        OR email = %(email)s
+     LIMIT 1
+"""
+
+_Q_FLIP_GRADUATED_TO_CREDITED = """
+    UPDATE referral
+       SET status = 'credited', credited_at = NOW()
+     WHERE id = %(id)s
+       AND status = 'graduated'
+    RETURNING id
+"""
+
+
+def credit_pending_for_invitee(
+    tx, invitee_email: str, invitee_person_uuid: str
+) -> Optional[str]:
+    """Called at the invitee's POST /finish-onboarding inside the same
+    api_tx that creates their person row. Returns the inviter's
+    person.uuid iff a credit fired, else None."""
+    norm = _normalize_email(invitee_email)
+    row = tx.execute(
+        _Q_FLIP_INVITEE_GRADUATED, dict(invitee_email=norm)
+    ).fetchone()
+    if row is None:
+        return None  # nothing pending for this invitee
+
+    referral_id = str(row["id"])
+    inviter_email = row["inviter_email"]
+    inviter_row = tx.execute(
+        _Q_INVITER_PERSON_UUID, dict(email=inviter_email)
+    ).fetchone()
+    if inviter_row is None:
+        return None  # inviter hasn't graduated yet; leave at 'graduated'
+
+    inviter_uuid = inviter_row["uuid"]
+    if _credit_one(tx, inviter_uuid, referral_id):
+        tx.execute(_Q_FLIP_GRADUATED_TO_CREDITED, dict(id=referral_id))
+    return inviter_uuid
