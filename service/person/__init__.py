@@ -15,7 +15,11 @@ from service.person.sql import *
 from service.search.sql import *
 from commonsql import *
 from service.person.template import otp_template
-from service.referrals import attribute as attribute_referral
+from service.referrals import (
+    attribute as attribute_referral,
+    credit_pending_for_invitee,
+    credit_pending_for_inviter,
+)
 import traceback
 import re
 from smtp import aws_smtp
@@ -663,6 +667,13 @@ def post_finish_onboarding(s: t.SessionInfo):
         tx.execute('SET LOCAL statement_timeout = 15000') # 15 seconds
         tx.execute(Q_FINISH_ONBOARDING, params=api_params)
         row = tx.fetchone()
+
+        # Referral credits — see docs/superpowers/specs/2026-06-05-beta-referrals-design.md.
+        # Both calls are idempotent; harmless when the user has no
+        # referral relationships in either direction.
+        new_uuid = str(row['person_uuid'])
+        credit_pending_for_invitee(tx, s.email, new_uuid)
+        credit_pending_for_inviter(tx, s.email, new_uuid)
 
         club_params = dict(
             person_id=row['person_id'],
