@@ -119,13 +119,13 @@ def chip(label: str) -> str:
     )
 
 
-# Canonical .e1__valid: lime left-border callout (rgba(215,255,129,0.20) bg).
+# Soft lime-tinted callout panel. No left-edge stroke — the partial
+# border style is explicitly excluded from the design system.
 def callout(text: str) -> str:
     return f"""
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 28px;">
       <tr>
-        <td width="4" bgcolor="{LIME}" style="background:{LIME};border-radius:4px 0 0 4px;">&nbsp;</td>
-        <td class="e-callout" bgcolor="#F4FBE3" style="padding:14px 18px;background:#F4FBE3;border-radius:0 10px 10px 0;font-family:{SANS};font-size:14px;line-height:1.5;color:{INK};font-weight:600;">
+        <td class="e-callout" bgcolor="#F4FBE3" style="padding:14px 18px;background:#F4FBE3;border-radius:10px;font-family:{SANS};font-size:14px;line-height:1.5;color:{INK};font-weight:600;">
           {text}
         </td>
       </tr>

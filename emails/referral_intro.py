@@ -33,7 +33,7 @@ def _body(code: str) -> str:
     return f"""
 {chip("You + 1")}
 
-{title_image("title-referral.png", "title-referral-wht.png", "Bring someone with you.", 528)}
+{title_image("title-referral.png?v=2", "title-referral-wht.png?v=2", "Bring someone with you.", 528)}
 
 <p class="e-text" style="margin:0 0 16px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
   Shalom. You were one of the first people to opt into the Ahavah beta.
