@@ -37,8 +37,8 @@ def _body(code: str) -> str:
 
 <p class="e-text" style="margin:0 0 16px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
   Shalom. You were one of the first people to opt into the Ahavah beta.
-  We are not running this loudly &mdash; we are building it one trusted
-  person at a time. That is why we are writing to you specifically.
+  We are not running this loudly. We are building it one trusted person
+  at a time. That is why we are writing to you specifically.
 </p>
 <p class="e-text" style="margin:0 0 28px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
   Here is your personal invite link. Send it to one Torah-observant
@@ -46,7 +46,7 @@ def _body(code: str) -> str:
   through it, your name is on the door for them.
 </p>
 
-{callout("When that friend finishes their profile at launch, we credit your account with 5 tokens. That is one Boost &mdash; a 30-minute spotlight on Discover. Hold it for the right moment.")}
+{callout("When that friend finishes their profile at launch, we credit your account with 5 tokens. That is one Boost: a 30-minute spotlight on Discover. Hold it for the right moment.")}
 
 {button("Share your link &rarr;", share_url, variant="lime", full=True)}
 

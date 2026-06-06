@@ -29,7 +29,13 @@ const ACCENT = args.accent || args.color;
 const TEXT = args.text;
 const COLOR = args.color;
 const OUT = resolve(args.out);
-const WIDTH = 1056;
+// Chrome viewport must be wider than the natural rendered text width
+// or the captureScreenshot clip outside the viewport comes back
+// transparent — producing PNGs cropped to the viewport edge instead
+// of the bounding box. 2400px easily fits 4-word Ultra headlines at
+// 92px. The captured region matches the actual text bbox, which the
+// email template then scales down via width="528".
+const WIDTH = 2400;
 
 const CHROME_CANDIDATES = [
   "C:/Program Files/Google/Chrome/Application/chrome.exe",
