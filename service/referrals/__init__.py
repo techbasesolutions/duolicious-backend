@@ -271,3 +271,45 @@ def credit_pending_for_inviter(
             tx.execute(_Q_FLIP_GRADUATED_TO_CREDITED, dict(id=referral_id))
             n += 1
     return n
+
+
+_Q_MY_STATS = """
+    WITH me AS (
+        SELECT email, uuid FROM person WHERE uuid = %(uuid)s
+    ),
+    my_code AS (
+        SELECT referral_code FROM beta_signup
+         WHERE email = (SELECT email FROM me)
+    ),
+    my_refs AS (
+        SELECT
+            count(*)                                          AS joined_count,
+            count(*) FILTER (WHERE status = 'credited')       AS credited_count
+          FROM referral
+         WHERE inviter_email = (SELECT email FROM me)
+    ),
+    my_pending_value AS (
+        SELECT count(*) * 5 AS pending_token_balance
+          FROM referral
+         WHERE inviter_email = (SELECT email FROM me)
+           AND status IN ('pending', 'graduated')
+    )
+    SELECT
+        (SELECT referral_code FROM my_code)               AS code,
+        (SELECT joined_count FROM my_refs)                AS joined_count,
+        (SELECT credited_count FROM my_refs)              AS credited_count,
+        (SELECT pending_token_balance FROM my_pending_value) AS pending_token_balance
+"""
+
+
+def get_my_stats(tx, person_uuid: str) -> dict:
+    """For GET /referrals/me. Returns
+        {code, joined_count, credited_count, pending_token_balance}
+    code may be None if the caller isn't in beta_signup."""
+    row = tx.execute(_Q_MY_STATS, dict(uuid=person_uuid)).fetchone()
+    return {
+        "code": (row or {}).get("code"),
+        "joined_count": int((row or {}).get("joined_count") or 0),
+        "credited_count": int((row or {}).get("credited_count") or 0),
+        "pending_token_balance": int((row or {}).get("pending_token_balance") or 0),
+    }
