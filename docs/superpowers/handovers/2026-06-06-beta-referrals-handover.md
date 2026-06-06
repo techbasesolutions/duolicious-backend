@@ -1,8 +1,8 @@
 # Beta-tester referrals — Handover
 
 > **Audience:** the next agent (fresh session, no prior context) picking up where this session left off.
-> **Date:** 2026-06-06
-> **Status:** Phase 1 SHIPPED to production. Phase 2 NOT STARTED.
+> **Date:** 2026-06-06 (last updated end of session, after final review pass)
+> **Status:** Phase 1 + Phase 2 SHIPPED to production. Founding-member Premium grant SHIPPED. Click-tracking SHIPPED. Reengagement cron false-positive bug FIXED. Domain allowlist widened. Ready for June 15 launch from the backend perspective.
 
 ## 0. TL;DR
 
@@ -33,12 +33,13 @@ That email already exists (`emails/beta_launch.py`) and is dry-run-safe.
 | This handover | `ahavah-api/docs/superpowers/handovers/2026-06-06-beta-referrals-handover.md` |
 | Phase 1 milestone tag | `ahavah-api: phase1-referrals-blast-sent` (pushed to origin) |
 
-## 2. What landed in Phase 1
+## 2. What landed (full commit history this session)
 
 ### Backend (`ahavah-api`, branch `ahavah/main`, all commits pushed to `github.com/techbasesolutions/duolicious-backend`)
 
-Commits since the plan (`f924af0`), oldest first:
+Commits since the plan (`f924af0`), oldest first. All 26 are shipped on prod:
 
+**Phase 1 — capture + email blast (Tasks 1-13):**
 ```
 d4ea736  migration 0024: referrals schema + extend token_ledger enum
 f3077b5  service/referrals: mint_code + attribute (Phase 1 surface)
@@ -57,6 +58,31 @@ d31e44e  send_referral_intro: restrict blast to completed-onboarding cohort
 9640630  service/referrals: SAVEPOINT mint_code retries + defensive inviter normalize
 ```
 
+**Phase 1 ship + post-Phase-1 polish (after the blast went out):**
+```
+6f61082  docs: handover for next-agent pickup of beta-referrals Phase 2
+7616bc5  cron(betareengagement): exclude beta testers who already have a person row
+4eb9a0d  handover: document docker compose production-override trap
+```
+
+**Phase 2 — credit firing (Tasks 14-19):**
+```
+ce1018a  service/referrals: _credit_one helper (idempotent +5 credit)
+4577198  service/referrals: credit_pending_for_invitee (graduated → credited)
+e6cfb00  service/referrals: credit_pending_for_inviter (drain escrow on inviter graduate)
+3498fe2  post_finish_onboarding: drive referral credits in both directions
+ae483a7  GET /referrals/me + service.referrals.get_my_stats
+```
+
+**June 15 readiness (Premium + click tracking + handover):**
+```
+9900f5e  founding-member: grant 6 months of Premium on finish_onboarding
+62fb317  referral-click: log /i/[code] hits to a new table
+c8b6ecd  handover: TL;DR update — Phase 2 + founding-member grant + click tracking SHIPPED
+```
+
+Tags pushed: `phase1-referrals-blast-sent`, `phase2-referrals-credits-live`, `june15-readiness-and-click-tracking`.
+
 ### Frontend (`ahavah-web`, branch `master`, deployed to ahavah.app via `vercel --prod`)
 
 ```
@@ -68,7 +94,11 @@ ca99420  lib: forward inviter_code from localStorage on public POSTs
 ccbf13a  app/i/[code]: replace Server Component with Route Handler   ← supersedes c1e3047
 a098eae  ref-code regex: fix Crockford bug (was including L)
 c137f8e  email assets: re-render title-referral PNGs (un-clipped)
+0700829  i/[code]: fire-and-forget click log to backend                ← later REPLACED by d527c33
+d527c33  i/[code]: await the click log instead of fire-and-forget     ← supersedes 0700829
 ```
+
+The `0700829` fire-and-forget click logger NEVER ACTUALLY LANDED CLICKS in Vercel Node runtime — `void fetch + keepalive: true` got killed before completing. `d527c33` switched to `await fetch` with 800ms timeout; that DID work end-to-end on prod. If you ever try fire-and-forget HTTP from a Vercel Node Route Handler, expect this trap and use Next 16's `after()` or just `await`.
 
 The `c1e3047` server-component `/i/[code]/page.tsx` was DELETED and REPLACED by `ccbf13a` as `route.ts` (Next 16 rejected `cookies().set()` in Server Components). That history matters if you grep — only the route.ts file exists today.
 
@@ -103,89 +133,142 @@ backend POST /waitlist | /beta-tester | /request-otp
    └─ commit
 ```
 
-**Phase 2 will add** (after `Q_FINISH_ONBOARDING` inside `post_finish_onboarding`):
+**Phase 2 (live now) wires** after `Q_FINISH_ONBOARDING` inside `post_finish_onboarding`:
 ```
-credit_pending_for_invitee(tx, person_uuid, email)
-   ├─ flip the row's status pending → graduated
-   ├─ check if inviter has ALSO graduated
-   └─ if both graduated: _credit_one() each side (+5 tokens, status=credited)
+credit_pending_for_invitee(tx, invitee_email, invitee_person_uuid)
+   ├─ flip the row's status pending → graduated (in same api_tx)
+   ├─ look up inviter's person row by normalized_email OR email
+   ├─ if inviter has a person row:
+   │    └─ _credit_one(tx, inviter_uuid, referral_id)
+   │       ├─ idempotency pre-check via metadata->>'referral_id'
+   │       └─ service.tokens.credit(+5, reason='referral', metadata={referral_id})
+   │    └─ flip referral row graduated → credited
+   └─ if inviter has NOT graduated yet, leave at 'graduated' for later drain
 
-credit_pending_for_inviter(tx, person_uuid, email)
-   └─ symmetric: when the inviter finishes, find their graduated invitees,
-      check both-sides condition, fire _credit_one() on the matched pairs.
+credit_pending_for_inviter(tx, inviter_email, inviter_person_uuid)
+   └─ drain: every referral WHERE inviter_email=X AND status='graduated'
+       → _credit_one for the inviter + flip to credited
 ```
 
-## 4. Production state right now
+**June-15-readiness work (live now) — see §3a below for full topology.**
+
+## 3a. June-15-readiness shipping
+
+Beyond Phase 1+2, three more pieces shipped this session:
+
+### Founding-member 6-month Premium grant
+- `service.entitlements.grant_founding_member_if_eligible(person_id, email)` is called from `post_finish_onboarding` AFTER the api_tx commits.
+- Eligibility: email is in `beta_signup` (not unsubscribed) OR has a completed `waitlist_signup` row (non-empty `answers` jsonb).
+- Grants the canonical `'premium'` entitlement with `subscription_expires_at = NOW() + 183 days` via the existing `entitlements.grant()` API (which opens its own tx — so caller MUST NOT hold one when calling).
+- Promised in `emails/waitlist_welcome.py:51` ("Founding member perk: six months of Premium free at launch") and the `/resources/updates/waitlist-open-building-toward-launch.mdx` page. 26 waitlist + 24 beta signups received this promise.
+- Idempotent via `grant()`'s "already_has" check + LATER-wins expiry comparison.
+
+### Referral-link click tracking
+- Migration `0025_referral_link_click.sql` creates `referral_link_click` table with `(id, code, inviter_email, well_formed, created_at, user_agent_class, user_agent)`. Indexes on `(code, created_at)`, `(inviter_email, created_at) WHERE NOT NULL`, and `(created_at DESC)`.
+- Backend: `POST /referral-click` in `service/api/referral_click_route.py`. Public, no auth, swallows all exceptions, always returns `{ok: true}`. Classifies UA into `mobile / desktop / bot / unknown` via substring match (`bot`, `spider`, `crawler`, `preview`, `facebookexternalhit`, `twitterbot`, etc.).
+- Frontend: `/i/[code]` Route Handler `await`s the POST with 800ms `AbortSignal.timeout`. **Adds 400-800ms latency to every /i/ redirect** — accepted tradeoff because `void fetch + keepalive` was empirically NOT honored by Vercel's Node runtime.
+
+### Reengagement cron false-positive fix
+- `service/cron/betareengagement/__init__.py` `_Q_PICK` now includes `AND NOT EXISTS (SELECT 1 FROM person p WHERE p.email = b.email)` so beta testers who skipped the waitlist demographic survey but completed real onboarding via /auth/sign-up aren't flagged as incomplete.
+
+### Signup domain allowlist widening
+- `AHAVAH_SIGNUP_ALLOWED_DOMAINS` on `/opt/ahavah-api/.env.production` is now `techbaseltd.com,gmail.com,yahoo.com,aol.com,outlook.com,proton.me,axxess.co.za,retznest.com,icloud.com` (covers all 7 cohort domains + icloud which had a recent waitlist signup).
+- Backup at `/opt/ahavah-api/.env.production.bak.before-cohort-domains-2026-06-06`.
+
+## 4. Production state right now (end of session)
 
 | Thing | Count / value |
 |---|---|
-| beta_signup rows | 20 |
-| beta_signup with referral_code | 20 |
-| beta_signup with referral_intro_sent_at | 19 (18 from blast + 1 from test to harrigan.tennyson@gmail.com) |
-| Cohort that completed onboarding (eligible for blast) | 18 |
-| Cohort that did NOT complete onboarding | 2 (`harrigan.tennyson@gmail.com` — admin/test inbox; `jpjbraden@gmail.com` — never finished) |
-| referral table rows (pending/graduated/credited) | 0 |
-| token_ledger reason enum | now includes `'referral'` |
+| beta_signup rows | 24 |
+| beta_signup with referral_code | 20 (16 cohort + 4 new today, the 4 new haven't been emailed yet) |
+| beta_signup with referral_intro_sent_at | 19 (18 from blast + 1 test send) |
+| waitlist_signup rows | 31 |
+| waitlist_signup with completed answers | 26 |
+| person rows | 1 (`harrigan.tennyson@gmail.com`, name "Ehud", uuid `1ea2acc2-...`) |
+| referral rows | 0 (none clicked + signed up yet) |
+| referral_link_click rows | 0 (clean after smoke test) |
+| token_ledger 'referral' rows | 0 |
+| reengagement_sent_at stamped | 2 (harrigan + jpjbraden, both pre-fix) |
+| Unsubscribes | 0 |
 
-`jpjbraden@gmail.com` has a referral_code minted but `referral_intro_sent_at IS NULL`. If they complete waitlist onboarding later, the CLI will pick them up on the next `--all`. That's intentional — the blast filter is "completed onboarding AND not previously emailed", which is idempotent and self-healing.
+`jpjbraden@gmail.com` has a referral_code minted but `referral_intro_sent_at IS NULL` AND empty waitlist answers AND no person row. If they ever complete waitlist onboarding, the next blast `--all` will include them (the filter is "completed onboarding AND not previously emailed"). The reengagement cron will NOT re-nudge them (send-once flag is stamped from 2026-06-03).
 
-## 5. How to monitor for inbound clicks + attributions
+## 5. How to monitor inbound clicks + attributions + credits
 
 ```bash
-# Watch new referral rows in real-time (status 'pending' = signup just happened, no credits yet):
-ssh -i C:/Users/Ehud/.ssh/id_ed25519_ahavah root@167.71.93.27 \
-  "docker exec ahavah-api-postgres-1 psql -U postgres -d duo_api -c \
-   'SELECT inviter_email, invitee_email, status, created_at FROM referral ORDER BY created_at DESC LIMIT 20;'"
+SSH='ssh -i C:/Users/Ehud/.ssh/id_ed25519_ahavah root@167.71.93.27'
+PSQL='docker exec ahavah-api-postgres-1 psql -U postgres -d duo_api -c'
 
-# Per-inviter funnel:
-ssh -i C:/Users/Ehud/.ssh/id_ed25519_ahavah root@167.71.93.27 \
-  "docker exec ahavah-api-postgres-1 psql -U postgres -d duo_api -c \
-   \"SELECT bs.email, bs.referral_code,
-            COUNT(r.id) FILTER (WHERE r.status = 'pending') AS pending,
-            COUNT(r.id) FILTER (WHERE r.status = 'graduated') AS graduated,
-            COUNT(r.id) FILTER (WHERE r.status = 'credited') AS credited
-       FROM beta_signup bs
-       LEFT JOIN referral r ON r.inviter_email = bs.email
-      WHERE bs.referral_intro_sent_at IS NOT NULL
-      GROUP BY bs.email, bs.referral_code
-      ORDER BY pending DESC, graduated DESC;\""
+# Per-inviter full funnel: clicks → signups → credited
+$SSH "$PSQL \"
+SELECT bs.email AS inviter,
+       COUNT(DISTINCT rc.id) AS clicks,
+       COUNT(DISTINCT r.id)  AS signups,
+       COUNT(DISTINCT r.id) FILTER (WHERE r.status='credited') AS credited
+  FROM beta_signup bs
+  LEFT JOIN referral_link_click rc ON rc.inviter_email = bs.email
+  LEFT JOIN referral r              ON r.inviter_email  = bs.email
+ WHERE bs.referral_intro_sent_at IS NOT NULL
+ GROUP BY 1
+ ORDER BY clicks DESC NULLS LAST;\""
+
+# Click stream (last 24h, filter out bots):
+$SSH "$PSQL \"
+SELECT code, inviter_email, user_agent_class, LEFT(user_agent, 60), created_at
+  FROM referral_link_click
+ WHERE created_at > NOW() - INTERVAL '24 hours'
+   AND user_agent_class <> 'bot'
+ ORDER BY created_at DESC;\""
+
+# Referral rows by status (live cohort health):
+$SSH "$PSQL \"
+SELECT status, COUNT(*) FROM referral GROUP BY 1 ORDER BY 2 DESC;\""
+
+# Token ledger 'referral' rows (every +5 credit lands here):
+$SSH "$PSQL \"
+SELECT person_id, delta, metadata->>'referral_id' AS referral_id, created_at
+  FROM token_ledger
+ WHERE reason = 'referral'
+ ORDER BY created_at DESC LIMIT 20;\""
+
+# Founding-member Premium grant audit:
+$SSH "$PSQL \"
+SELECT p.email,
+       p.entitlements,
+       p.subscription_expires_at,
+       (p.subscription_expires_at - NOW()) AS time_left
+  FROM person p
+ WHERE 'premium' = ANY(p.entitlements)
+ ORDER BY p.sign_up_time DESC;\""
 ```
 
-## 6. Phase 2 — what to build
+## 6. What's the next iteration after this session
 
-The plan's Tasks 14–19 cover this exactly. Brief summary:
+Phase 1 + Phase 2 + Premium grant + click tracking + cron fix are all SHIPPED. The biggest remaining items:
 
-### Task 14: `_credit_one()` + `credit_pending_for_{invitee,inviter}` helpers
-- File: `service/referrals/__init__.py` — append (don't replace) the existing module.
-- Adds `_Q_ALREADY_CREDITED`, `_Q_UPDATE_REFERRAL_GRADUATED`, `_Q_UPDATE_REFERRAL_CREDITED` (exact SQL in plan §Task 14).
-- Token amount: `+5` per side. Reason: `'referral'`. Metadata: `{"referral_id": "<uuid>"}` for idempotency.
-- The both-sides-graduated invariant is enforced inside `_credit_one()`: it'll return `False` (no insert) if the OTHER side hasn't graduated yet.
+### June 15 launch (9 days out from this handover's date)
+- App-readiness (FE): PROJECT-STATUS.md last said 17/40 screens. The core sign-up → onboarding → /map flow works (harrigan completed it on 2026-06-04). What's incomplete: R5 four-state coverage, filters drawer, voice recording, in-chat image picker, block/report, verification tiers, settings sub-pages, subscription mgmt, help pages.
+- Send the `beta_launch` email when ready: `ssh ... "docker exec ahavah-api-api-1 python -m emails.send_beta_launch --all"` (already built, dry-run-safe).
+- Toggle `AHAVAH_SIGNUPS_OPEN=true` on the droplet env to open signup beyond the allowlist (currently `false`).
 
-### Task 15: Extend `tests/test_referrals.py`
-- Add unit tests for the new pure-logic pieces (the SQL constants don't need direct testing; integration is covered by the smoke).
+### Deferred from the original plan (NOT shipped, may never be needed)
+- `<ReferralCard>` FE component on the /waitlist completion screen — surfaces the user's own code + share button + funnel inline. Spec exists in the plan as Task 18 step but was deferred; Phase 1's email blast covers the introduction. Build only if you want an in-app pre-launch share surface.
+- `POST /referrals/code` public endpoint for the pre-launch card — also deferred, depends on the card.
 
-### Task 16: Wire into `post_finish_onboarding`
-- File: `service/person/__init__.py` (the `post_finish_onboarding` function — same file you already edited for `post_request_otp`).
-- Insert AFTER `Q_FINISH_ONBOARDING` returns the row, BEFORE the commit:
-  ```python
-  credit_pending_for_invitee(tx, person_uuid, req.email)
-  credit_pending_for_inviter(tx, person_uuid, req.email)
-  ```
-- Both functions are no-ops if the email has no referral row, so order doesn't matter.
+### Review-pass findings worth picking up (none are blockers; ranked by signal-vs-effort)
 
-### Task 17: `GET /referrals/me` endpoint
-- New file: `service/api/referrals_routes.py`.
-- Authed (uses existing session token / person decorator).
-- Returns `{ code, share_url, pending, graduated, credited, total_credited_tokens }`.
+| Issue | Where | Why pick up | Effort |
+|---|---|---|---|
+| `POST /referral-click` has NO rate limiting. Other public POSTs use `shared_otp_limit`. A malicious actor could pound the endpoint to inflate metrics. | `service/api/referral_click_route.py` | Easy abuse vector, easy fix | 5 min |
+| `credit_pending_for_invitee`'s third parameter `invitee_person_uuid` is never used (the credit goes to the INVITER, not invitee). Misleading. | `service/referrals/__init__.py:222` | Maintenance hazard — looks intentional but isn't | 5 min |
+| `_Q_IS_FOUNDING_MEMBER` checks `beta_signup.unsubscribed_at IS NULL` but NOT `waitlist_signup.unsubscribed_at IS NULL` — inconsistent. | `service/entitlements/__init__.py:236` | Minor; semantic question whether unsubscribe should void the perk | 5 min |
+| `from datetime import timedelta` is at module-line 232, not the top of `entitlements/__init__.py`. Lint may flag it. | `service/entitlements/__init__.py:232` | Cosmetic, but breaks the top-of-file import idiom | 2 min |
+| Click logging adds 400-800ms latency to every `/i/<code>` redirect (await + 800ms timeout). Investigate Next 16 `after()` API for true fire-and-forget. | `ahavah-web/src/app/i/[code]/route.ts` | UX: noticeable on slow connections | 20 min |
+| No unit tests for: `_credit_one`, `credit_pending_for_{invitee,inviter}`, `get_my_stats`, `grant_founding_member_if_eligible`, `_classify_ua`. Integration-tested only via live smoke. | `tests/test_referrals.py` | Regression risk during refactors | 30 min |
+| POSTGRES_PASSWORD drift never fully diagnosed; "fixed" by ALTER USER to match env. Could happen again. | `/opt/ahavah-api/.env.production` | Unknown unknown — investigate before next deploy | 1 hr |
+| Brief api outage during allowlist update (~5 min). Root cause documented in §7.6 (wrong compose flags) but the underlying postgres password drift is a separate issue. | (incident) | Process documentation already done; no code change needed | done |
 
-### Task 18: Optional FE `<ReferralCard>` on /waitlist completion screen
-- File: `ahavah-web/src/components/app/referral-card.tsx`.
-- Mirrors `<BetaTesterCard>` pattern. Fetches `/referrals/me`. Shows the inviter's code + share button + funnel.
-
-### Task 19: Manual deploy + smoke
-- Push backend → GHA → migration is a no-op (0024 already applied).
-- Deploy FE prod via `vercel --prod`.
-- Smoke: have a test invitee complete onboarding, verify both sides get `+5` rows in `token_ledger` with reason `'referral'`.
+None of the above are SHIP BLOCKERS — the code works as smoke-tested. Pick up at your discretion.
 
 ## 7. Critical gotchas (read these BEFORE Phase 2 work)
 
