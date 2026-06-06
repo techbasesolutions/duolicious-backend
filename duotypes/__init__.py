@@ -297,6 +297,13 @@ class PostWaitlist(BaseModel):
     # Honeypot + Turnstile (same rationale as PostRequestOtp).
     website: Optional[str] = Field(default=None, max_length=256)
     turnstile_token: Optional[str] = Field(default=None, max_length=4096)
+    # See PostRequestOtp.inviter_code docstring.
+    inviter_code: Optional[str] = Field(
+        default=None,
+        min_length=7,
+        max_length=7,
+        pattern=r"^[0-9A-HJKM-NP-TV-Z]+$",
+    )
 
     @field_validator('email', mode='before')
     def validate_email(cls, value):

@@ -15,6 +15,7 @@ from service.api.decorators import get, post, validate, shared_otp_limit, shared
 from database import api_tx
 from service.waitlist import upsert, count as waitlist_count, get as waitlist_get
 from service.beta import is_beta
+from service.referrals import attribute as attribute_referral
 from service.antibot import is_honeypot_hit, verify_turnstile
 from emails.waitlist_welcome import send_waitlist_welcome_async
 from emails.waitlist_admin import (
@@ -46,6 +47,12 @@ def post_waitlist(req: t.PostWaitlist):
         res = upsert(tx, req.email, answers)
         total = waitlist_count(tx)
         beta_flag = is_beta(tx, req.email)
+        # Record referral attribution if the FE carried an inviter_code
+        # from /i/<code>. Pre-launch most invitees land here (waitlist
+        # is the default destination). Best-effort — bad codes / self-
+        # referrals / already-attributed invitees return None silently.
+        if res["inserted"]:
+            attribute_referral(tx, req.inviter_code, req.email)
     is_new = res["inserted"]
     # On a brand-new signup (the landing posts {email} first, then the wizard
     # re-upserts answers), fire fire-and-forget emails so the response isn't
