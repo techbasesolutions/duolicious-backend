@@ -15,6 +15,7 @@ from service.person.sql import *
 from service.search.sql import *
 from commonsql import *
 from service.person.template import otp_template
+from service.referrals import attribute as attribute_referral
 import traceback
 import re
 from smtp import aws_smtp
@@ -322,6 +323,12 @@ def post_request_otp(req: t.PostRequestOtp):
             dict(email=req.email),
         )
         rows = tx.execute(Q_INSERT_DUO_SESSION, params).fetchall()
+
+        # Record referral attribution if the FE carried an inviter_code
+        # from /i/<code>. Best-effort — bad codes / self-referrals /
+        # already-attributed invitees return None silently. Same tx so
+        # any later failure rolls this back too. See parent spec.
+        attribute_referral(tx, getattr(req, "inviter_code", None), req.email)
 
     try:
         row, *_ = rows
