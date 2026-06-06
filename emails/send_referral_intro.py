@@ -24,11 +24,14 @@ from service.referrals import mint_code
 
 
 _Q_TARGETS = """
-    SELECT email
-      FROM beta_signup
-     WHERE unsubscribed_at IS NULL
-       AND referral_intro_sent_at IS NULL
-     ORDER BY created_at
+    SELECT bs.email
+      FROM beta_signup bs
+      JOIN waitlist_signup ws ON ws.email = bs.email
+     WHERE bs.unsubscribed_at IS NULL
+       AND bs.referral_intro_sent_at IS NULL
+       AND jsonb_typeof(ws.answers) = 'object'
+       AND ws.answers <> '{}'::jsonb
+     ORDER BY bs.created_at
 """
 
 _Q_GET_CODE = """
