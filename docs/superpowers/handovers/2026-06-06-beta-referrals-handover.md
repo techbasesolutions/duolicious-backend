@@ -6,9 +6,22 @@
 
 ## 0. TL;DR
 
-- **Phase 1 (capture + email blast) is live.** Migration 0024 applied on prod. Frontend on `ahavah.app`. Backend on droplet `167.71.93.27`. 18 personal referral emails sent on 2026-06-06 ~05:33 UTC. Tag `phase1-referrals-blast-sent` marks the milestone.
-- **Phase 2 (credit firing) is NOT started.** When an invitee finishes onboarding post-launch, no tokens are credited yet. The data model + attribution recording is live, so `referral` rows accumulate as `pending` (and later `graduated`) until Phase 2 lands. Strict abuse gate means we couldn't fire credits pre-launch anyway.
-- **You can land Phase 2 any time before launch.** Tasks 14-19 of the implementation plan are unchanged and ready to execute.
+- **Phase 1 + Phase 2 referrals are LIVE on prod.** Both tagged: `phase1-referrals-blast-sent`, `phase2-referrals-credits-live`. End-to-end verified with real DB writes on 2026-06-06.
+- **Founding-member 6-month Premium grant is wired.** `service.entitlements.grant_founding_member_if_eligible` fires from `post_finish_onboarding` for anyone in beta_signup or with completed waitlist demographics. Promise from `waitlist_welcome.py` ("six months Premium free at launch") is now backed by code.
+- **Referral-link click logging is live.** Migration 0025 + POST /referral-click + FE Route Handler awaits the click event. Query `referral_link_click` to see who's clicking which links, even if they never sign up.
+- **Reengagement cron** now excludes beta testers with a `person` row (fix for harrigan-style false positives).
+- **Signup allowlist** widened to all 7 cohort domains + icloud.
+- Tag `june15-readiness-and-click-tracking` marks the cumulative milestone.
+
+## What's left for June 15 launch
+
+Nothing on the backend that I'm aware of. App-readiness (FE features, polish, R5 4-state coverage) is the remaining unknown — verify with PROJECT-STATUS.md.
+
+The actual `beta_launch` email goes out via:
+```bash
+ssh ... "docker exec ahavah-api-api-1 python -m emails.send_beta_launch --all"
+```
+That email already exists (`emails/beta_launch.py`) and is dry-run-safe.
 
 ## 1. Where everything is
 
