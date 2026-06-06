@@ -9,8 +9,20 @@ from __future__ import annotations
 
 import duotypes as t
 
-from service.api.decorators import post, validate
+from service.api.decorators import post, validate, limiter, _is_private_ip
 from database import api_tx
+
+
+# 60/min per IP. The route.ts call originates from Vercel's serverless
+# egress (which shares a small pool of IPs), so this limit primarily
+# defends against direct-curl abuse, not real user clicks. We accept
+# that a viral share via Vercel may briefly burst above the limit and
+# drop a few click logs — the table is best-effort analytics, not auth.
+_click_log_limit = limiter.shared_limit(
+    "60 per minute",
+    scope="referral_click",
+    exempt_when=_is_private_ip,
+)
 
 
 def _classify_ua(ua: str) -> str:
@@ -42,7 +54,7 @@ _Q_INSERT_CLICK = """
 """
 
 
-@post('/referral-click')
+@post('/referral-click', limiter=_click_log_limit)
 @validate(t.PostReferralClick)
 def post_referral_click(req: t.PostReferralClick):
     code = (req.code or "").upper()[:64]
