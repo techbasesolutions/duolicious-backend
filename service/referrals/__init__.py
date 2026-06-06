@@ -244,3 +244,30 @@ def credit_pending_for_invitee(
     if _credit_one(tx, inviter_uuid, referral_id):
         tx.execute(_Q_FLIP_GRADUATED_TO_CREDITED, dict(id=referral_id))
     return inviter_uuid
+
+
+_Q_PENDING_FOR_INVITER = """
+    SELECT id FROM referral
+     WHERE inviter_email = %(inviter_email)s
+       AND status = 'graduated'
+"""
+
+
+def credit_pending_for_inviter(
+    tx, inviter_email: str, inviter_person_uuid: str
+) -> int:
+    """Called at the inviter's own POST /finish-onboarding (typically at
+    launch sign-in). Drains all referrals where the invitees already
+    graduated but the inviter wasn't yet a person. Returns the count
+    actually credited."""
+    norm = _normalize_email(inviter_email)
+    rows = tx.execute(
+        _Q_PENDING_FOR_INVITER, dict(inviter_email=norm)
+    ).fetchall()
+    n = 0
+    for r in rows:
+        referral_id = str(r["id"])
+        if _credit_one(tx, inviter_person_uuid, referral_id):
+            tx.execute(_Q_FLIP_GRADUATED_TO_CREDITED, dict(id=referral_id))
+            n += 1
+    return n
