@@ -58,8 +58,9 @@ def _body(code: str) -> str:
 </p>
 
 <p class="e-text" style="margin:24px 0 0;font-family:{SANS};font-size:15px;line-height:1.6;color:{INK_SOFT};">
-  No deadline. No chase. Pick someone you would actually want at a
-  Shabbat table. That is the same instinct we are asking you to follow.
+  As founding members and the app's earliest adopters, you play a
+  critical role. You shape how Ahavah works, and whether it adds
+  enough value to be successful.
 </p>
 """
 
