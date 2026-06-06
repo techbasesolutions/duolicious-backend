@@ -673,7 +673,7 @@ def post_finish_onboarding(s: t.SessionInfo):
         # Both calls are idempotent; harmless when the user has no
         # referral relationships in either direction.
         new_uuid = str(row['person_uuid'])
-        credit_pending_for_invitee(tx, s.email, new_uuid)
+        credit_pending_for_invitee(tx, s.email)
         credit_pending_for_inviter(tx, s.email, new_uuid)
 
         club_params = dict(

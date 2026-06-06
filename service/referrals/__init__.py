@@ -219,12 +219,20 @@ _Q_FLIP_GRADUATED_TO_CREDITED = """
 """
 
 
-def credit_pending_for_invitee(
-    tx, invitee_email: str, invitee_person_uuid: str
-) -> Optional[str]:
+def credit_pending_for_invitee(tx, invitee_email: str) -> Optional[str]:
     """Called at the invitee's POST /finish-onboarding inside the same
-    api_tx that creates their person row. Returns the inviter's
-    person.uuid iff a credit fired, else None."""
+    api_tx that creates their person row. Flips their referral row
+    pending → graduated, then if their inviter ALSO has a person row,
+    fires the inviter's +5 credit and flips graduated → credited.
+
+    Returns the inviter's person.uuid iff a row was matched (whether
+    or not a credit fired this call — the credit may have already been
+    placed by an earlier graduation race). Returns None if no referral
+    row exists for this invitee, or if the inviter hasn't graduated yet.
+
+    NOTE: takes invitee_email only — the credit goes to the INVITER,
+    looked up from referral.inviter_email. The earlier signature also
+    took invitee_person_uuid but it was unused; dropped 2026-06-06."""
     norm = _normalize_email(invitee_email)
     row = tx.execute(
         _Q_FLIP_INVITEE_GRADUATED, dict(invitee_email=norm)
