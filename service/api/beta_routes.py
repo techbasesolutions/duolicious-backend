@@ -14,6 +14,7 @@ from flask import request
 from service.api.decorators import post, validate, limiter, shared_recipient_limit, _is_private_ip
 from database import api_tx
 from service.beta import register as register_beta, count as beta_count
+from service.referrals import attribute as attribute_referral
 from service.antibot import is_honeypot_hit, verify_turnstile
 from emails.beta_welcome import send_beta_welcome_async
 from emails.waitlist_admin import send_beta_optin_notice_async
@@ -37,6 +38,12 @@ def post_beta_tester(req: t.PostBetaTester):
     with api_tx() as tx:
         is_new = register_beta(tx, req.email, None)
         total = beta_count(tx)
+        # Record referral attribution if the FE carried an inviter_code
+        # from /i/<code>. Best-effort — bad codes / self-referrals /
+        # already-attributed invitees return None and we move on without
+        # affecting the beta-tester flow. See parent spec.
+        if is_new:
+            attribute_referral(tx, req.inviter_code, req.email)
     if is_new:
         send_beta_welcome_async(req.email)
         # Notify the admin inbox of the new beta opt-in (mirrors the signup notice).
