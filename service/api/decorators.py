@@ -167,7 +167,19 @@ def limiter_account():
     return getattr(g, 'normalized_email', _get_remote_address())
 
 
-CORS(app, origins=CORS_ORIGINS.split(','))
+CORS(
+    app,
+    origins=CORS_ORIGINS.split(','),
+    # `supports_credentials=True` adds `Access-Control-Allow-Credentials:
+    # true` to the preflight response. The browser refuses the actual
+    # POST otherwise when the FE uses `credentials: 'include'` (which
+    # ahavah-web's fetch wrapper does). Reported: signup.ahavah.app
+    # /account-check preflight failed with "the value of the
+    # 'Access-Control-Allow-Credentials' header in the response is ''
+    # which must be 'true' when the request's credentials mode is
+    # 'include'", blocking every cross-origin call from the bypass host.
+    supports_credentials=True,
+)
 
 Q_GET_SESSION = """
 SELECT
