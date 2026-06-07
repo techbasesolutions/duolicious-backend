@@ -428,6 +428,37 @@ class PostReferralClick(BaseModel):
     user_agent: Optional[str] = Field(default=None, max_length=512)
 
 
+class PostGrantEntitlement(BaseModel):
+    """Admin POST /admin/users/:uuid/entitlements body."""
+    name: str = Field(min_length=1, max_length=64)
+    expires_at: Optional[datetime] = None
+    reason: str = Field(min_length=1, max_length=512)
+
+
+class PostTokenAdjust(BaseModel):
+    """Admin POST /admin/users/:uuid/tokens body — credit if delta>0 else debit."""
+    delta: int = Field(ge=-1000, le=1000)
+    reason: str = Field(min_length=1, max_length=512)
+
+
+class PatchRoles(BaseModel):
+    """Admin PATCH /admin/users/:uuid/roles body. Only 'admin'/'mod' are accepted."""
+    add: list[str] = Field(default_factory=list)
+    remove: list[str] = Field(default_factory=list)
+    reason: str = Field(min_length=1, max_length=512)
+
+
+class PostLifecycle(BaseModel):
+    """Admin POST /admin/users/:uuid/{deactivate,reactivate,clear-onboardee,resend-otp} body."""
+    reason: str = Field(min_length=1, max_length=512)
+
+
+class DeletePerson(BaseModel):
+    """Admin DELETE /admin/users/:uuid body — `confirm_email` must match person.email."""
+    confirm_email: str = Field(min_length=3, max_length=320)
+    reason: str = Field(min_length=1, max_length=512)
+
+
 class PostFeedback(BaseModel):
     """Public POST /feedback body. Stored + emailed to admin. Email is optional
     (anonymous-friendly); category is constrained; message is required."""
