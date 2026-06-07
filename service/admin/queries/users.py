@@ -108,7 +108,7 @@ Q_USER_PROFILE = """
         p.location_short_friendly AS location_short,
         p.location_long_friendly AS location_long
       FROM person p
-     WHERE p.uuid = %(uuid)s
+     WHERE p.uuid = %(uuid)s::uuid
 """
 
 Q_USER_PHOTOS = """
@@ -119,7 +119,7 @@ Q_USER_PHOTOS = """
         moderated_at AS created_at,
         uuid AS photo_uuid
       FROM photo
-     WHERE person_id = (SELECT id FROM person WHERE uuid = %(uuid)s)
+     WHERE person_id = (SELECT id FROM person WHERE uuid = %(uuid)s::uuid)
      ORDER BY position
 """
 
@@ -144,7 +144,7 @@ Q_USER_REFERRAL_STATS = """
         COUNT(*) FILTER (WHERE status = 'graduated') AS graduated,
         COUNT(*) FILTER (WHERE status = 'credited')  AS credited
       FROM referral
-     WHERE inviter_email = (SELECT email FROM person WHERE uuid = %(uuid)s)
+     WHERE inviter_email = (SELECT email FROM person WHERE uuid = %(uuid)s::uuid)
 """
 
 Q_USER_AUDIT_LOG = """
@@ -155,7 +155,7 @@ Q_USER_AUDIT_LOG = """
         created_at
       FROM admin_audit_log
      WHERE target_uuid = %(uuid)s::uuid
-        OR target_email = (SELECT email FROM person WHERE uuid = %(uuid)s)
+        OR target_email = (SELECT email FROM person WHERE uuid = %(uuid)s::uuid)
      ORDER BY created_at DESC
      LIMIT 50
 """
@@ -163,6 +163,5 @@ Q_USER_AUDIT_LOG = """
 Q_USER_WAITLIST_ANSWERS = """
     SELECT answers
       FROM waitlist_signup
-     WHERE email = (SELECT email FROM person WHERE uuid = %(uuid)s)
-        OR email = %(uuid)s
+     WHERE email = (SELECT email FROM person WHERE uuid = %(uuid)s::uuid)
 """

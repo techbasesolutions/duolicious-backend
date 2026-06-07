@@ -38,28 +38,28 @@ from service.person.sql import Q_INSERT_DUO_SESSION
 
 _Q_PERSON_BY_UUID = """
     SELECT id, email, COALESCE(roles, ARRAY[]::text[]) AS roles
-      FROM person WHERE uuid = %(uuid)s
+      FROM person WHERE uuid = %(uuid)s::uuid
 """
 
 _Q_SOFT_DELETE = """
-    UPDATE person SET activated = FALSE WHERE uuid = %(uuid)s
+    UPDATE person SET activated = FALSE WHERE uuid = %(uuid)s::uuid
     RETURNING email
 """
 
 _Q_REACTIVATE = """
-    UPDATE person SET activated = TRUE WHERE uuid = %(uuid)s
+    UPDATE person SET activated = TRUE WHERE uuid = %(uuid)s::uuid
     RETURNING email
 """
 
 _Q_HARD_DELETE = """
-    DELETE FROM person WHERE uuid = %(uuid)s
+    DELETE FROM person WHERE uuid = %(uuid)s::uuid
     RETURNING email
 """
 
 _Q_PATCH_ROLES = """
     UPDATE person
        SET roles = %(roles)s
-     WHERE uuid = %(uuid)s
+     WHERE uuid = %(uuid)s::uuid
     RETURNING email, roles
 """
 
@@ -67,7 +67,7 @@ _Q_PATCH_ROLES = """
 # WITH clause runs first; the final DELETE returns the email for audit.
 _Q_CLEAR_ONBOARDEE = """
     WITH target AS (
-        SELECT email FROM person WHERE uuid = %(uuid)s
+        SELECT email FROM person WHERE uuid = %(uuid)s::uuid
     ),
     del_session AS (
         DELETE FROM duo_session
