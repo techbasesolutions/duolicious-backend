@@ -20,3 +20,11 @@ Q_INSERT_AUDIT = """
          %(target_email)s, %(target_uuid)s, %(metadata)s)
     RETURNING id
 """
+
+from service.admin.queries.overview import (
+    Q_OVERVIEW_KPIS,
+    Q_OVERVIEW_SIGNUPS_30D,
+    Q_OVERVIEW_REFERRAL_CTR_7D,
+    Q_OVERVIEW_PREMIUM_30D,
+    Q_OVERVIEW_RECENT_ACTIVITY,
+)
