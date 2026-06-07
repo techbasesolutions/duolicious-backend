@@ -197,7 +197,7 @@ def patch_roles(req: t.PatchRoles, s: t.SessionInfo, uuid: str):
 
 @apost('/admin/users/<uuid>/deactivate')
 @validate(t.PostLifecycle)
-def post_deactivate(req: t.PostLifecycle, s: t.SessionInfo, uuid: str):
+def post_deactivate_admin(req: t.PostLifecycle, s: t.SessionInfo, uuid: str):
     require_admin(s)
     with api_tx() as tx:
         row = tx.execute(_Q_SOFT_DELETE, dict(uuid=uuid)).fetchone()
