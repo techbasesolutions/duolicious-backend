@@ -381,6 +381,17 @@ class PostWaitlistCheck(BaseModel):
         return EmailStr._validate(str(value).lower().strip())
 
 
+class PostAccountCheck(BaseModel):
+    """Public POST /account-check body — read-only existence probe for the
+    sign-up email step. The web uses it to detect a returning user before
+    sending a meaningless OTP through the sign-up flow."""
+    email: EmailStr
+
+    @field_validator('email', mode='before')
+    def validate_email(cls, value):
+        return EmailStr._validate(str(value).lower().strip())
+
+
 class PostBetaTester(BaseModel):
     """Public POST /beta-tester body. The email is the waitlist/lead address the
     user just entered on the waitlist completion screen; there is no account yet
