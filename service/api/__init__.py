@@ -1053,3 +1053,4 @@ import service.api.admin.overview_routes  # noqa: E402,F401
 import service.api.admin.users_routes  # noqa: E402,F401
 import service.api.admin.users_action_routes  # noqa: E402,F401
 import service.api.admin.cohorts_routes  # noqa: E402,F401
+import service.api.admin.economy_routes  # noqa: E402,F401
