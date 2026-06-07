@@ -246,9 +246,16 @@ def put_image_in_object_store(
             process_image_as_bytes(base64_file=base64_file, format='raw')
         ))
 
+    # ACL='public-read' is required for the user-images.ahavah.app CDN
+    # (CNAME -> ahavah-photos-prod.nyc3.digitaloceanspaces.com) to serve
+    # the uploaded bytes. Without it DO Spaces 403s every GET, the FE
+    # falls back to gradient placeholders, and profile photos appear
+    # broken across discover/map/profile pages. Diagnosed when a beta
+    # user's photo was bucket-resident but CDN-403'd; ACL was the
+    # difference.
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {
-            executor.submit(bucket.put_object, Key=key, Body=img)
+            executor.submit(bucket.put_object, Key=key, Body=img, ACL='public-read')
             for key, img in key_img}
 
         for future in as_completed(futures):
