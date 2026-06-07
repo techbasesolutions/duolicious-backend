@@ -114,10 +114,10 @@ Q_USER_PROFILE = """
 Q_USER_PHOTOS = """
     SELECT
         position,
-        moderation_state::text AS moderation_state,
+        moderation_status::text AS moderation_state,
         nsfw_score,
-        created_at,
-        uuid::text AS photo_uuid
+        moderated_at AS created_at,
+        uuid AS photo_uuid
       FROM photo
      WHERE person_id = (SELECT id FROM person WHERE uuid = %(uuid)s)
      ORDER BY position
