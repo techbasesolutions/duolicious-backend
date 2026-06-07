@@ -1047,3 +1047,6 @@ import service.api.unsubscribe_routes  # noqa: E402,F401
 # Sign-up existence probe (2026-06-06) — POST /account-check used by the
 # web's /auth/sign-up to short-circuit returning users into /auth/sign-in.
 import service.api.account_routes  # noqa: E402,F401
+# Admin dashboard (2026-06-06) — staff-only /admin/* surface.
+# Each route module is imported per phase as it lands.
+import service.api.admin.overview_routes  # noqa: E402,F401
