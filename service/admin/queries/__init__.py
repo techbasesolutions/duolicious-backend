@@ -28,3 +28,15 @@ from service.admin.queries.overview import (
     Q_OVERVIEW_PREMIUM_30D,
     Q_OVERVIEW_RECENT_ACTIVITY,
 )
+
+from service.admin.queries.users import (
+    Q_USERS_LIST,
+    Q_USERS_COUNT,
+    Q_USER_PROFILE,
+    Q_USER_PHOTOS,
+    Q_USER_TOKEN_LEDGER,
+    Q_USER_TOKEN_BALANCE,
+    Q_USER_REFERRAL_STATS,
+    Q_USER_AUDIT_LOG,
+    Q_USER_WAITLIST_ANSWERS,
+)

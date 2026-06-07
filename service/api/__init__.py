@@ -1050,3 +1050,4 @@ import service.api.account_routes  # noqa: E402,F401
 # Admin dashboard (2026-06-06) — staff-only /admin/* surface.
 # Each route module is imported per phase as it lands.
 import service.api.admin.overview_routes  # noqa: E402,F401
+import service.api.admin.users_routes  # noqa: E402,F401
