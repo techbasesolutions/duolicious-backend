@@ -251,9 +251,19 @@ _Q_IS_FOUNDING_MEMBER = """
 """
 
 
-def grant_founding_member_if_eligible(person_id: int, email: str) -> bool:
+_FOUNDING_MEMBER_STARTER_TOKENS = 30  # one month's stipend equivalent
+
+
+def grant_founding_member_if_eligible(
+    person_id: int,
+    person_uuid: str,
+    email: str,
+) -> bool:
     """Grant the 6-month Premium founding-member perk promised in
-    emails/waitlist_welcome.py and the public website copy.
+    emails/waitlist_welcome.py and the public website copy + a one-time
+    starter token stipend so the user can actually USE Premium features
+    (super-like, boost, day pass, etc.) the moment they finish
+    onboarding instead of staring at "Not enough tokens" toasts.
 
     Eligibility: email is in beta_signup (not unsubscribed) OR has a
     completed waitlist_signup row (non-empty answers jsonb).
@@ -261,10 +271,13 @@ def grant_founding_member_if_eligible(person_id: int, email: str) -> bool:
     Returns True iff entitlements changed (granted for the first time).
     Idempotent: re-calling for the same person is safe — grant() bumps
     expiry only when later, and doesn't double-append the entitlement.
+    The token credit is gated on entitlements actually changing so a
+    re-call (e.g. on /finish-onboarding replay) doesn't double-stipend.
 
-    Opens its own api_tx for the eligibility check, then delegates to
-    grant() which opens another tx. Caller must NOT be holding an
-    api_tx when calling this (will deadlock or open a nested tx).
+    Opens its own api_tx for the eligibility check + stipend write,
+    then delegates to grant() which opens another tx. Caller must NOT
+    be holding an api_tx when calling this (will deadlock or open a
+    nested tx).
     """
     if not person_id or not email:
         return False
@@ -276,4 +289,15 @@ def grant_founding_member_if_eligible(person_id: int, email: str) -> bool:
         return False
 
     expires_at = datetime.now(timezone.utc) + timedelta(days=_FOUNDING_MEMBER_PREMIUM_DAYS)
-    return grant(person_id, 'premium', expires_at=expires_at)
+    granted = grant(person_id, 'premium', expires_at=expires_at)
+    if granted and person_uuid:
+        # Local import to avoid an entitlements <-> tokens import cycle
+        # at module load. The function is small and well-defined.
+        from service.tokens import credit
+        with api_tx() as tx:
+            credit(
+                tx, str(person_uuid), _FOUNDING_MEMBER_STARTER_TOKENS,
+                reason='subscription_stipend',
+                metadata={'source': 'founding_member_starter'},
+            )
+    return granted
