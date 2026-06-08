@@ -676,6 +676,17 @@ def post_finish_onboarding(s: t.SessionInfo):
         tx.execute(Q_FINISH_ONBOARDING, params=api_params)
         row = tx.fetchone()
 
+        # Link the beta_signup row (if any) to the new person so
+        # analytics joins like "which beta participants completed
+        # onboarding?" actually work. Without this the column stays
+        # NULL forever and the join is empty. FK is ON DELETE SET
+        # NULL, so a later person delete leaves the beta_signup row
+        # intact. No-op for organic signups not in beta_signup.
+        tx.execute(
+            "UPDATE beta_signup SET person_id = %(person_id)s WHERE email = %(email)s",
+            dict(person_id=row['person_id'], email=api_params['normalized_email']),
+        )
+
         # Referral credits — see docs/superpowers/specs/2026-06-05-beta-referrals-design.md.
         # Both calls are idempotent; harmless when the user has no
         # referral relationships in either direction.
