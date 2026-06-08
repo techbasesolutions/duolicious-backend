@@ -200,8 +200,18 @@ async def _get_inbox(query_id: str, username: str) -> list[str]:
             print(f"Error processing row: {e}")
             continue
 
+    # The terminator <fin> MUST carry the inbox namespace so the FE's
+    # childrenByNS(root, INBOX_NS, "fin") lookup matches. Without it the
+    # stanza arrives as empty-namespace <fin>, the FE never recognizes
+    # the inbox-fin event, and useInbox sits on the loading skeleton
+    # until its 10s INBOX_QUERY_TIMEOUT_MS fires (the "inbox takes 15s
+    # to load" symptom — most painful for empty inboxes since there are
+    # no <message> result stanzas to drain the loading state earlier).
     iq_element = build_element('iq', attrib=dict(id=query_id, type='result'))
-    iq_element.append(build_element('fin'))
+    iq_element.append(build_element(
+        'fin',
+        ns='erlang-solutions.com:xmpp:inbox:0',
+    ))
 
     messages.append(
             etree.tostring(
