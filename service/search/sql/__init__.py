@@ -131,6 +131,16 @@ prospect_pool AS (
             AND s.swiped_person_id = p.id
       )
 
+      -- Already-liked exclusion. The like flow (service/decisions:Q_RECORD_LIKE)
+      -- writes ONLY into `liked`, not `swipe` — so a liked candidate would
+      -- reappear on the next deck refresh unless explicitly filtered here.
+      -- Reported: same person keeps surfacing after a like/unlike + reload.
+      AND NOT EXISTS (
+          SELECT 1 FROM liked l
+          WHERE l.liker_id = %(searcher_person_id)s
+            AND l.liked_id = p.id
+      )
+
       -- Blocked exclusion (the upstream Duolicious fork's existing skipped table — both directions)
       AND NOT EXISTS (
           SELECT 1 FROM skipped sk
