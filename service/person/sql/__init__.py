@@ -308,8 +308,15 @@ WITH valid_session AS (
         otp_expiry > NOW()
     RETURNING email
 )
+-- Only wipe stale onboardee state. Within the last hour we assume the
+-- user is actively onboarding and the OTP verify is from a "Resend
+-- code" tap mid-wizard -- deleting now destroys the name/dob/gender
+-- they already entered (which is what burned every retrying user in
+-- the early beta). Older rows = an abandoned attempt; a clean start
+-- on re-signup is the right UX there.
 DELETE FROM onboardee
 WHERE email IN (SELECT email FROM valid_session)
+  AND created_at < NOW() - INTERVAL '1 hour'
 RETURNING email
 """
 

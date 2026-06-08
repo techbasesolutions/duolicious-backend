@@ -119,7 +119,13 @@ services:
       context: .
       dockerfile: cron.Dockerfile
     ports:
-      - "8082:8080"
+      # 127.0.0.1 binding: the cron container's HTTP server is just a
+      # /health probe for monitoring -- it doesn't need to be reachable
+      # from the public internet, only from the host's localhost
+      # interface. Without the prefix, random scanners hit Internet:8082
+      # and fill cron logs with HTTP garbage. Dev experience is
+      # unchanged because dev tooling already uses localhost.
+      - "127.0.0.1:8082:8080"
     depends_on:
       postgres:
         condition: service_healthy
