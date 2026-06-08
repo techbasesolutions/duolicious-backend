@@ -17,9 +17,17 @@ import json
 from typing import Any
 from service.tokens.sql import (
     Q_BALANCE,
-    Q_BALANCE_FOR_UPDATE,
     Q_INSERT_LEDGER,
 )
+
+
+# Per-user advisory lock acquired inside the caller's transaction. Replaces
+# the prior Q_BALANCE_FOR_UPDATE pattern (`SELECT SUM(...) FOR UPDATE`),
+# which Postgres rejects with `FOR UPDATE is not allowed with aggregate
+# functions`. The advisory lock is keyed off hashtext(uuid) so concurrent
+# spends by the same user serialize, while different users don't contend.
+# Released automatically on commit/rollback (xact-scoped).
+_Q_LOCK_USER = "SELECT pg_advisory_xact_lock(hashtext(%(person_id)s))"
 
 
 class InsufficientTokens(Exception):
@@ -59,8 +67,9 @@ def debit(tx, person_uuid: str, amount: int, *,
     """
     if amount <= 0:
         raise ValueError(f"debit amount must be positive, got {amount}")
+    tx.execute(_Q_LOCK_USER, dict(person_id=str(person_uuid)))
     row = tx.execute(
-        Q_BALANCE_FOR_UPDATE, dict(person_id=person_uuid)
+        Q_BALANCE, dict(person_id=person_uuid)
     ).fetchone()
     balance = int(row['balance']) if row else 0
     if balance < amount:
