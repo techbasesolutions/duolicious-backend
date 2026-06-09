@@ -69,7 +69,17 @@ WITH truncated_daily_message AS (
     SELECT COUNT(*) AS x FROM truncated_daily_message
 )
 SELECT
-    person.verification_level_id,
+    -- Effective verification level: bumped to 3 (PHOTOS, 30/day) if the
+    -- user is on any Ahavah tier (bronze+). identity_verification.promote_user
+    -- writes only ahavah_verification_tier; the legacy verification_level_id
+    -- is updated by a separate cron, so a freshly-Bronze user otherwise
+    -- gets the UNVERIFIED 10/day quota until the cron catches up.
+    -- Matches the "either ladder counts" semantic from Q_UNCACHED_SEARCH_2.
+    GREATEST(
+        person.verification_level_id,
+        CASE WHEN person.ahavah_verification_tier <> 'none'::ahavah_verification_tier
+             THEN 3 ELSE 1 END
+    ) AS verification_level_id,
     truncated_daily_message_count.x AS daily_message_count,
     recent_manual_report_count.count AS recent_manual_report_count,
     recent_rude_message_count.count AS recent_rude_message_count

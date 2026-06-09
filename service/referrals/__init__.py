@@ -53,9 +53,22 @@ _Q_GET_EXISTING_CODE = """
     SELECT referral_code FROM beta_signup WHERE email = %(email)s
 """
 
-_Q_WAITLIST_ANSWERS_FILLED = """
-    SELECT COALESCE(answers, '{}'::jsonb) <> '{}'::jsonb AS filled
-      FROM waitlist_signup WHERE email = %(email)s
+_Q_COMMITTED_BETA_USER = """
+    -- Gate for code minting: either the public waitlist demographics are
+    -- filled, OR the user has already onboarded into the app (person row
+    -- exists). The latter covers operator / admin-onboarded testers who
+    -- bypassed the public waitlist marketing flow but are demonstrably
+    -- committed to the platform.
+    SELECT (
+        EXISTS (
+            SELECT 1 FROM waitlist_signup
+             WHERE email = %(email)s
+               AND COALESCE(answers, '{}'::jsonb) <> '{}'::jsonb
+        )
+        OR EXISTS (
+            SELECT 1 FROM person WHERE email = %(email)s
+        )
+    ) AS committed
 """
 
 _Q_SET_CODE = """
@@ -80,20 +93,20 @@ _Q_INSERT_REFERRAL = """
 def mint_code(tx, email: str) -> Optional[str]:
     """Idempotent. Returns the beta tester's referral_code, generating
     + storing one if NULL. Returns None if the email isn't in
-    beta_signup, OR if the matching waitlist_signup row has empty
-    `answers` — i.e. they haven't told us who they are yet, so they
-    shouldn't be empowered to bring others in."""
+    beta_signup, OR if the user is uncommitted — i.e. neither filled
+    out the public waitlist demographics nor onboarded into the app —
+    so they shouldn't be empowered to bring others in."""
     norm = _normalize_email(email)
     row = tx.execute(_Q_GET_EXISTING_CODE, dict(email=norm)).fetchone()
     if row is None:
         return None  # not a beta tester
     if row["referral_code"]:
         return row["referral_code"]
-    answers_row = tx.execute(
-        _Q_WAITLIST_ANSWERS_FILLED, dict(email=norm)
+    committed_row = tx.execute(
+        _Q_COMMITTED_BETA_USER, dict(email=norm)
     ).fetchone()
-    if not answers_row or not answers_row["filled"]:
-        return None  # gate: no code until waitlist demographics are filled
+    if not committed_row or not committed_row["committed"]:
+        return None  # gate: no code until they've demonstrated commitment
 
     last_err: Optional[Exception] = None
     for _ in range(_MAX_MINT_RETRIES):
