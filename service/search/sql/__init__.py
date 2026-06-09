@@ -124,6 +124,13 @@ prospect_pool AS (
           OR p.languages_spoken && sp.preferred_languages
       )
 
+      -- "Hide me from strangers" privacy toggle. The toggle is also
+      -- enforced on Q_SELECT_PROSPECT_PROFILE (the profile-detail gate
+      -- lets messaged peers through), but /search always runs from a
+      -- stranger viewpoint — by definition the searcher hasn't messaged
+      -- anyone in the discover pool yet, so any TRUE here means exclude.
+      AND NOT p.hide_me_from_strangers
+
       -- Already-swiped exclusion (any direction)
       AND NOT EXISTS (
           SELECT 1 FROM swipe s

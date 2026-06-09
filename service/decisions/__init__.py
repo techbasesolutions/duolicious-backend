@@ -139,7 +139,10 @@ SELECT
     m.match_id::text AS match_id,
     peer.uuid::text  AS peer_uuid,
     peer.name        AS peer_name,
-    EXTRACT(YEAR FROM AGE(peer.date_of_birth))::int AS peer_age,
+    -- Conditional on peer.show_my_age — matches the gate already used by
+    -- Q_SELECT_PROSPECT_PROFILE so the match card and profile detail
+    -- agree on what the peer chose to expose.
+    (SELECT EXTRACT(YEAR FROM AGE(peer.date_of_birth))::int WHERE peer.show_my_age) AS peer_age,
     -- Position-ordered JSON array of peer photo UUIDs. Frontend maps each
     -- through cdnUrlFor() so /matches + /match show the peer's face
     -- instead of falling through to the gradient stamp.
@@ -174,7 +177,8 @@ Q_LIST_INCOMING_LIKES = """
 SELECT
     liker.uuid::text AS liker_uuid,
     liker.name       AS liker_name,
-    EXTRACT(YEAR FROM AGE(liker.date_of_birth))::int AS liker_age,
+    -- Conditional on liker.show_my_age — same gate as profile detail.
+    (SELECT EXTRACT(YEAR FROM AGE(liker.date_of_birth))::int WHERE liker.show_my_age) AS liker_age,
     -- Phase 6: surface is_super so /matches can ring super-likers with
     -- a lime ring + Super pill, and we can sort them first below.
     l.is_super       AS is_super,
@@ -227,7 +231,8 @@ SELECT
     m.match_id::text   AS match_id,
     peer.uuid::text    AS peer_uuid,
     peer.name          AS peer_name,
-    EXTRACT(YEAR FROM AGE(peer.date_of_birth))::int AS peer_age,
+    -- Conditional on peer.show_my_age — same gate as profile detail.
+    (SELECT EXTRACT(YEAR FROM AGE(peer.date_of_birth))::int WHERE peer.show_my_age) AS peer_age,
     COALESCE(
         (
             SELECT json_agg(ph.uuid ORDER BY ph.position)
