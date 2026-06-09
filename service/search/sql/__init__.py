@@ -303,7 +303,8 @@ SELECT
     ) AS profile_photo_uuid,
     0 AS match_percentage,
     NULL::text AS verification_required,
-    p.location_short_friendly AS location,
+    -- Conditional on p.show_my_location — same gate as profile detail.
+    (SELECT p.location_short_friendly WHERE p.show_my_location) AS location,
     p.country AS country,
     -- Drives the green-dot / "last seen Xm ago" affordance on /discover,
     -- /matches, and the chat header. NULL when the prospect has never
