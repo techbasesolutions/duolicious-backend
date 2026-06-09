@@ -53,6 +53,11 @@ _Q_GET_EXISTING_CODE = """
     SELECT referral_code FROM beta_signup WHERE email = %(email)s
 """
 
+_Q_WAITLIST_ANSWERS_FILLED = """
+    SELECT COALESCE(answers, '{}'::jsonb) <> '{}'::jsonb AS filled
+      FROM waitlist_signup WHERE email = %(email)s
+"""
+
 _Q_SET_CODE = """
     UPDATE beta_signup
        SET referral_code = %(code)s
@@ -75,13 +80,20 @@ _Q_INSERT_REFERRAL = """
 def mint_code(tx, email: str) -> Optional[str]:
     """Idempotent. Returns the beta tester's referral_code, generating
     + storing one if NULL. Returns None if the email isn't in
-    beta_signup (caller decides what to do)."""
+    beta_signup, OR if the matching waitlist_signup row has empty
+    `answers` — i.e. they haven't told us who they are yet, so they
+    shouldn't be empowered to bring others in."""
     norm = _normalize_email(email)
     row = tx.execute(_Q_GET_EXISTING_CODE, dict(email=norm)).fetchone()
     if row is None:
         return None  # not a beta tester
     if row["referral_code"]:
         return row["referral_code"]
+    answers_row = tx.execute(
+        _Q_WAITLIST_ANSWERS_FILLED, dict(email=norm)
+    ).fetchone()
+    if not answers_row or not answers_row["filled"]:
+        return None  # gate: no code until waitlist demographics are filled
 
     last_err: Optional[Exception] = None
     for _ in range(_MAX_MINT_RETRIES):
