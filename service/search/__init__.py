@@ -47,6 +47,8 @@ def _uncached_search_results(
     calendars: list[str] | None = None,
     educations: list[str] | None = None,
     health_tags: list[str] | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
 ):
     n, o = no
 
@@ -67,6 +69,8 @@ def _uncached_search_results(
         calendars=calendars or [],
         educations=educations or [],
         health_tags=health_tags or [],
+        age_min=age_min,
+        age_max=age_max,
     )
 
     try:
@@ -144,6 +148,8 @@ def get_search(
     calendars: list[str] | None = None,
     educations: list[str] | None = None,
     health_tags: list[str] | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
 ):
     search_type, no = get_search_type(n, o)
 
@@ -182,6 +188,8 @@ def get_search(
                 calendars=calendars,
                 educations=educations,
                 health_tags=health_tags,
+                age_min=age_min,
+                age_max=age_max,
             )
 
         elif search_type == 'cached-search':

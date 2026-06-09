@@ -308,6 +308,18 @@ def get_search(s: t.SessionInfo):
     educations           = _csv_list('educations')
     health_tags          = _csv_list('health_tags')
 
+    def _int_arg(name):
+        raw = request.args.get(name)
+        if raw in (None, ''):
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    age_min = _int_arg('age_min')
+    age_max = _int_arg('age_max')
+
     search_type, _ = search.get_search_type(n, o)
 
     limit = "15 per 2 minutes"
@@ -342,6 +354,8 @@ def get_search(s: t.SessionInfo):
                 calendars=calendars,
                 educations=educations,
                 health_tags=health_tags,
+                age_min=age_min,
+                age_max=age_max,
             )
     else:
         return search.get_search(

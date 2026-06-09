@@ -225,6 +225,22 @@ prospect_pool AS (
               AND p.ahavah_extra->'healthTags' ?& %(health_tags)s::TEXT[]
           )
       )
+
+      -- Age filter (ephemeral, body-driven from FiltersSheet age
+      -- slider). Bounds are inclusive. NULL on either side = open-ended
+      -- (so a one-sided slider drag still works). Whole-year resolution
+      -- via EXTRACT(YEAR FROM AGE(date_of_birth)) — same expression as
+      -- the SELECT clause that computes `age` for the response, keeping
+      -- "what the user filtered on" and "what the user is shown"
+      -- consistent.
+      AND (
+          %(age_min)s::INT IS NULL
+          OR EXTRACT(YEAR FROM AGE(p.date_of_birth))::INT >= %(age_min)s::INT
+      )
+      AND (
+          %(age_max)s::INT IS NULL
+          OR EXTRACT(YEAR FROM AGE(p.date_of_birth))::INT <= %(age_max)s::INT
+      )
 )
 INSERT INTO search_cache (
     searcher_person_id, position, prospect_person_id, prospect_uuid,
