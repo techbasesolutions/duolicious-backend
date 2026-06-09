@@ -275,7 +275,9 @@ SELECT
     p.id AS prospect_person_id,
     p.uuid::text AS prospect_uuid,
     p.name,
-    EXTRACT(YEAR FROM AGE(p.date_of_birth))::int AS age,
+    -- Conditional on p.show_my_age — same gate as profile detail so the
+    -- discover deck card and the underlying profile agree.
+    (SELECT EXTRACT(YEAR FROM AGE(p.date_of_birth))::int WHERE p.show_my_age) AS age,
     -- photo_uuids: ordered JSON array of photo UUIDs (position ASC). The
     -- frontend's use-discover-deck adapter maps each entry through
     -- cdnUrlFor() to build the CDN URL. Empty array `[]` when the
