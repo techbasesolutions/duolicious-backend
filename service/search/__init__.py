@@ -70,6 +70,18 @@ def _uncached_search_results(
     )
 
     try:
+        # Per-user advisory lock — serializes concurrent /search calls
+        # from the same user so the DELETE/INSERT into search_cache
+        # cannot race. Without it two parallel calls both DELETE (each
+        # sees 0 rows, locks nothing), the first commits its INSERT,
+        # the second crashes on the search_cache_pkey UniqueViolation
+        # — which segfaulted the gunicorn worker and wedged the
+        # container. Different users still run /search in parallel
+        # because the lock is keyed on searcher_person_id.
+        tx.execute(
+            "SELECT pg_advisory_xact_lock(hashtext('search:' || %(searcher_person_id)s::text))",
+            dict(searcher_person_id=searcher_person_id),
+        )
         tx.execute(Q_UNCACHED_SEARCH_1, params)
         tx.execute(Q_UNCACHED_SEARCH_2, params)
         tx.execute(Q_CACHED_SEARCH, params)
