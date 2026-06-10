@@ -273,15 +273,28 @@ def _send_otp(email: str, otp: str):
     if email.endswith('@example.com'):
         return
 
-    aws_smtp.send(
-        subject=f"Sign in to {PRODUCT_NAME}",
-        body=otp_template(otp),
-        to_addr=email,
-        from_addr=f'noreply-otp@{EMAIL_DOMAIN}',
-        # Route confused-user replies to a human address instead of the
-        # noreply alias (which has no inbound MX) — audit Email #9.
-        reply_to=f'hello@{EMAIL_DOMAIN}',
-    )
+    # Threaded so the Resend round-trip (~500ms) doesn't block the
+    # /request-otp response — and so this path's timing matches the
+    # banned-email path (which sends nothing), closing the timing
+    # side-channel left by the 461->200 enumeration fix. aws_smtp is
+    # thread-safe (internal RLock) and best-effort (never raises).
+    def _go():
+        aws_smtp.send(
+            subject=f"Sign in to {PRODUCT_NAME}",
+            body=otp_template(otp),
+            to_addr=email,
+            from_addr=f'noreply-otp@{EMAIL_DOMAIN}',
+            # Route confused-user replies to a human address instead of the
+            # noreply alias (which has no inbound MX) — audit Email #9.
+            reply_to=f'hello@{EMAIL_DOMAIN}',
+        )
+
+    try:
+        import threading
+        threading.Thread(target=_go, daemon=True).start()
+    except Exception:
+        print('_send_otp: thread dispatch failed:')
+        print(traceback.format_exc())
 
 def post_request_otp(req: t.PostRequestOtp):
     # Honeypot: bots that scrape the form and submit every field hit this.
