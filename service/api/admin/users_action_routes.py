@@ -44,11 +44,11 @@ _Q_PERSON_BY_UUID = """
 _Q_SOFT_DELETE = """
     WITH deactivated AS (
         UPDATE person SET activated = FALSE WHERE uuid = %(uuid)s::uuid
-        RETURNING email
+        RETURNING id, email
     ),
     del_session AS (
         DELETE FROM duo_session
-         WHERE email IN (SELECT email FROM deactivated)
+         WHERE person_id IN (SELECT id FROM deactivated)
     )
     SELECT email FROM deactivated
 """
