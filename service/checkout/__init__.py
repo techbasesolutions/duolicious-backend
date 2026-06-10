@@ -678,6 +678,14 @@ def _credit_subscription_stipend(
         return {'ok': True, 'ignored': 'missing_ref'}
 
     with api_tx() as tx:
+        # Serialize concurrent webhook deliveries carrying the same
+        # idempotency value so the SELECT-then-credit below can't race two
+        # callers past the existence check and double-credit the stipend.
+        # Xact-scoped — released on commit/rollback.
+        tx.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%(v)s))",
+            dict(v=idempotency_key_value),
+        )
         existing = tx.execute(
             f"""
             SELECT 1 FROM token_ledger

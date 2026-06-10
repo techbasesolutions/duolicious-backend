@@ -63,6 +63,18 @@ def liker():
         tx.execute("DELETE FROM person WHERE id = %s", (row['id'],))
 
 
+def _insert_like(liker_id, liked_id):
+    """Record that `liker_id` liked `liked_id` so the reveal guard
+    (only real likers may be revealed) is satisfied."""
+    from database import api_tx
+    with api_tx() as tx:
+        tx.execute(
+            "INSERT INTO liked (liker_id, liked_id) VALUES (%s, %s) "
+            "ON CONFLICT DO NOTHING",
+            (liker_id, liked_id),
+        )
+
+
 @pytest.fixture
 def session_token(person):
     """Insert a duo_session row, return the bearer token."""
@@ -90,6 +102,7 @@ def test_reveal_debits_token_and_records_pair(client, person, liker, session_tok
     from database import api_tx
     with api_tx() as tx:
         credit(tx, person['uuid'], 3, reason='purchase', metadata={})
+    _insert_like(liker['id'], person['id'])
 
     res = client.post(
         '/tokens/reveal',
@@ -113,6 +126,7 @@ def test_reveal_is_idempotent_no_double_debit(client, person, liker, session_tok
     from database import api_tx
     with api_tx() as tx:
         credit(tx, person['uuid'], 3, reason='purchase', metadata={})
+    _insert_like(liker['id'], person['id'])
 
     headers = {'Authorization': f'Bearer {session_token}'}
     body = {'liker_id': liker['uuid']}
@@ -125,6 +139,7 @@ def test_reveal_is_idempotent_no_double_debit(client, person, liker, session_tok
 
 
 def test_reveal_402_when_insufficient(client, person, liker, session_token):
+    _insert_like(liker['id'], person['id'])
     res = client.post(
         '/tokens/reveal',
         json={'liker_id': liker['uuid']},
@@ -132,3 +147,24 @@ def test_reveal_402_when_insufficient(client, person, liker, session_token):
     )
     assert res.status_code == 402
     assert res.get_json() == {'error': 'insufficient_tokens'}
+
+
+def test_reveal_400_when_not_a_liker(client, person, liker, session_token):
+    """A liker_id that never liked the viewer is rejected without debiting —
+    guards against a crafted UUID burning a token on a no-op reveal."""
+    from database import api_tx
+    with api_tx() as tx:
+        credit(tx, person['uuid'], 3, reason='purchase', metadata={})
+    # Note: no _insert_like — `liker` never liked `person`.
+
+    res = client.post(
+        '/tokens/reveal',
+        json={'liker_id': liker['uuid']},
+        headers={'Authorization': f'Bearer {session_token}'},
+    )
+    assert res.status_code == 400
+    assert res.get_json() == {'error': 'not_a_liker'}
+
+    with api_tx() as tx:
+        # No token spent.
+        assert get_balance(tx, person['uuid']) == 3

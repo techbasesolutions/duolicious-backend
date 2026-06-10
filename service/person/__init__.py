@@ -346,7 +346,12 @@ def post_request_otp(req: t.PostRequestOtp):
         row, *_ = rows
         otp = row['otp']
     except:
-        return 'Banned', 461
+        # Banned email: return the SAME shape as a normal signup (a
+        # session_token, no code sent) so a banned address is
+        # indistinguishable from a fresh one — closes the 461-vs-200
+        # account-enumeration leak. The banned user simply never receives
+        # an OTP and can't complete /check-otp.
+        return dict(session_token=session_token)
 
     _send_otp(req.email, otp)
 

@@ -925,7 +925,7 @@ def get_tokens_balance(s: t.SessionInfo):
 # Phase 4 — reveal-liker spend path. Spend 1 token to unblur an incoming
 # liker. Idempotent per (viewer, liker) pair: re-tap is a no-op.
 from service.tokens import InsufficientTokens as _InsufficientTokens
-from service.tokens.actions.reveal import perform as _perform_reveal
+from service.tokens.actions.reveal import perform as _perform_reveal, NotALiker as _NotALiker
 
 @apost('/tokens/reveal')
 def post_tokens_reveal(s: t.SessionInfo):
@@ -939,6 +939,8 @@ def post_tokens_reveal(s: t.SessionInfo):
             return _perform_reveal(tx, s.person_uuid, liker_id)
     except _InsufficientTokens:
         return {'error': 'insufficient_tokens'}, 402
+    except _NotALiker:
+        return {'error': 'not_a_liker'}, 400
 
 
 # Phase 7 — boost spotlight: spend 5 tokens for a 30-minute top-of-deck

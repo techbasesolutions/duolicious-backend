@@ -42,8 +42,15 @@ _Q_PERSON_BY_UUID = """
 """
 
 _Q_SOFT_DELETE = """
-    UPDATE person SET activated = FALSE WHERE uuid = %(uuid)s::uuid
-    RETURNING email
+    WITH deactivated AS (
+        UPDATE person SET activated = FALSE WHERE uuid = %(uuid)s::uuid
+        RETURNING email
+    ),
+    del_session AS (
+        DELETE FROM duo_session
+         WHERE email IN (SELECT email FROM deactivated)
+    )
+    SELECT email FROM deactivated
 """
 
 _Q_REACTIVATE = """
