@@ -12,6 +12,7 @@ import boto3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from service.config import API_BASE_URL, EMAIL_DOMAIN, PRODUCT_NAME, SIGNUPS_OPEN, SIGNUP_ALLOWED_DOMAINS
 from service import entitlements
+from service import metapixel
 from service.person.sql import *
 from service.search.sql import *
 from commonsql import *
@@ -734,6 +735,18 @@ def post_finish_onboarding(s: t.SessionInfo):
     # Opens its own tx, so called AFTER the api_tx above commits.
     entitlements.grant_founding_member_if_eligible(
         row['person_id'], row['person_uuid'], s.email,
+    )
+
+    # Server-side ad-conversion event (Meta Conversions API). Shares
+    # event_id `reg-<person_uuid>` with the browser pixel's
+    # CompleteRegistration so Meta dedupes the pair. Fire-and-forget on a
+    # daemon thread; must never fail or slow graduation. Called after the
+    # api_tx commits so it can't fire for a rolled-back registration.
+    metapixel.send_complete_registration(
+        email=s.email,
+        person_uuid=str(row['person_uuid']),
+        client_ip=request.remote_addr,
+        client_user_agent=request.headers.get('User-Agent'),
     )
 
     chat_params = dict(

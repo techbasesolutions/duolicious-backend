@@ -85,6 +85,14 @@ EMAIL_DOMAIN: str = os.environ.get(
 )
 
 
+# Meta Conversions API (server-side ad-conversion events). Opt-in like
+# SENTRY_DSN: both empty by default, and service.metapixel no-ops until
+# both are set. Pixel/dataset 1882730319359833 ("Ahavah Pixel"); the
+# browser half lives in ahavah-web (docs/meta-pixel-plan.md there).
+META_PIXEL_ID: str = os.environ.get("AHAVAH_META_PIXEL_ID", "")
+META_CAPI_ACCESS_TOKEN: str = os.environ.get("AHAVAH_META_CAPI_ACCESS_TOKEN", "")
+
+
 # Pre-launch signup gate. Until launch, /request-otp is closed to the public so
 # no account can be created before the allotted time. Defaults to CLOSED; flip
 # AHAVAH_SIGNUPS_OPEN=true at launch. SIGNUP_ALLOWED_DOMAINS is a comma-separated
