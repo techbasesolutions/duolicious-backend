@@ -20,6 +20,7 @@ from emails.base import (
     callout,
     title_image,
     is_suppressed_send,
+    EMAIL_ASSET_ORIGIN,
     INK,
     INK_SOFT,
     INDIGO,
@@ -39,16 +40,20 @@ _THREADS = "https://www.threads.net/@ahavah.app"
 _FACEBOOK = "https://www.facebook.com/people/Ahavah/61590464442249/"
 
 
-def _social_pill(label: str, href: str) -> str:
-    # Mirrors the brand chip (lavender-tint fill, indigo text, rounded) so the
-    # row reads as part of the design system. inline-block wraps cleanly on
-    # narrow screens with no flexbox dependency.
+def _social_badge(file_name: str, label: str, href: str) -> str:
+    # A circular brand badge (official glyph baked into a PNG, pre-rendered by
+    # scripts/render-badge.mjs) + label, as a centered table cell. Table layout
+    # (not flexbox) so the row holds in Gmail; transparent PNG composites on
+    # both the light and dark card.
+    src = f"{EMAIL_ASSET_ORIGIN}/email/{file_name}"
     return (
-        f'<a href="{href}" target="_blank" '
-        f'style="display:inline-block;margin:0 8px 8px 0;padding:10px 18px;'
-        f'border-radius:999px;background:#EDE8FE;color:{INDIGO};'
-        f'font-family:{SANS};font-size:14px;font-weight:700;'
-        f'text-decoration:none;">{label}</a>'
+        f'<td align="center" style="padding:0 14px;">'
+        f'<a href="{href}" target="_blank" style="text-decoration:none;">'
+        f'<img src="{src}" alt="{label}" width="56" height="56" '
+        f'style="display:block;margin:0 auto;border:0;outline:none;border-radius:50%;"/>'
+        f'<span style="display:block;margin-top:9px;font-family:{SANS};'
+        f'font-size:12px;font-weight:600;color:{MUTED};">{label}</span>'
+        f'</a></td>'
     )
 
 
@@ -87,18 +92,21 @@ def _body(code: str) -> str:
 
 <hr style="height:1px;background:rgba(15,11,31,0.08);border:none;margin:30px 0 26px;"/>
 
-<h2 class="e-h2" style="margin:0 0 10px;font-family:{SANS};font-size:20px;line-height:1.2;font-weight:800;letter-spacing:-0.01em;color:{INK};">
+<h2 class="e-h2" style="margin:0 0 8px;font-family:{SANS};font-size:20px;line-height:1.2;font-weight:800;letter-spacing:-0.01em;color:{INK};text-align:center;">
   Follow @ahavah.app
 </h2>
-<p class="e-text" style="margin:0 0 18px;font-family:{SANS};font-size:15px;line-height:1.6;color:{INK_SOFT};">
-  We are gathering the community on social as we count down to launch. Follow
-  along, and tell others where to find us.
+<p class="e-text" style="margin:0 0 22px;font-family:{SANS};font-size:15px;line-height:1.6;color:{INK_SOFT};text-align:center;">
+  We are gathering the community on social as we count down to launch. Come say shalom.
 </p>
-<div style="margin:0 0 4px;">
-  {_social_pill("Instagram", _INSTAGRAM)}
-  {_social_pill("Threads", _THREADS)}
-  {_social_pill("Facebook", _FACEBOOK)}
-</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+  <tr><td align="center">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+      {_social_badge("badge-instagram.png", "Instagram", _INSTAGRAM)}
+      {_social_badge("badge-threads.png", "Threads", _THREADS)}
+      {_social_badge("badge-facebook.png", "Facebook", _FACEBOOK)}
+    </tr></table>
+  </td></tr>
+</table>
 
 <p class="e-text" style="margin:26px 0 0;font-family:{SANS};font-size:15px;line-height:1.6;color:{INK_SOFT};">
   As one of the first to join, you are more than an early user. You are part of
