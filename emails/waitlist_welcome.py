@@ -95,13 +95,15 @@ def waitlist_welcome_html(email: str) -> str:
 
 def send_waitlist_welcome(email: str) -> None:
     """Synchronous send. Skips sample/suppressed addresses. Best-effort
-    (aws_smtp retries then gives up without raising)."""
+    (aws_smtp retries then gives up without raising). Stamps the
+    waitlist_signup row with the send time + Resend message id so the
+    otherwise-untraceable fire-and-forget welcome is auditable."""
     if is_suppressed_send(email):
         return
     from smtp import aws_smtp
 
     unsub = _unsub_url("waitlist", email, WEB_BASE_URL)
-    aws_smtp.send(
+    message_id = aws_smtp.send(
         subject=SUBJECT,
         body=waitlist_welcome_html(email),
         to_addr=email,
@@ -110,6 +112,22 @@ def send_waitlist_welcome(email: str) -> None:
             f"<mailto:admin@ahavah.app?subject=Unsubscribe>, <{unsub}>"
         ),
     )
+
+    # Auditability: record that the welcome went out + the Resend id (for
+    # per-recipient delivery lookups in the Resend dashboard). Best-effort —
+    # the email is already sent, so a logging-write failure must not raise.
+    try:
+        from database import api_tx
+
+        with api_tx() as tx:
+            tx.execute(
+                "UPDATE waitlist_signup "
+                "SET welcome_sent_at = NOW(), welcome_message_id = %(mid)s "
+                "WHERE lower(email) = lower(%(email)s)",
+                dict(mid=message_id, email=email),
+            )
+    except Exception:
+        print(traceback.format_exc())
 
 
 def send_waitlist_welcome_async(email: str) -> None:

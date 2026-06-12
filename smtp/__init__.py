@@ -111,11 +111,11 @@ class Smtp:
         from_addr: str | None = None,
         reply_to: str | None = None,
         list_unsubscribe: str | None = None,
-    ) -> None:
+    ) -> str | None:
         # Phase W: branch to Resend HTTPS API when DUO_USE_RESEND_API=true.
         # See module docstring for context (DO blocks outbound SMTP ports).
         if USE_RESEND_API:
-            self._try_send_resend_api(
+            return self._try_send_resend_api(
                 subject=subject,
                 body=body,
                 to_addr=to_addr,
@@ -123,7 +123,6 @@ class Smtp:
                 reply_to=reply_to,
                 list_unsubscribe=list_unsubscribe,
             )
-            return
 
         if self._smtp is None:
             # Lazily reconnect if previous attempt failed.
@@ -162,7 +161,7 @@ class Smtp:
         from_addr: str | None = None,
         reply_to: str | None = None,
         list_unsubscribe: str | None = None,
-    ) -> None:
+    ) -> str | None:
         """Send via Resend's HTTPS API (port 443) instead of SMTP.
 
         Uses `requests` (already installed transitively via boto3) instead
@@ -207,6 +206,13 @@ class Smtp:
             raise Exception(
                 f"Resend API HTTP {resp.status_code}: {resp.text[:500]}"
             )
+        # Resend returns {"id": "..."} on success — hand it back so callers
+        # that want delivery auditability (e.g. the waitlist welcome) can
+        # persist it. Defensive: never fail the send over a parse error.
+        try:
+            return resp.json().get("id")
+        except Exception:
+            return None
 
     def send(
         self,
@@ -219,7 +225,7 @@ class Smtp:
         list_unsubscribe: str | None = None,
         retries: int | None = None,
         backoff: int | None = None,
-    ) -> None:
+    ) -> str | None:
         """Send an email, retrying on failure.
 
         Back‑off doubles on every failed attempt: *backoff* × 2^(n - 1).
@@ -236,7 +242,7 @@ class Smtp:
         for attempt in range(1, max_attempts + 1):
             try:
                 with self._lock:
-                    self._try_send(
+                    message_id = self._try_send(
                         subject=subject,
                         body=body,
                         to_addr=to_addr,
@@ -244,7 +250,7 @@ class Smtp:
                         reply_to=reply_to,
                         list_unsubscribe=list_unsubscribe,
                     )
-                return  # Success
+                return message_id  # Success (Resend message id, or None for SMTP)
             except Exception:
                 print(traceback.format_exc())
                 if attempt == max_attempts:
