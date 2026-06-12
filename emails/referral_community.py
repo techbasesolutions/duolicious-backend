@@ -18,12 +18,12 @@ from emails.base import (
     button,
     chip,
     callout,
+    title_image,
     is_suppressed_send,
     INK,
     INK_SOFT,
     INDIGO,
     MUTED,
-    SERIF,
     SANS,
 )
 from service.unsubscribe import make_url as _unsub_url
@@ -56,11 +56,9 @@ def _body(code: str) -> str:
     share_url = f"{WEB_BASE_URL}/share/{code}"
     plaintext_url = f"{WEB_BASE_URL}/i/{code}"
     return f"""
-{chip("Built together")}
+{chip("Small by design")}
 
-<h1 class="e-h2" style="margin:8px 0 22px;font-family:{SERIF};font-size:36px;line-height:1.1;letter-spacing:-0.01em;font-weight:400;color:{INK};">
-  Small by design.<br/>Built by our own.
-</h1>
+{title_image("title-community.png", "title-community-wht.png", "Built by our own.", 528)}
 
 <p class="e-text" style="margin:0 0 16px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
   Shalom. Ahavah is not for everyone, and that is the point. It is built for
@@ -89,7 +87,7 @@ def _body(code: str) -> str:
 
 <hr style="height:1px;background:rgba(15,11,31,0.08);border:none;margin:30px 0 26px;"/>
 
-<h2 class="e-h2" style="margin:0 0 10px;font-family:{SERIF};font-size:22px;line-height:1.15;font-weight:400;color:{INK};">
+<h2 class="e-h2" style="margin:0 0 10px;font-family:{SANS};font-size:20px;line-height:1.2;font-weight:800;letter-spacing:-0.01em;color:{INK};">
   Follow @ahavah.app
 </h2>
 <p class="e-text" style="margin:0 0 18px;font-family:{SANS};font-size:15px;line-height:1.6;color:{INK_SOFT};">
