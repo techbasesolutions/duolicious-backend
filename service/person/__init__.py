@@ -695,6 +695,38 @@ def post_finish_onboarding(s: t.SessionInfo):
         tx.execute(Q_FINISH_ONBOARDING, params=api_params)
         row = tx.fetchone()
 
+        # Phase W map fix: Q_FINISH_ONBOARDING builds the person from the
+        # onboardee but never set person.country (ISO2), so every newly-
+        # onboarded user had country = '' and was filtered out of the map
+        # (src/app/map drops candidates with no country ISO). The pycountry
+        # resolution previously only ran on POST-onboarding location edits
+        # (see the 'location' field handler), so a user appeared on the map
+        # only if they later re-edited their location. Resolve the new
+        # person's location country name -> ISO2 here so they show on the
+        # map immediately. Best-effort: a lookup miss leaves country empty
+        # (same fallback as the location handler) rather than failing finish.
+        try:
+            import pycountry
+            crow = tx.execute(
+                "SELECT l.country FROM location l "
+                "WHERE l.long_friendly = "
+                "(SELECT location_long_friendly FROM person WHERE id = %(id)s)",
+                dict(id=row['person_id']),
+            ).fetchone()
+            country_name = (crow or {}).get('country') or ''
+            if country_name:
+                try:
+                    iso = pycountry.countries.lookup(country_name).alpha_2
+                    tx.execute(
+                        "UPDATE person SET country = %(iso)s "
+                        "WHERE id = %(id)s AND COALESCE(country, '') = ''",
+                        dict(iso=iso, id=row['person_id']),
+                    )
+                except LookupError:
+                    pass
+        except Exception:
+            pass
+
         # Link the beta_signup row (if any) to the new person so
         # analytics joins like "which beta participants completed
         # onboarding?" actually work. Without this the column stays
