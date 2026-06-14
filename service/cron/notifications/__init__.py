@@ -2,12 +2,13 @@ from database.asyncdatabase import api_tx
 from dataclasses import dataclass
 from service.cron.notifications.sql import (
     Q_UNREAD_INBOX,
-    Q_DELETE_MOBILE_TOKEN,
 )
 from service.cron.notifications.template import (
     big_part,
-    emailtemplate,
+    frequency_url,
 )
+from emails.notification import new_message_email
+from service.config import WEB_BASE_URL
 from service.cron.cronutil import (
     MAX_RANDOM_START_DELAY,
     print_stacktrace,
@@ -22,19 +23,11 @@ import os
 import random
 import json
 import traceback
-from pathlib import Path
-import notify
 
 EMAIL_POLL_SECONDS = int(os.environ.get(
     'DUO_CRON_EMAIL_POLL_SECONDS',
     str(10), # 10 seconds
 ))
-
-_disable_mobile_notifications_file = (
-    Path(__file__).parent.parent.parent.parent /
-    'test' /
-    'input' /
-    'disable-mobile-notifications')
 
 print(f'Hello from cron module: {__name__}')
 
@@ -51,14 +44,8 @@ class PersonNotification:
     email: str
     chats_drift_seconds: int
     intros_drift_seconds: int
-    token: str | None
-
-def disable_mobile_notifications():
-    if _disable_mobile_notifications_file.is_file():
-        with _disable_mobile_notifications_file.open() as file:
-            if file.read().strip() == '1':
-                return True
-    return False
+    has_live_push: bool
+    push_messages: bool
 
 def do_send_notification(row: PersonNotification):
     email = row.email
@@ -92,47 +79,38 @@ def do_send_email_notification(row: PersonNotification):
 
 async def send_email_notification(row: PersonNotification):
     if not do_send_email_notification(row):
-        print('Email notification failed because it ends with @example.com')
+        print('Email notification suppressed (example.com):',
+              f'person_uuid={row.person_uuid}')
         return
 
+    # Setting message email frequency to "Never" is the one-click opt-out;
+    # also doubles as the RFC-8058 List-Unsubscribe target.
+    unsubscribe_url = frequency_url(row.email, 'Every', 'Never')
     send_args = dict(
-        subject="You have a new message 😍",
-        body=emailtemplate(
-            email=row.email,
-            has_intro=row.has_intro,
-            has_chat=row.has_chat,
+        subject="You have a new message on Ahavah",
+        body=new_message_email(
+            headline=big_part(row.has_intro, row.has_chat),
+            open_url=f"{WEB_BASE_URL}/inbox",
+            unsubscribe_url=unsubscribe_url,
         ),
         to_addr=row.email,
+        list_unsubscribe=f"<{unsubscribe_url}>",
     )
 
     aws_smtp = make_aws_smtp()
     await asyncio.to_thread(aws_smtp.send, **send_args)
 
-def send_mobile_notification(row: PersonNotification):
-    if disable_mobile_notifications():
-        print(
-            'File prevented mobile notifications',
-            str(_disable_mobile_notifications_file.absolute())
-        )
-    else:
-        return notify.enqueue_mobile_notification(
-            token=row.token,
-            title='You have a new message 😍',
-            body=big_part(row.has_intro, row.has_chat),
-            data={'screen': 'Inbox'},
-        )
-
 async def send_notification(row: PersonNotification):
-    # Log only person_uuid + channel + has_intro/has_chat flags. The full
-    # row carries email + push token (bearer-equivalents) which should not
-    # land in stdout / log aggregators.
+    # The real-time web push fires in service/chat/messagestorage. This cron
+    # is the EMAIL FALLBACK: only email users push can't reach (no live
+    # subscription, or message-push disabled). Log only non-sensitive fields
+    # (the full row carries email — a bearer-equivalent — keep it out of logs).
     sketch = f"person_uuid={row.person_uuid} intro={row.has_intro} chat={row.has_chat}"
-    if not row.token:
-        print('Sending email notification:', sketch)
-        return await send_email_notification(row)
-
-    print('Sending mobile notification:', sketch)
-    send_mobile_notification(row)
+    if row.has_live_push and row.push_messages:
+        print('Push-reachable; skipping email:', sketch)
+        return
+    print('Sending email notification:', sketch)
+    await send_email_notification(row)
 
 async def update_last_notification_time(row: PersonNotification):
     params = dict(username=row.person_uuid)

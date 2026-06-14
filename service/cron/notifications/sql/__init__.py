@@ -74,6 +74,14 @@ WITH ten_minutes_ago AS (
         extract(epoch from person.last_online_time) AS last_seconds,
         person.name,
         person.email,
+        EXISTS (
+            SELECT 1 FROM push_subscription ps WHERE ps.person_id = person.id
+        ) AS has_live_push,
+        COALESCE(
+            (SELECT np.push_messages FROM notification_preference np
+              WHERE np.person_id = person.id),
+            TRUE
+        ) AS push_messages,
         person.activated,
         CASE
             WHEN extract(epoch from person.last_online_time)
@@ -124,7 +132,9 @@ SELECT
     name,
     email,
     chats_drift_seconds,
-    intros_drift_seconds
+    intros_drift_seconds,
+    has_live_push,
+    push_messages
 FROM
     inbox_second_pass
 WHERE
