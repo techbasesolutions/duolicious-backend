@@ -1678,17 +1678,54 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
         # Phase W cutover (2026-05-15): direct ISO2 country PATCH so
         # /profile/edit country changes move the user's /search pool
         # (Q_UNCACHED_SEARCH_2 filters on p.country = ANY(preferred)).
-        # Was previously only set via /onboarding/location's pycountry
-        # path; post-onboarding edits silently dropped.
+        # 2026-06-14: a country change must ALSO move the user's map
+        # marker. The map drops users with no country ISO and positions
+        # markers by coordinates, so setting the ISO alone strands the
+        # marker in the old country. Resolve a representative in-country
+        # location (exact location.country match via pycountry) and move
+        # coordinates + display strings together. Falls back to ISO-only
+        # when the country isn't in the location table (coordinates kept).
         # Validation: 2-char uppercase ISO2 only — anything else
         # leaves person.country unchanged (UPDATE no-ops by WHERE).
-        q1 = """
-        UPDATE person
-           SET country = UPPER(%(field_value)s)
-         WHERE id = %(person_id)s
-           AND length(%(field_value)s) = 2
-           AND %(field_value)s ~ '^[A-Za-z]{2}$'
-        """
+        _iso = (field_value or '').strip().upper()
+        _country_name = None
+        if len(_iso) == 2 and _iso.isalpha():
+            try:
+                import pycountry
+                _rec = pycountry.countries.get(alpha_2=_iso)
+                _country_name = _rec.name if _rec else None
+            except Exception:
+                _country_name = None
+        if _country_name:
+            params = dict(
+                person_id=s.person_id, iso=_iso, country_name=_country_name)
+            q1 = """
+            UPDATE person
+            SET country = %(iso)s,
+                coordinates = COALESCE(loc.coordinates, person.coordinates),
+                location_short_friendly =
+                    COALESCE(loc.short_friendly, person.location_short_friendly),
+                location_long_friendly =
+                    COALESCE(loc.long_friendly, person.location_long_friendly)
+            FROM (SELECT 1) AS d
+            LEFT JOIN (
+                SELECT coordinates, short_friendly, long_friendly
+                FROM location
+                WHERE country = %(country_name)s
+                ORDER BY long_friendly
+                LIMIT 1
+            ) AS loc ON TRUE
+            WHERE person.id = %(person_id)s
+            """
+        else:
+            params = dict(person_id=s.person_id, field_value=field_value)
+            q1 = """
+            UPDATE person
+               SET country = UPPER(%(field_value)s)
+             WHERE id = %(person_id)s
+               AND length(%(field_value)s) = 2
+               AND %(field_value)s ~ '^[A-Za-z]{2}$'
+            """
     elif field_name == 'languages_spoken':
         # Phase W: round-trip language multi-select. Frontend sends an
         # array of canonical codes (en, he, ...) plus optional

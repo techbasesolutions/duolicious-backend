@@ -70,3 +70,31 @@ def get_search_locations(q: Optional[str]):
     with api_tx('READ COMMITTED') as tx:
         tx.execute(Q_SEARCH_LOCATIONS, params)
         return [row['long_friendly'] for row in tx.fetchall()]
+
+Q_COUNTRY_LOCATION = """
+SELECT long_friendly
+FROM location
+WHERE country = %(country)s
+ORDER BY long_friendly
+LIMIT 1
+"""
+
+def get_country_location(cc: Optional[str]):
+    """ISO2 country code -> one representative in-country long_friendly.
+
+    Exact location.country match (via pycountry name), so it can never
+    return a same-named city in a different country the way the trigram
+    autocomplete (get_search_locations) can. Returns a 0- or 1-element
+    list mirroring get_search_locations' shape. The caller falls back to
+    the autocomplete when this is empty (country not in the location
+    table / pycountry name mismatch)."""
+    try:
+        import pycountry
+        rec = pycountry.countries.get(alpha_2=(cc or '').strip().upper())
+    except Exception:
+        rec = None
+    if not rec:
+        return []
+    with api_tx('READ COMMITTED') as tx:
+        tx.execute(Q_COUNTRY_LOCATION, dict(country=rec.name))
+        return [row['long_friendly'] for row in tx.fetchall()]

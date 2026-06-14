@@ -252,6 +252,14 @@ def post_check_session_token(s: t.SessionInfo):
 def get_search_locations(_):
     return location.get_search_locations(q=request.args.get('q'))
 
+@aget(
+    '/country-location',
+    expected_onboarding_status=None,
+    expected_sign_in_status=None,
+)
+def get_country_location(_):
+    return location.get_country_location(cc=request.args.get('cc'))
+
 @apatch('/onboardee-info', expected_onboarding_status=False)
 @validate(t.PatchOnboardeeInfo)
 def patch_onboardee_info(req: t.PatchOnboardeeInfo, s: t.SessionInfo):
