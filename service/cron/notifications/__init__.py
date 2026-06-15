@@ -46,6 +46,7 @@ class PersonNotification:
     intros_drift_seconds: int
     has_live_push: bool
     push_messages: bool
+    email_messages: bool
 
 def do_send_notification(row: PersonNotification):
     email = row.email
@@ -108,6 +109,9 @@ async def send_notification(row: PersonNotification):
     sketch = f"person_uuid={row.person_uuid} intro={row.has_intro} chat={row.has_chat}"
     if row.has_live_push and row.push_messages:
         print('Push-reachable; skipping email:', sketch)
+        return
+    if not row.email_messages:
+        print('Message email disabled by user; skipping:', sketch)
         return
     print('Sending email notification:', sketch)
     await send_email_notification(row)

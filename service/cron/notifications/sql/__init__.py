@@ -82,6 +82,11 @@ WITH ten_minutes_ago AS (
               WHERE np.person_id = person.id),
             TRUE
         ) AS push_messages,
+        COALESCE(
+            (SELECT np.email_messages FROM notification_preference np
+              WHERE np.person_id = person.id),
+            TRUE
+        ) AS email_messages,
         person.activated,
         CASE
             WHEN extract(epoch from person.last_online_time)
@@ -128,13 +133,13 @@ SELECT
     last_chat_notification_seconds,
     has_intro,
     has_chat,
-    token,
     name,
     email,
     chats_drift_seconds,
     intros_drift_seconds,
     has_live_push,
-    push_messages
+    push_messages,
+    email_messages
 FROM
     inbox_second_pass
 WHERE

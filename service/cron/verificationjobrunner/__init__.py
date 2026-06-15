@@ -130,6 +130,35 @@ async def do_verification_job(verification_job: VerificationJob):
     async with api_tx() as tx:
         await tx.execute(Q_UPDATE_VERIFICATION_STATUS, params)
 
+    # Notify the user of their verification result (gated by
+    # push_verification, default on). Fire-and-forget; never block the job.
+    # 'Basics only' (success but no tier) is intentionally silent — there's
+    # no clear pass/fail to report. Gold/ID (Stripe Identity) is finalized
+    # elsewhere (service/identity_verification) and notified separately.
+    try:
+        from service.notifications import send_to_user_safe
+        if params['status'] == 'success' and params['target_tier']:
+            tier = str(params['target_tier']).capitalize()
+            send_to_user_safe(
+                person_id=verification_job.person_id,
+                title="You're verified",
+                body=f"Your {tier} verification was approved.",
+                url="/verify",
+                event_kind="verification",
+            )
+        elif params['status'] == 'failure':
+            send_to_user_safe(
+                person_id=verification_job.person_id,
+                title="Verification update",
+                body="Your verification didn't pass. Tap to try again.",
+                url="/verify",
+                event_kind="verification",
+            )
+    except Exception:
+        import traceback
+        print("verificationjobrunner notify failed:")
+        print(traceback.format_exc())
+
 async def verify_once():
     async with api_tx() as tx:
         cur = await tx.execute(Q_QUEUED_VERIFICATION_JOBS)

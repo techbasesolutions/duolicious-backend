@@ -306,7 +306,29 @@ def post_decisions(req: t.PostDecision, s: t.SessionInfo):
         ).fetchall()
 
     if not rows:
-        # No mutual like (yet). Like was recorded but no match.
+        # No mutual like yet. Like was recorded; notify the liked person
+        # that they have a new like (identity-blind; gated by push_likes,
+        # default off). Wrapped like the match push below so the push stack
+        # can never block the like response.
+        try:
+            from service.notifications import send_to_user_safe
+            with api_tx() as tx:
+                liked = tx.execute(
+                    "SELECT id FROM person WHERE uuid = %(uuid)s",
+                    dict(uuid=req.profile_uuid),
+                ).fetchone()
+            if liked:
+                send_to_user_safe(
+                    person_id=liked["id"],
+                    title="Someone likes you",
+                    body="You have a new like on Ahavah",
+                    url="/matches",
+                    event_kind="like",
+                )
+        except Exception:
+            import traceback
+            print("decisions like-push trigger failed:")
+            print(traceback.format_exc())
         return {"match": None}
 
     row = rows[0]

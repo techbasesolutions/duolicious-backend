@@ -32,25 +32,31 @@ import traceback
 from typing import Any, Dict, Literal, Optional
 
 
-EventKind = Literal["match", "message", "like", "weekly"]
+EventKind = Literal[
+    "match", "message", "like", "weekly", "verification", "profile_view"
+]
 
 # Map each event kind to the column on notification_preference that
 # gates it. Keeping the mapping in one place means the cron + handlers
 # don't have to know column names.
 _EVENT_COLUMN: Dict[EventKind, str] = {
-    "match":   "push_matches",
-    "message": "push_messages",
-    "like":    "push_likes",
-    "weekly":  "push_weekly_digest",
+    "match":        "push_matches",
+    "message":      "push_messages",
+    "like":         "push_likes",
+    "weekly":       "push_weekly_digest",
+    "verification": "push_verification",
+    "profile_view": "push_profile_views",
 }
 
 # Defaults that apply when notification_preference has no row for the
 # user. Lazy-insert pattern: the row is only created on first PATCH.
 _EVENT_DEFAULTS: Dict[EventKind, bool] = {
-    "match":   True,
-    "message": True,
-    "like":    False,
-    "weekly":  False,
+    "match":        True,
+    "message":      True,
+    "like":         False,
+    "weekly":       False,
+    "verification": True,
+    "profile_view": False,
 }
 
 
@@ -135,10 +141,16 @@ def _send_one(endpoint: str, p256dh: str, auth: str, payload: Dict[str, Any]) ->
         return status
 
 
+# Prune a subscription after this many consecutive failed sends (transient
+# errors that never recover), in addition to the immediate 404/410 prune.
+_MAX_PUSH_FAILURES = 8
+
+
 def _send_to_user_blocking(person_id: int, payload: Dict[str, Any]):
     """Look up every push_subscription for the user and send to each.
-    Prune rows whose endpoint returns 404 / 410. Any other error is
-    logged but swallowed - push is best-effort."""
+    Prune rows that 404/410 immediately, or that cross _MAX_PUSH_FAILURES
+    consecutive failures. A successful send resets the failure counter.
+    Push is best-effort - other errors are logged but swallowed."""
     if not PUSH_ENABLED:
         return
 
@@ -156,21 +168,44 @@ def _send_to_user_blocking(person_id: int, payload: Dict[str, Any]):
     if not rows:
         return
 
-    dead_ids = []
+    dead_ids = []    # 404/410 - revoked/expired, prune now
+    failed_ids = []  # other error - bump the consecutive-failure counter
+    ok_ids = []      # success - reset the counter
     for r in rows:
         try:
             status = _send_one(r['endpoint'], r['p256dh'], r['auth'], payload)
             if status in (404, 410):
                 dead_ids.append(r['id'])
+            elif status is None:
+                ok_ids.append(r['id'])
+            else:
+                failed_ids.append(r['id'])
         except Exception:
+            failed_ids.append(r['id'])
             print(traceback.format_exc())
 
-    if dead_ids:
-        with api_tx() as tx:
+    with api_tx() as tx:
+        if ok_ids:
             tx.execute(
-                "DELETE FROM push_subscription WHERE id = ANY(%(ids)s)",
-                dict(ids=dead_ids),
+                "UPDATE push_subscription SET consecutive_failures = 0 "
+                "WHERE id = ANY(%(ids)s)",
+                dict(ids=ok_ids),
             )
+        if failed_ids:
+            tx.execute(
+                "UPDATE push_subscription "
+                "SET consecutive_failures = consecutive_failures + 1 "
+                "WHERE id = ANY(%(ids)s)",
+                dict(ids=failed_ids),
+            )
+        # Prune the freshly-dead (404/410) plus anything that has now
+        # crossed the consecutive-failure threshold.
+        tx.execute(
+            "DELETE FROM push_subscription "
+            "WHERE id = ANY(%(dead)s) "
+            "   OR consecutive_failures >= %(thresh)s",
+            dict(dead=dead_ids, thresh=_MAX_PUSH_FAILURES),
+        )
 
 
 def _allowed_for_event(person_id: int, event_kind: EventKind) -> bool:
