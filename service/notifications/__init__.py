@@ -266,6 +266,181 @@ def send_to_user_safe(
     ).start()
 
 
+def record_profile_view(viewer_id: int, viewed_uuid: str):
+    """Fire-and-forget. Records that `viewer_id` saw the profile identified
+    by `viewed_uuid` and, throttled to at most once per 24h per pair,
+    notifies the viewed person IF they opted into profile-view push. The
+    default-off majority incur NO DB write (the pref is checked first), and
+    the uuid->id lookup happens off the request thread so the hot
+    profile-view path pays no latency."""
+    threading.Thread(
+        target=_record_profile_view_blocking,
+        kwargs=dict(viewer_id=viewer_id, viewed_uuid=viewed_uuid),
+        daemon=True,
+    ).start()
+
+
+def _record_profile_view_blocking(viewer_id: int, viewed_uuid: str):
+    from database import api_tx
+    try:
+        with api_tx() as tx:
+            vr = tx.execute(
+                "SELECT id FROM person WHERE uuid = %(uuid)s",
+                dict(uuid=viewed_uuid),
+            ).fetchone()
+            if not vr:
+                return
+            viewed_id = vr['id']
+            if viewed_id == viewer_id:
+                return  # self-view
+            # Gate on the opt-in so default-off users never get a row.
+            pref = tx.execute(
+                "SELECT push_profile_views FROM notification_preference "
+                "WHERE person_id = %(id)s",
+                dict(id=viewed_id),
+            ).fetchone()
+            if not pref or not pref['push_profile_views']:
+                return
+            # Record + throttle: the conditional ON CONFLICT only "wins"
+            # (RETURNING a row) on a fresh view or when >24h has passed, so
+            # we notify at most once per 24h per (viewer, viewed) pair.
+            fresh = tx.execute(
+                """
+                INSERT INTO profile_view (viewer_id, viewed_id, last_notified_at)
+                VALUES (%(viewer)s, %(viewed)s, NOW())
+                ON CONFLICT (viewer_id, viewed_id) DO UPDATE
+                  SET last_notified_at = NOW()
+                  WHERE profile_view.last_notified_at < NOW() - INTERVAL '24 hours'
+                RETURNING viewer_id
+                """,
+                dict(viewer=viewer_id, viewed=viewed_id),
+            ).fetchone()
+        if fresh is None:
+            return  # within the 24h throttle window
+        send_to_user_safe(
+            person_id=viewed_id,
+            title="Someone viewed your profile",
+            body="Someone checked out your profile on Ahavah.",
+            url="/discover",
+            event_kind="profile_view",
+        )
+    except Exception:
+        print(traceback.format_exc())
+
+
+# --- Email fallback ("email only if push didn't land") --------------------
+# Email column that gates each event, mirroring _EVENT_COLUMN for push.
+_EMAIL_COLUMN: Dict[EventKind, str] = {
+    "match":        "email_matches",
+    "message":      "email_messages",
+    "like":         "email_likes",
+    "weekly":       "push_weekly_digest",  # no email channel; never emailed
+    "verification": "email_verification",
+    "profile_view": "email_profile_views",
+}
+_EMAIL_DEFAULTS: Dict[EventKind, bool] = {
+    "match":        True,
+    "message":      True,
+    "like":         False,
+    "weekly":       False,
+    "verification": True,
+    "profile_view": False,
+}
+
+
+def _has_live_subscription(person_id: int) -> bool:
+    from database import api_tx
+    with api_tx() as tx:
+        return bool(tx.execute(
+            "SELECT EXISTS("
+            "  SELECT 1 FROM push_subscription WHERE person_id = %(id)s"
+            ") AS e",
+            dict(id=person_id),
+        ).fetchone()['e'])
+
+
+def _email_allowed_for_event(person_id: int, event_kind: EventKind) -> bool:
+    column = _EMAIL_COLUMN[event_kind]
+    from database import api_tx
+    with api_tx() as tx:
+        row = tx.execute(
+            f"SELECT {column} AS allowed FROM notification_preference "
+            "WHERE person_id = %(id)s",
+            dict(id=person_id),
+        ).fetchone()
+    if row is None:
+        return _EMAIL_DEFAULTS[event_kind]
+    return bool(row['allowed'])
+
+
+def _send_event_email_blocking(person_id, subject, html_factory):
+    from database import api_tx
+    from emails.base import is_suppressed_send
+    from smtp import make_aws_smtp
+    try:
+        with api_tx() as tx:
+            row = tx.execute(
+                "SELECT email FROM person WHERE id = %(id)s",
+                dict(id=person_id),
+            ).fetchone()
+        email = (row or {}).get('email')
+        if not email or is_suppressed_send(email):
+            return
+        from service.unsubscribe import make_token
+        from service.config import API_BASE_URL
+        unsub = f"{API_BASE_URL}/u/{make_token('notifications', email)}"
+        make_aws_smtp().send(
+            subject=subject,
+            body=html_factory(unsub),
+            to_addr=email,
+            list_unsubscribe=f"<{unsub}>",
+        )
+    except Exception:
+        print(traceback.format_exc())
+
+
+def notify(
+    person_id: int,
+    event_kind: EventKind,
+    *,
+    title: str,
+    body: str,
+    url: str = '/',
+    tag: Optional[str] = None,
+    email_subject: Optional[str] = None,
+    email_html_factory=None,
+):
+    """Per-event dispatch with email fallback. Push if push_<event> is on AND
+    the user has a live subscription; otherwise email if email_<event> is on
+    and an email factory was provided. email_html_factory(unsubscribe_url) ->
+    html, built lazily only when we actually email. Fire-and-forget; never
+    raises to the caller."""
+    try:
+        if (
+            PUSH_ENABLED
+            and _allowed_for_event(person_id, event_kind)
+            and _has_live_subscription(person_id)
+        ):
+            send_to_user_safe(
+                person_id, title, body, url, tag, event_kind=event_kind)
+            return
+        if (
+            email_html_factory is not None
+            and _email_allowed_for_event(person_id, event_kind)
+        ):
+            threading.Thread(
+                target=_send_event_email_blocking,
+                kwargs=dict(
+                    person_id=person_id,
+                    subject=email_subject,
+                    html_factory=email_html_factory,
+                ),
+                daemon=True,
+            ).start()
+    except Exception:
+        print(traceback.format_exc())
+
+
 def get_notification_preferences(s):
     """Return the user's per-event push preferences. If the row
     doesn't exist yet (legacy user, never PATCHed), return the

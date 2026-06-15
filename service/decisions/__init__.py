@@ -311,19 +311,21 @@ def post_decisions(req: t.PostDecision, s: t.SessionInfo):
         # default off). Wrapped like the match push below so the push stack
         # can never block the like response.
         try:
-            from service.notifications import send_to_user_safe
+            from service.notifications import notify
+            from emails.notification import new_like_email
             with api_tx() as tx:
                 liked = tx.execute(
                     "SELECT id FROM person WHERE uuid = %(uuid)s",
                     dict(uuid=req.profile_uuid),
                 ).fetchone()
             if liked:
-                send_to_user_safe(
-                    person_id=liked["id"],
+                notify(
+                    liked["id"], "like",
                     title="Someone likes you",
                     body="You have a new like on Ahavah",
                     url="/matches",
-                    event_kind="like",
+                    email_subject="Someone likes you on Ahavah",
+                    email_html_factory=new_like_email,
                 )
         except Exception:
             import traceback
@@ -339,20 +341,22 @@ def post_decisions(req: t.PostDecision, s: t.SessionInfo):
     # the match-create response. send_to_user_safe is itself
     # fire-and-forget but we belt-and-suspenders the import too.
     try:
-        from service.notifications import send_to_user_safe
+        from service.notifications import notify
+        from emails.notification import new_match_email
         with api_tx() as tx:
             me_row = tx.execute(
                 "SELECT name FROM person WHERE id = %(me_id)s",
                 dict(me_id=s.person_id),
             ).fetchone()
         my_name = (me_row or {}).get("name") or "Someone"
-        send_to_user_safe(
-            person_id=row["peer_id"],
+        notify(
+            row["peer_id"], "match",
             title="It's a match!",
             body=f"{my_name} likes you back",
             url="/matches",
             tag=f"match:{row['match_id']}",
-            event_kind="match",
+            email_subject="You have a new match on Ahavah",
+            email_html_factory=new_match_email,
         )
     except Exception:
         import traceback

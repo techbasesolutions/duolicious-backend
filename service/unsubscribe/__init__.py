@@ -21,7 +21,7 @@ import os
 from urllib.parse import quote
 
 
-_SCOPES = ("waitlist", "beta")
+_SCOPES = ("waitlist", "beta", "notifications")
 
 
 def _secret() -> bytes:
@@ -88,6 +88,21 @@ _Q_UNSUB = {
            SET unsubscribed_at = COALESCE(unsubscribed_at, NOW())
          WHERE email = %(email)s
         RETURNING (unsubscribed_at = NOW()) AS just_now
+    """,
+    # Notification emails (match/like/verification/message fallbacks): turn
+    # off every email_* channel for the matching person. Keyed by person, so
+    # resolve email -> person and upsert the preference row.
+    "notifications": """
+        INSERT INTO notification_preference (
+            person_id, email_messages, email_matches, email_likes,
+            email_verification, email_profile_views, updated_at)
+        SELECT p.id, FALSE, FALSE, FALSE, FALSE, FALSE, NOW()
+          FROM person p WHERE lower(p.email) = %(email)s
+        ON CONFLICT (person_id) DO UPDATE
+           SET email_messages = FALSE, email_matches = FALSE,
+               email_likes = FALSE, email_verification = FALSE,
+               email_profile_views = FALSE, updated_at = NOW()
+        RETURNING person_id
     """,
 }
 

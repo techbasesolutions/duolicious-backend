@@ -890,6 +890,15 @@ def get_prospect_profile(s: Optional[t.SessionInfo], prospect_uuid):
 
     profile.update(message_stats)
 
+    # Fire-and-forget: record this profile view + (throttled) notify the
+    # viewed person if they opted into profile-view notifications. Spawns a
+    # background thread, so the view endpoint pays no extra latency.
+    try:
+        from service.notifications import record_profile_view
+        record_profile_view(viewer_id=s.person_id, viewed_uuid=prospect_uuid)
+    except Exception:
+        pass
+
     return profile
 
 def get_conversation_prospect(s: t.SessionInfo, prospect_uuid: str):

@@ -136,15 +136,17 @@ async def do_verification_job(verification_job: VerificationJob):
     # no clear pass/fail to report. Gold/ID (Stripe Identity) is finalized
     # elsewhere (service/identity_verification) and notified separately.
     try:
-        from service.notifications import send_to_user_safe
+        from service.notifications import send_to_user_safe, notify
+        from emails.notification import new_verification_email
         if params['status'] == 'success' and params['target_tier']:
             tier = str(params['target_tier']).capitalize()
-            send_to_user_safe(
-                person_id=verification_job.person_id,
+            notify(
+                verification_job.person_id, "verification",
                 title="You're verified",
                 body=f"Your {tier} verification was approved.",
                 url="/verify",
-                event_kind="verification",
+                email_subject="You're verified on Ahavah",
+                email_html_factory=lambda unsub: new_verification_email(tier, unsub),
             )
         elif params['status'] == 'failure':
             send_to_user_safe(

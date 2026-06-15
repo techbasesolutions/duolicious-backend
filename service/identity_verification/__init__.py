@@ -146,6 +146,27 @@ def promote_user(person_id: int, level: str, country: Optional[str] = None) -> b
                 """,
                 dict(id=person_id, level=level),
             )
+
+    # Notify on a Gold (Stripe Identity) approval. Bronze/silver are
+    # finalized + notified by service/cron/verificationjobrunner, so we only
+    # fire here for gold to avoid double-notifying. Fire-and-forget.
+    if level == 'gold':
+        try:
+            from service.notifications import notify
+            from emails.notification import new_verification_email
+            notify(
+                person_id, "verification",
+                title="You're verified",
+                body="Your Gold verification was approved.",
+                url="/verify",
+                email_subject="You're verified on Ahavah",
+                email_html_factory=lambda unsub: new_verification_email("Gold", unsub),
+            )
+        except Exception:
+            import traceback
+            print("identity_verification notify failed:")
+            print(traceback.format_exc())
+
     return True
 
 
