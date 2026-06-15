@@ -1,5 +1,6 @@
-"""One-off: blast the COMMUNITY referral email to beta_signup rows that
-don't have a referral link yet.
+"""One-off: blast the COMMUNITY referral email to WAITLIST registrants who
+completed onboarding (answered the preliminary questions) and have not yet
+been sent any referral email.
 
 Run inside the api container on the droplet (needs DB + SMTP env):
 
@@ -8,11 +9,13 @@ Run inside the api container on the droplet (needs DB + SMTP env):
     python -m emails.send_referral_community --all                 # blast
     python -m emails.send_referral_community --all --exclude x@y.z  # hold one out
 
-Dry-run is the default so an accidental invocation never sends mail. The
-audience is exactly "hasn't received a referral link yet" (beta_signup with
-referral_code IS NULL); a code is minted for each before sending. `--all`
-skips suppressed + unsubscribed addresses and anything passed via --exclude.
-Excluded addresses are NOT minted a code (their link stays absent)."""
+Audience = the WAITLIST track: waitlist_signup rows with non-empty `answers`
+(completed the waitlist onboarding), not unsubscribed, who have NOT already
+been sent a referral email. Referral codes live on beta_signup, so each
+target is enrolled into the referral cohort (a plain INSERT — entitlement-
+neutral, since completed-waitlist users already qualify for beta entitlements
+via service/entitlements) and then minted a code. `--exclude` holds addresses
+out entirely (not enrolled, not minted, not emailed). Dry-run is the default."""
 from __future__ import annotations
 
 import argparse
@@ -20,15 +23,21 @@ import argparse
 from database import api_tx
 from emails.base import is_suppressed_send
 from emails.referral_community import send_referral_community, SUBJECT, FROM_ADDR
+from service.beta import register
 from service.referrals import mint_code
 
 
 _Q_TARGETS = """
-    SELECT email
-      FROM beta_signup
-     WHERE unsubscribed_at IS NULL
-       AND referral_intro_sent_at IS NULL
-     ORDER BY created_at
+    SELECT ws.email
+      FROM waitlist_signup ws
+     WHERE jsonb_typeof(ws.answers) = 'object'
+       AND ws.answers <> '{}'::jsonb
+       AND ws.unsubscribed_at IS NULL
+       AND lower(ws.email) NOT IN (
+           SELECT lower(email) FROM beta_signup
+            WHERE referral_intro_sent_at IS NOT NULL
+       )
+     ORDER BY ws.created_at
 """
 
 _Q_MARK_SENT = """
@@ -39,18 +48,20 @@ _Q_MARK_SENT = """
 
 
 def _backfill_and_target_codes(excluded: set[str]) -> list[tuple[str, str]]:
-    """[(email, code), ...] for every codeless row not in `excluded`, with
-    codes minted as needed. One tx for atomicity. Excluded rows are skipped
-    entirely — no code minted — so a held-out person stays without a link."""
+    """[(email, code), ...] for every completed-waitlist target not in
+    `excluded`. Each target is enrolled into the referral cohort (plain
+    INSERT, no side effects) so the code has a home, then minted a code.
+    One tx for atomicity. Excluded addresses are skipped entirely."""
     out: list[tuple[str, str]] = []
     with api_tx() as tx:
         for r in tx.execute(_Q_TARGETS).fetchall():
             email = r["email"]
             if email.strip().lower() in excluded:
                 continue
+            register(tx, email, None)  # enrol in referral cohort (idempotent)
             code = mint_code(tx, email)
             if code is None:
-                continue  # shouldn't happen — the SELECT proves the row exists
+                continue  # uncommitted gate — shouldn't happen for this audience
             out.append((email, code))
     return out
 
@@ -63,9 +74,9 @@ def _mark_sent(email: str) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Blast the Ahavah community referral email.")
     ap.add_argument("--only", metavar="EMAIL", help="send to a single address (test)")
-    ap.add_argument("--all", action="store_true", help="send to every codeless beta_signup row")
+    ap.add_argument("--all", action="store_true", help="send to every completed-waitlist target")
     ap.add_argument("--exclude", metavar="EMAIL", action="append", default=[],
-                    help="address(es) to hold out — not minted, not emailed (repeatable)")
+                    help="address(es) to hold out — not enrolled, not minted, not emailed")
     args = ap.parse_args()
 
     print(f"Subject: {SUBJECT!r}  From: {FROM_ADDR!r}")
@@ -73,9 +84,10 @@ def main() -> None:
     if args.only:
         email = args.only.strip().lower()
         with api_tx() as tx:
+            register(tx, email, None)
             code = mint_code(tx, email)
         if code is None:
-            print(f"FAIL: {email} is not in beta_signup; nothing minted, nothing sent.")
+            print(f"FAIL: {email} is not eligible (uncommitted); nothing minted, nothing sent.")
             return
         print(f"Sending single test to {email} (code={code}) ...")
         send_referral_community(email, code)
