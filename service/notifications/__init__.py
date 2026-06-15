@@ -239,29 +239,29 @@ def get_notification_preferences(s):
     if s.person_id is None:
         return 'Not signed in', 401
 
+    # Phase 2 (mig 0029): full per-event x per-channel matrix. Defaults
+    # mirror the migration / approved matrix so a legacy row-less user gets
+    # the right toggle state without a mount-time write.
+    _MATRIX_DEFAULTS = dict(
+        push_matches=True,        email_matches=True,
+        push_messages=True,       email_messages=True,
+        push_likes=False,         email_likes=False,
+        push_verification=True,   email_verification=True,
+        push_profile_views=False, email_profile_views=False,
+        push_weekly_digest=False,
+    )
+    cols = list(_MATRIX_DEFAULTS.keys())
+
     from database import api_tx
     with api_tx() as tx:
         row = tx.execute(
-            """
-            SELECT push_matches, push_messages, push_likes, push_weekly_digest
-              FROM notification_preference
-             WHERE person_id = %(person_id)s
-            """,
+            f"SELECT {', '.join(cols)} FROM notification_preference "
+            "WHERE person_id = %(person_id)s",
             dict(person_id=s.person_id),
         ).fetchone()
     if row is None:
-        return dict(
-            push_matches=_EVENT_DEFAULTS['match'],
-            push_messages=_EVENT_DEFAULTS['message'],
-            push_likes=_EVENT_DEFAULTS['like'],
-            push_weekly_digest=_EVENT_DEFAULTS['weekly'],
-        )
-    return dict(
-        push_matches=row['push_matches'],
-        push_messages=row['push_messages'],
-        push_likes=row['push_likes'],
-        push_weekly_digest=row['push_weekly_digest'],
-    )
+        return dict(_MATRIX_DEFAULTS)
+    return {c: row[c] for c in cols}
 
 
 def patch_notification_preferences(req, s):

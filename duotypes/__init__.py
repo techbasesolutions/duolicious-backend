@@ -925,6 +925,15 @@ class PatchNotificationPreferences(BaseModel):
     push_messages: Optional[bool] = None
     push_likes: Optional[bool] = None
     push_weekly_digest: Optional[bool] = None
+    # Phase 2 (mig 0029): per-event x per-channel matrix. Email fallback
+    # columns plus the two new events (verification, profile_views).
+    email_messages: Optional[bool] = None
+    email_matches: Optional[bool] = None
+    email_likes: Optional[bool] = None
+    push_verification: Optional[bool] = None
+    email_verification: Optional[bool] = None
+    push_profile_views: Optional[bool] = None
+    email_profile_views: Optional[bool] = None
 
 
 class PostVerificationMultiSelfie(BaseModel):
