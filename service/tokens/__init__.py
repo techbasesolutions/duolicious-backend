@@ -17,6 +17,7 @@ import json
 from typing import Any
 from service.tokens.sql import (
     Q_BALANCE,
+    Q_HISTORY,
     Q_INSERT_LEDGER,
 )
 
@@ -38,6 +39,15 @@ def get_balance(tx, person_uuid: str) -> int:
     """Current token balance for the user. Cheap (single SUM)."""
     row = tx.execute(Q_BALANCE, dict(person_id=person_uuid)).fetchone()
     return int(row['balance']) if row else 0
+
+
+def get_history(tx, person_uuid: str, *, limit: int, offset: int) -> list:
+    """Raw ledger rows for the user, newest first (id, delta, reason,
+    metadata, created_at). The route owns response shaping (labels, money)."""
+    return tx.execute(
+        Q_HISTORY,
+        dict(person_id=person_uuid, limit=limit, offset=offset),
+    ).fetchall()
 
 
 def credit(tx, person_uuid: str, amount: int, *,

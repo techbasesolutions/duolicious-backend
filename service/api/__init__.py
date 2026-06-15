@@ -930,6 +930,60 @@ def get_tokens_balance(s: t.SessionInfo):
         return {'balance': _get_token_balance(tx, s.person_uuid)}
 
 
+# Token transaction history — paginated ledger feed for /profile/tokens.
+# Returns raw reason + delta (the frontend maps reason->label and derives the
+# credit/debit sign from delta); amountLabel is set only on 'purchase' rows so
+# they read as receipts.
+from service.tokens import get_history as _get_token_history
+
+
+def _token_amount_label(metadata) -> str | None:
+    """'$4.99' from a purchase row's metadata.amount_cents (USD). None if absent."""
+    cents = metadata.get('amount_cents') if isinstance(metadata, dict) else None
+    if not isinstance(cents, int):
+        return None
+    return f"${cents / 100:.2f}"
+
+
+@aget('/tokens/history')
+def get_tokens_history(s: t.SessionInfo):
+    """Paginated token ledger, newest first.
+    Query: ?limit=20&offset=0. Returns {items: [...], nextCursor: str|null}."""
+    assert s.person_uuid is not None
+    try:
+        limit = int(request.args.get('limit', 20))
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        offset = int(request.args.get('offset', 0))
+    except (TypeError, ValueError):
+        offset = 0
+    limit = max(1, min(limit, 50))
+    offset = max(0, offset)
+
+    with api_tx('READ COMMITTED') as tx:
+        rows = _get_token_history(tx, s.person_uuid, limit=limit + 1, offset=offset)
+
+    has_more = len(rows) > limit
+    items = []
+    for r in rows[:limit]:
+        item = {
+            'id': str(r['id']),
+            'date': r['created_at'].isoformat(),
+            'reason': r['reason'],
+            'delta': int(r['delta']),
+        }
+        if r['reason'] == 'purchase':
+            label = _token_amount_label(r['metadata'])
+            if label:
+                item['amountLabel'] = label
+        items.append(item)
+    return {
+        'items': items,
+        'nextCursor': str(offset + limit) if has_more else None,
+    }
+
+
 # Phase 4 — reveal-liker spend path. Spend 1 token to unblur an incoming
 # liker. Idempotent per (viewer, liker) pair: re-tap is a no-op.
 from service.tokens import InsufficientTokens as _InsufficientTokens
