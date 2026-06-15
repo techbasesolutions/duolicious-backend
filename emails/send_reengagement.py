@@ -20,11 +20,19 @@ from emails.reengagement import send_reengagement, SUBJECT, FROM_ADDR
 
 
 def incomplete_recipients() -> list[str]:
+    # WAITLIST TRACK ONLY: people who registered on the waitlist (ahavah.app)
+    # and never answered the preliminary questions. EXCLUDE anyone who has an
+    # app account (a `person` row) — they came in via the APP track (e.g. a
+    # bypass test link), not the waitlist, so the "finish the waitlist
+    # questions" nag does not apply to them. Keeps the two onboarding tracks
+    # from being mixed up.
     with api_tx() as tx:
         rows = tx.execute(
             "SELECT email FROM waitlist_signup "
             "WHERE (answers IS NULL OR answers = '{}'::jsonb) "
             "  AND unsubscribed_at IS NULL "
+            "  AND lower(email) NOT IN "
+            "      (SELECT lower(email) FROM person WHERE email IS NOT NULL) "
             "ORDER BY created_at"
         ).fetchall()
     return [r["email"] for r in rows]
@@ -34,6 +42,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Send the Ahavah re-engagement email.")
     ap.add_argument("--only", metavar="EMAIL", help="send to a single address (test)")
     ap.add_argument("--all", action="store_true", help="send to all incomplete waitlist rows")
+    ap.add_argument("--exclude", metavar="EMAIL", action="append", default=[],
+                    help="address(es) to hold out from this send (repeatable)")
     args = ap.parse_args()
 
     print(f"Subject: {SUBJECT!r}  From: {FROM_ADDR!r}")
@@ -44,7 +54,8 @@ def main() -> None:
         print("done (check the inbox; aws_smtp is best-effort).")
         return
 
-    rs = incomplete_recipients()
+    excluded = {e.strip().lower() for e in args.exclude}
+    rs = [e for e in incomplete_recipients() if e.strip().lower() not in excluded]
     if not args.all:
         print(f"DRY RUN — {len(rs)} incomplete waitlist recipient(s):")
         for e in rs:
