@@ -712,6 +712,16 @@ def _credit_subscription_stipend(
     return {'ok': True, 'credited': stipend, 'tier_key': tier_key}
 
 
+def _amount_label(obj) -> Optional[str]:
+    """'9.99 USD' from a Stripe session's amount_total (cents) + currency.
+    None when the amount is absent (so the receipt copy just omits the line)."""
+    amt = obj.get('amount_total') if isinstance(obj, dict) else None
+    if amt is None:
+        return None
+    cur = (obj.get('currency') or 'usd').upper()
+    return f"{amt / 100:.2f} {cur}"
+
+
 def _person_uuid_for_id(person_id: int) -> Optional[str]:
     """Look up person.uuid (string) for a numeric person_id."""
     if not person_id:
@@ -791,7 +801,25 @@ def post_stripe_checkout_webhook():
     # here and return early. Only triggers on checkout.session.completed —
     # subscription.* events have no `mode` field.
     if event_type == 'checkout.session.completed' and obj.get('mode') == 'payment':
-        return _handle_token_purchase(obj)
+        result = _handle_token_purchase(obj)
+        # Branded receipt — only on a real credit (not a replay/ignored event).
+        # Transactional: always sends, never 500s the webhook.
+        if result.get('credited'):
+            try:
+                from emails.purchase import tokens_purchased_email
+                from service.notifications import send_transactional
+                send_transactional(
+                    person_id,
+                    "Your Ahavah purchase is confirmed",
+                    tokens_purchased_email(
+                        count=result['credited'],
+                        amount_label=_amount_label(obj),
+                    ),
+                )
+            except Exception as e:
+                logger.warning(
+                    'token receipt email failed for person_id=%s: %s', person_id, e)
+        return result
 
     if event_type == 'checkout.session.completed':
         customer_id = obj.get('customer')
@@ -828,6 +856,25 @@ def post_stripe_checkout_webhook():
                 'subscription stipend credit failed for person_id=%s: %s',
                 person_id, e,
             )
+
+        # Branded purchase receipt (transactional — always sends). This branch
+        # runs once per subscription (record_event dedupes retries above), so
+        # it cannot double-send.
+        try:
+            from emails.purchase import premium_started_email
+            from service.notifications import send_transactional
+            send_transactional(
+                person_id,
+                "Welcome to Ahavah Premium",
+                premium_started_email(
+                    tier_key=tier_key or '',
+                    stipend=SUBSCRIPTION_TIER_TO_STIPEND.get(tier_key or '', 0),
+                    amount_label=_amount_label(obj),
+                ),
+            )
+        except Exception as e:
+            logger.warning(
+                'premium receipt email failed for person_id=%s: %s', person_id, e)
         return {'ok': True, 'granted': _PREMIUM_ENTITLEMENT}
 
     if event_type == 'invoice.payment_succeeded':

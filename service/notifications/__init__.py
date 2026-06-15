@@ -399,6 +399,41 @@ def _send_event_email_blocking(person_id, subject, html_factory):
         print(traceback.format_exc())
 
 
+def _send_transactional_blocking(person_id, subject, html):
+    """Send a transactional email (e.g. a purchase receipt). NOT gated by
+    notification_preference and carries no unsubscribe link — receipts always
+    send. The suppressed-domain rule still applies so QA/example.com inboxes
+    are never hit."""
+    from database import api_tx
+    from emails.base import is_suppressed_send
+    from smtp import make_aws_smtp
+    try:
+        with api_tx() as tx:
+            row = tx.execute(
+                "SELECT email FROM person WHERE id = %(id)s",
+                dict(id=person_id),
+            ).fetchone()
+        email = (row or {}).get('email')
+        if not email or is_suppressed_send(email):
+            return
+        make_aws_smtp().send(subject=subject, body=html, to_addr=email)
+    except Exception:
+        print(traceback.format_exc())
+
+
+def send_transactional(person_id, subject, html):
+    """Fire-and-forget transactional email (receipt). Never raises to the
+    caller; the body is fully pre-rendered (no unsubscribe interpolation)."""
+    try:
+        threading.Thread(
+            target=_send_transactional_blocking,
+            kwargs=dict(person_id=person_id, subject=subject, html=html),
+            daemon=True,
+        ).start()
+    except Exception:
+        print(traceback.format_exc())
+
+
 def notify(
     person_id: int,
     event_kind: EventKind,
