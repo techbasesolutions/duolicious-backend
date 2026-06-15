@@ -63,3 +63,19 @@ def patch_notifications_preferences(
     optional so the client can flip one without resetting the others."""
     from service import notifications
     return notifications.patch_notification_preferences(req, s)
+
+
+@apost('/notifications/test')
+def post_notifications_test(s: t.SessionInfo):
+    """Fire a test push to the signed-in user's devices so they can confirm
+    push works on THIS device. Bypasses per-event prefs (it's a self-test)."""
+    if s.person_id is None:
+        return 'Not signed in', 401
+    from service import notifications
+    notifications.send_to_user_safe(
+        s.person_id,
+        title="Ahavah",
+        body="Push notifications are working.",
+        url="/",
+    )
+    return '', 204
