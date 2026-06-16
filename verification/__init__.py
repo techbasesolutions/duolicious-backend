@@ -192,9 +192,9 @@ def process_response(
         image_1_has_claimed_age         = json_obj['image_1_has_claimed_age']
         image_1_has_claimed_minimum_age = json_obj['image_1_has_claimed_minimum_age']
         image_1_has_claimed_ethnicity   = json_obj.get('image_1_has_claimed_ethnicity')
-        image_1_has_smiling_person      = json_obj['image_1_has_smiling_person']
-        image_1_has_eyebrow_touch       = json_obj['image_1_has_eyebrow_touch']
-        image_1_has_downward_thumb      = json_obj['image_1_has_downward_thumb']
+        # Gesture scores (smiling/eyebrow/thumb) are intentionally not read --
+        # the gesture gates were removed (commit 6084d26). They still come back
+        # in the response and land in raw_json for diagnostics.
         image_1_has_person_from_image_2 = json_obj.get('image_1_has_person_from_image_2')
         image_1_has_person_from_image_3 = json_obj.get('image_1_has_person_from_image_3')
         image_1_has_person_from_image_4 = json_obj.get('image_1_has_person_from_image_4')
@@ -212,9 +212,6 @@ def process_response(
         image_1_has_claimed_age         = float(image_1_has_claimed_age)
         image_1_has_claimed_minimum_age = float(image_1_has_claimed_minimum_age)
         image_1_has_claimed_ethnicity   = float(image_1_has_claimed_ethnicity) if image_1_has_claimed_ethnicity is not None else None
-        image_1_has_smiling_person      = float(image_1_has_smiling_person)
-        image_1_has_eyebrow_touch       = float(image_1_has_eyebrow_touch)
-        image_1_has_downward_thumb      = float(image_1_has_downward_thumb)
         image_1_has_person_from_image_2 = float(image_1_has_person_from_image_2) if image_1_has_person_from_image_2 is not None else None
         image_1_has_person_from_image_3 = float(image_1_has_person_from_image_3) if image_1_has_person_from_image_3 is not None else None
         image_1_has_person_from_image_4 = float(image_1_has_person_from_image_4) if image_1_has_person_from_image_4 is not None else None
