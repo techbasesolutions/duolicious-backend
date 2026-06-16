@@ -355,6 +355,57 @@ ORDER BY sc.position
 LIMIT %(n)s OFFSET %(o)s
 """
 
+# Q_MAP_MARKERS — viewport-clustered markers for /map. READ-ONLY: it reads the
+# viewer's existing search_cache (the full filtered match set Q_BUILD already
+# inserted, up to LIMIT 1000) -- it never rebuilds the cache. Scopes to the
+# viewport bbox (GiST index on person.coordinates), then grid-aggregates by
+# ST_SnapToGrid so the payload is bounded by viewport-area/cell-size, never by
+# user count. A cell with count=1 carries that user's detail so the frontend
+# draws a real avatar; count>1 is a count bubble at the cell centroid.
+Q_MAP_MARKERS = """
+WITH filtered AS (
+    SELECT
+        p.id,
+        p.uuid::text AS uuid,
+        p.name,
+        p.country,
+        p.coordinates::geometry AS geom,
+        (
+            SELECT ph.uuid FROM photo ph
+            WHERE ph.person_id = p.id
+            ORDER BY ph.position
+            LIMIT 1
+        ) AS photo_uuid
+    FROM search_cache sc
+    JOIN person p ON p.id = sc.prospect_person_id
+    WHERE sc.searcher_person_id = %(searcher_person_id)s
+      AND p.coordinates::geometry && ST_MakeEnvelope(
+          %(west)s, %(south)s, %(east)s, %(north)s, 4326)
+      AND p.show_my_location
+      AND COALESCE((p.ahavah_extra->>'showOnMap')::boolean, TRUE)
+),
+grid AS (
+    SELECT
+        ST_SnapToGrid(geom, %(cell)s, %(cell)s) AS cell,
+        count(*) AS cnt,
+        ST_Y(ST_Centroid(ST_Collect(geom))) AS lat,
+        ST_X(ST_Centroid(ST_Collect(geom))) AS lng,
+        (array_agg(id ORDER BY id))[1] AS rep_id
+    FROM filtered
+    GROUP BY ST_SnapToGrid(geom, %(cell)s, %(cell)s)
+)
+SELECT
+    g.lat,
+    g.lng,
+    g.cnt AS count,
+    CASE WHEN g.cnt = 1 THEN f.uuid END       AS uuid,
+    CASE WHEN g.cnt = 1 THEN f.name END       AS name,
+    CASE WHEN g.cnt = 1 THEN f.photo_uuid END AS photo_uuid,
+    CASE WHEN g.cnt = 1 THEN f.country END    AS country
+FROM grid g
+LEFT JOIN filtered f ON f.id = g.rep_id
+"""
+
 # Q_QUIZ_SEARCH removed in Task 0.3e — it was the Q&A-scored "first result"
 # query. With Q&A gone, the same answer is "the top of Q_CACHED_SEARCH" so
 # callers that previously asked for quiz-search now use uncached-search.

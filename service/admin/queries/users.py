@@ -166,34 +166,49 @@ Q_USER_WAITLIST_ANSWERS = """
      WHERE email = (SELECT email FROM person WHERE uuid = %(uuid)s::uuid)
 """
 
-# GET /admin/map — every activated user with a map position, for the admin
-# "Show everyone" view. Deliberately UNFILTERED: no verified-only gate, no
-# gender/age/skip/like exclusions, and it ignores the showOnMap privacy flag
-# (admin oversight sees opt-outs too — the flag is still returned so the UI
-# can mark them). Field names mirror Q_CACHED_SEARCH so the existing frontend
-# candidate adapter maps it the same way.
-Q_ADMIN_MAP_USERS = """
+# GET /admin/map — viewport-clustered markers for the admin "Show everyone"
+# view. Same grid-aggregation as the normal map's Q_MAP_MARKERS, but sourced
+# straight from `person` (ALL activated users) instead of a per-viewer cache:
+# UNFILTERED (no verified/gender/age/skip), and it ignores the showOnMap
+# privacy opt-out (admin oversight sees everyone). A cell with count=1 carries
+# that user's detail for an avatar pin; count>1 is a count bubble.
+Q_ADMIN_MAP_MARKERS = """
+WITH filtered AS (
     SELECT
-        p.uuid::text AS prospect_uuid,
+        p.id,
+        p.uuid::text AS uuid,
         p.name,
-        EXTRACT(YEAR FROM AGE(p.date_of_birth))::int AS age,
-        p.ahavah_verification_tier::text AS tier,
-        COALESCE(
-            (
-                SELECT json_agg(ph.uuid ORDER BY ph.position)
-                FROM photo ph
-                WHERE ph.person_id = p.id
-            ),
-            '[]'::json
-        )::jsonb AS photo_uuids,
-        p.location_short_friendly AS location,
         p.country,
-        COALESCE((p.ahavah_extra->>'showOnMap')::boolean, TRUE) AS show_on_map,
-        EXTRACT(EPOCH FROM NOW() - p.last_online_time)::int AS seconds_since_last_online,
-        ST_Y(p.coordinates::geometry) AS latitude,
-        ST_X(p.coordinates::geometry) AS longitude
+        p.coordinates::geometry AS geom,
+        (
+            SELECT ph.uuid FROM photo ph
+            WHERE ph.person_id = p.id
+            ORDER BY ph.position
+            LIMIT 1
+        ) AS photo_uuid
     FROM person p
     WHERE p.activated = TRUE
-      AND p.coordinates IS NOT NULL
-    ORDER BY p.last_online_time DESC
+      AND p.coordinates::geometry && ST_MakeEnvelope(
+          %(west)s, %(south)s, %(east)s, %(north)s, 4326)
+),
+grid AS (
+    SELECT
+        ST_SnapToGrid(geom, %(cell)s, %(cell)s) AS cell,
+        count(*) AS cnt,
+        ST_Y(ST_Centroid(ST_Collect(geom))) AS lat,
+        ST_X(ST_Centroid(ST_Collect(geom))) AS lng,
+        (array_agg(id ORDER BY id))[1] AS rep_id
+    FROM filtered
+    GROUP BY ST_SnapToGrid(geom, %(cell)s, %(cell)s)
+)
+SELECT
+    g.lat,
+    g.lng,
+    g.cnt AS count,
+    CASE WHEN g.cnt = 1 THEN f.uuid END       AS uuid,
+    CASE WHEN g.cnt = 1 THEN f.name END       AS name,
+    CASE WHEN g.cnt = 1 THEN f.photo_uuid END AS photo_uuid,
+    CASE WHEN g.cnt = 1 THEN f.country END    AS country
+FROM grid g
+LEFT JOIN filtered f ON f.id = g.rep_id
 """

@@ -294,6 +294,20 @@ def post_finish_onboarding(s: t.SessionInfo):
 # Q&A subsystem strip per audit. The `person.post_answer` / `person.delete_answer`
 # methods will be removed in Task 0.3f.
 
+@aget('/map/markers')
+def get_map_markers(s: t.SessionInfo):
+    bbox_raw = request.args.get('bbox', '')
+    parts = bbox_raw.split(',')
+    if len(parts) != 4:
+        return 'bbox must be south,west,north,east', 400
+    try:
+        south, west, north, east = (float(x) for x in parts)
+        zoom = int(request.args.get('zoom', '1'))
+    except ValueError:
+        return 'invalid bbox or zoom', 400
+    return search.get_map_markers(s, (south, west, north, east), zoom)
+
+
 @aget('/search')
 def get_search(s: t.SessionInfo):
     n = request.args.get('n')

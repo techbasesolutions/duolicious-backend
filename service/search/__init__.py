@@ -18,6 +18,7 @@ from database import api_tx
 from typing import Tuple
 from service.search.sql import (
     Q_CACHED_SEARCH,
+    Q_MAP_MARKERS,
     Q_SEARCH_PREFERENCE,
     Q_UNCACHED_SEARCH_1,
     Q_UNCACHED_SEARCH_2,
@@ -207,6 +208,39 @@ def get_search(
 
         else:
             raise Exception(f'Unexpected search type: {search_type}')
+
+
+def cell_for_zoom(zoom: int) -> float:
+    """Grid cell size in degrees for a Leaflet zoom level (~64px cells). Cells
+    shrink as you zoom in, so clusters split into individual pins. Zoom is
+    clamped to the map's [1, 18] range."""
+    z = max(1, min(18, zoom))
+    return 90.0 / (2 ** z)
+
+
+def get_map_markers(
+    s: t.SessionInfo,
+    bbox: Tuple[float, float, float, float],
+    zoom: int,
+):
+    """Viewport-clustered map markers for the current viewer. Reads the
+    viewer's existing search_cache (built by /search) scoped to the bbox and
+    grid-aggregated. Read-only -- does NOT rebuild the cache."""
+    if s.person_id is None:
+        return '', 500
+
+    south, west, north, east = bbox
+    params = dict(
+        searcher_person_id=s.person_id,
+        south=south, west=west, north=north, east=east,
+        cell=cell_for_zoom(zoom),
+    )
+
+    with api_tx('READ COMMITTED') as tx:
+        tx.execute('SET LOCAL statement_timeout = 10000')  # 10 seconds
+        rows = tx.execute(Q_MAP_MARKERS, params).fetchall()
+
+    return {'markers': [dict(r) for r in rows]}
 
 
 def get_feed(s: t.SessionInfo, before: datetime):
