@@ -20,7 +20,7 @@ from database import api_tx
 from emails.base import is_suppressed_send
 from emails.launch import launch_html, SUBJECT, FROM_ADDR
 from service.config import WEB_BASE_URL
-from service.unsubscribe import make_url
+from service.unsubscribe import make_token, make_url
 from smtp import make_aws_smtp
 
 
@@ -36,8 +36,15 @@ def _targets() -> list[str]:
         return [r["email"] for r in tx.execute(_Q_TARGETS).fetchall()]
 
 
+def _claim_url(email: str) -> str:
+    # The claim landing page is /claim/<token> (FE route). make_url() builds
+    # the /u/<token> UNSUBSCRIBE path, so it is NOT reusable here -- build the
+    # claim URL directly from the signed token.
+    return f"{WEB_BASE_URL.rstrip('/')}/claim/{make_token('claim', email)}"
+
+
 def _send_one(email: str) -> None:
-    claim_url = make_url("claim", email, WEB_BASE_URL)
+    claim_url = _claim_url(email)
     unsub = make_url("waitlist", email, WEB_BASE_URL)
     make_aws_smtp().send(
         subject=SUBJECT,
@@ -72,7 +79,7 @@ def main() -> None:
     if not args.send:
         # DRY RUN: render one sample to a file + list recipients, send nothing.
         sample = targets[0] if targets else "sample@ahavah.app"
-        claim_url = make_url("claim", sample, WEB_BASE_URL)
+        claim_url = _claim_url(sample)
         with open("/tmp/launch_sample.html", "w", encoding="utf-8") as f:
             f.write(launch_html(sample, claim_url))
         print(f"DRY RUN -- {len(targets)} recipient(s):")
