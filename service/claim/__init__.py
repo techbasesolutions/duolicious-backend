@@ -46,7 +46,16 @@ _Q_SET_COORDS = """
     INSERT INTO onboardee (email, coordinates)
     SELECT %(email)s, coordinates FROM location
     WHERE country = %(country_name)s
-    ORDER BY long_friendly LIMIT 1
+    -- Prefer a location in the waitlist `region` (state/province) so people
+    -- place on the map by state rather than all stacking on the country's
+    -- first-alphabetical city. Falls back to that city when region is blank
+    -- or doesn't resolve.
+    ORDER BY
+      CASE WHEN %(region)s <> ''
+                AND long_friendly ILIKE '%%, ' || %(region)s || ', %%'
+           THEN 0 ELSE 1 END,
+      long_friendly
+    LIMIT 1
     ON CONFLICT (email) DO UPDATE SET coordinates = EXCLUDED.coordinates
 """
 
@@ -108,7 +117,9 @@ def claim(tx, token: str) -> dict | None:
 
         country_name = _country_name(answers.get("country"))
         if country_name:
-            tx.execute(_Q_SET_COORDS, dict(email=email, country_name=country_name))
+            region = str(answers.get("region") or "").strip()
+            tx.execute(_Q_SET_COORDS, dict(
+                email=email, country_name=country_name, region=region))
 
         extra = {k: answers[k] for k in _AHAVAH_EXTRA_KEYS if answers.get(k)}
         if extra:
