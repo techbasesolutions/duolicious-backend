@@ -713,13 +713,13 @@ def _credit_subscription_stipend(
 
 
 def _amount_label(obj) -> Optional[str]:
-    """'9.99 USD' from a Stripe session's amount_total (cents) + currency.
-    None when the amount is absent (so the receipt copy just omits the line)."""
+    """'$9.99' from a Stripe session's amount_total (cents). USD only (the
+    app's single currency); matches the token-history receipt format. None
+    when the amount is absent (so the receipt copy just omits the line)."""
     amt = obj.get('amount_total') if isinstance(obj, dict) else None
     if amt is None:
         return None
-    cur = (obj.get('currency') or 'usd').upper()
-    return f"{amt / 100:.2f} {cur}"
+    return f"${amt / 100:.2f}"
 
 
 def _person_uuid_for_id(person_id: int) -> Optional[str]:
