@@ -316,7 +316,12 @@ SELECT
     -- when the key is absent (legacy users + new accounts). Frontend
     -- /map filters markers on this; /discover ignores it (the same row
     -- is allowed to appear in the swipe deck).
-    COALESCE((p.ahavah_extra->>'showOnMap')::boolean, TRUE) AS show_on_map
+    COALESCE((p.ahavah_extra->>'showOnMap')::boolean, TRUE) AS show_on_map,
+    -- Precise map position (city-level) from person.coordinates. NULL when the
+    -- prospect has no stored point; the FE map-avatar then falls back to the
+    -- country centroid. GEOGRAPHY(Point,4326) -> geometry cast for ST_X/ST_Y.
+    ST_Y(p.coordinates::geometry) AS latitude,
+    ST_X(p.coordinates::geometry) AS longitude
 FROM search_cache sc
 JOIN person p ON p.id = sc.prospect_person_id
 WHERE sc.searcher_person_id = %(searcher_person_id)s
