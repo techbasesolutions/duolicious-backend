@@ -228,7 +228,9 @@ prospect_pool AS (
       )
       AND (
           cardinality(%(assemblies)s::TEXT[]) = 0
-          OR p.ahavah_extra->>'assembly' = ANY(%(assemblies)s::TEXT[])
+          -- assembly is a multi-value array (ahavah_extra.assembly). Match on
+          -- array overlap, same scalar-vs-array fix as the intent filter above.
+          OR p.ahavah_extra->'assembly' ?| %(assemblies)s::TEXT[]
       )
       AND (
           cardinality(%(torah_levels)s::TEXT[]) = 0
