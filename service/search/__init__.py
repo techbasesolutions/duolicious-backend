@@ -32,6 +32,13 @@ class ClubHttpArg:
     club: str | None
 
 
+# "Local only" distance cap (metres) for the discover distance gate. Applied
+# only when a searcher's intent includes "local-only" and not
+# "open-to-relocation". ~100 miles -- generous enough not to empty the deck in
+# low-density areas while still meaning "same region, not long-distance".
+LOCAL_RADIUS_M = 160_000
+
+
 def _uncached_search_results(
     tx,
     searcher_person_id: int,
@@ -71,6 +78,7 @@ def _uncached_search_results(
         health_tags=health_tags or [],
         age_min=age_min,
         age_max=age_max,
+        local_radius_m=LOCAL_RADIUS_M,
     )
 
     try:

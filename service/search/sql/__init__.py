@@ -78,7 +78,12 @@ WITH searcher_prefs AS (
             (SELECT open_to_long_distance FROM search_preference_open_to_long_distance
              WHERE person_id = %(searcher_person_id)s),
             TRUE
-        ) AS open_to_long_distance
+        ) AS open_to_long_distance,
+        -- Searcher's own location intent + point, for the distance gate below.
+        (SELECT ahavah_extra->'intent' FROM person
+          WHERE id = %(searcher_person_id)s) AS searcher_intent,
+        (SELECT coordinates FROM person
+          WHERE id = %(searcher_person_id)s) AS searcher_coords
 ),
 prospect_pool AS (
     SELECT
@@ -116,6 +121,21 @@ prospect_pool AS (
       AND (
           cardinality(sp.preferred_countries) = 0
           OR p.country = ANY(sp.preferred_countries)
+      )
+
+      -- Distance gate (functional local-only / open-to-relocation): when the
+      -- searcher's intent includes "local-only", restrict the pool to
+      -- prospects within %(local_radius_m)s metres. "open-to-relocation"
+      -- overrides it (distance never blocks), and an absent/legacy intent or
+      -- a missing point on either side also means no cap (fail open — never
+      -- silently empty the deck).
+      AND (
+          sp.searcher_intent IS NULL
+          OR NOT (sp.searcher_intent ? 'local-only')
+          OR (sp.searcher_intent ? 'open-to-relocation')
+          OR sp.searcher_coords IS NULL
+          OR p.coordinates IS NULL
+          OR ST_DWithin(sp.searcher_coords, p.coordinates, %(local_radius_m)s)
       )
 
       -- Language overlap: applied only if user has expressed preferences
@@ -181,7 +201,11 @@ prospect_pool AS (
 
       AND (
           cardinality(%(intents)s::TEXT[]) = 0
-          OR p.ahavah_extra->>'intent' = ANY(%(intents)s::TEXT[])
+          -- intent is a multi-value array (ahavah_extra.intent). Match when the
+          -- prospect's array overlaps any selected filter value. The old
+          -- ->>'intent' = ANY(...) scalar test silently stopped matching once
+          -- intent became an array.
+          OR p.ahavah_extra->'intent' ?| %(intents)s::TEXT[]
       )
       AND (
           cardinality(%(marital_statuses)s::TEXT[]) = 0
