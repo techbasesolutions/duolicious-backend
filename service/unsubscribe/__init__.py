@@ -21,7 +21,7 @@ import os
 from urllib.parse import quote
 
 
-_SCOPES = ("waitlist", "beta", "notifications")
+_SCOPES = ("waitlist", "beta", "notifications", "claim")
 
 
 def _secret() -> bytes:

@@ -244,6 +244,22 @@ def post_sign_out_everywhere(s: t.SessionInfo):
 def post_check_session_token(s: t.SessionInfo):
     return person.post_check_session_token(s)
 
+# Launch claim link. Unauthenticated -- the signed `claim` token (emailed to a
+# waitlist registrant) IS the auth. Logs them in + pre-fills an onboardee from
+# their waitlist answers. See service/claim.
+from service.claim import claim as _claim
+
+@post('/claim')
+def post_claim():
+    token = (request.get_json(silent=True) or {}).get('token')
+    if not token:
+        return {'error': 'missing_token'}, 400
+    with api_tx() as tx:
+        result = _claim(tx, token)
+    if result is None:
+        return {'error': 'invalid_token'}, 400
+    return result
+
 @aget(
     '/search-locations',
     expected_onboarding_status=None,
