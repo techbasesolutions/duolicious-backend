@@ -3161,7 +3161,12 @@ FROM
 
 Q_HAS_GOLD = """
 SELECT
-    has_gold
+    -- "Gold" gates the premium privacy toggles. In Ahavah the only path to
+    -- gold is the Stripe Identity verification ladder (ahavah_verification_tier
+    -- = 'gold'); the legacy Duolicious `has_gold` boolean has no purchase flow.
+    -- The FE already unlocks these toggles on either signal, so the backend
+    -- gate must match or verified-gold users see unlocked switches that 403.
+    (has_gold OR ahavah_verification_tier = 'gold') AS has_gold
 FROM
     person
 WHERE
