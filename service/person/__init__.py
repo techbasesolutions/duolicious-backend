@@ -36,7 +36,6 @@ from antiabuse.antispam.signupemail import (
 from antiabuse.lodgereport import (
     skip_by_uuid,
 )
-from antiabuse.firehol import firehol as _firehol_impl
 
 # Phase W staging: the FireHOL multiprocessing-based block-list helper
 # has a child-process fragility that intermittently kills /request-otp
@@ -61,6 +60,13 @@ if _os.environ.get("DUO_DISABLE_FIREHOL", "false").lower() in ("true", "1", "yes
             return False
     firehol = _FireholBypass()
 else:
+    # Import here, not at module top, so the FireHOL multiprocessing child --
+    # which loads the blocklists into a ~1GB-per-worker pytricia trie -- is only
+    # spawned when the blocklist is actually enabled. The old top-level import
+    # created it unconditionally, so every gunicorn worker forked a ~1.2GB child
+    # even with the bypass active (DUO_DISABLE_FIREHOL replaced the lookup but
+    # never stopped the process).
+    from antiabuse.firehol import firehol as _firehol_impl
     firehol = _firehol_impl
 import blurhash
 import numpy
