@@ -237,8 +237,12 @@ def process_response(
     # ethnicity_truthiness_threshold = 0.4
     # photo_truthiness_threshold = 0.9
 
-    # These settings are tuned to gpt-4o-2024-08-06
-    photo_truthiness_threshold = 0.9
+    # These settings are tuned to gpt-4o-2024-08-06. The face-match threshold
+    # was lowered 0.9 -> 0.75: genuine same-person selfies score ~0.8 on this
+    # model, so 0.9 rejected real users (the whole launch cohort matched at
+    # ~0.8). 0.75 still requires a confident same-person match; Gold (Stripe
+    # Identity) remains the strong identity tier.
+    photo_truthiness_threshold = 0.75
 
     is_uuid_verified_seq = [
         (image_1_has_person_from_image_2 or 0.0) >= photo_truthiness_threshold,
@@ -291,14 +295,13 @@ def process_response(
     if image_1_has_claimed_minimum_age < minimum_age_truthiness_threshold:
         return failure(V_AGE, response_str)
 
-    if image_1_has_smiling_person < general_truthiness_threshold:
-        return failure(V_SMILING, response_str)
-
-    if image_1_has_eyebrow_touch < general_truthiness_threshold:
-        return failure(V_EYEBROW, response_str)
-
-    if image_1_has_downward_thumb < general_truthiness_threshold:
-        return failure(V_THUMBS_DOWN, response_str)
+    # Gesture liveness (smile / eyebrow-touch / thumbs-down) is no longer
+    # gated on: the FE bronze flow never instructs users to perform any
+    # gesture, so requiring all three rejected every real user with a
+    # "Photo declined". Bronze now verifies what the UI actually promises --
+    # a real, unedited photo of one person matching their profile photos.
+    # The classifier still returns the gesture scores in raw_json; we simply
+    # don't reject on them.
 
     return success(
         verified_uuids=verified_uuids,
