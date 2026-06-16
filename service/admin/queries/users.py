@@ -165,3 +165,35 @@ Q_USER_WAITLIST_ANSWERS = """
       FROM waitlist_signup
      WHERE email = (SELECT email FROM person WHERE uuid = %(uuid)s::uuid)
 """
+
+# GET /admin/map — every activated user with a map position, for the admin
+# "Show everyone" view. Deliberately UNFILTERED: no verified-only gate, no
+# gender/age/skip/like exclusions, and it ignores the showOnMap privacy flag
+# (admin oversight sees opt-outs too — the flag is still returned so the UI
+# can mark them). Field names mirror Q_CACHED_SEARCH so the existing frontend
+# candidate adapter maps it the same way.
+Q_ADMIN_MAP_USERS = """
+    SELECT
+        p.uuid::text AS prospect_uuid,
+        p.name,
+        EXTRACT(YEAR FROM AGE(p.date_of_birth))::int AS age,
+        p.ahavah_verification_tier::text AS tier,
+        COALESCE(
+            (
+                SELECT json_agg(ph.uuid ORDER BY ph.position)
+                FROM photo ph
+                WHERE ph.person_id = p.id
+            ),
+            '[]'::json
+        )::jsonb AS photo_uuids,
+        p.location_short_friendly AS location,
+        p.country,
+        COALESCE((p.ahavah_extra->>'showOnMap')::boolean, TRUE) AS show_on_map,
+        EXTRACT(EPOCH FROM NOW() - p.last_online_time)::int AS seconds_since_last_online,
+        ST_Y(p.coordinates::geometry) AS latitude,
+        ST_X(p.coordinates::geometry) AS longitude
+    FROM person p
+    WHERE p.activated = TRUE
+      AND p.coordinates IS NOT NULL
+    ORDER BY p.last_online_time DESC
+"""

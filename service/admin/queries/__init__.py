@@ -39,6 +39,7 @@ from service.admin.queries.users import (
     Q_USER_REFERRAL_STATS,
     Q_USER_AUDIT_LOG,
     Q_USER_WAITLIST_ANSWERS,
+    Q_ADMIN_MAP_USERS,
 )
 
 from service.admin.queries.cohorts import (
