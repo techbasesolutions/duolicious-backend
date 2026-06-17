@@ -75,7 +75,11 @@ Q_COUNTRY_LOCATION = """
 SELECT long_friendly
 FROM location
 WHERE country = %(country)s
-ORDER BY long_friendly
+ORDER BY coordinates::geometry <-> (
+    SELECT ST_Centroid(ST_Collect(coordinates::geometry))
+    FROM location
+    WHERE country = %(country)s
+)
 LIMIT 1
 """
 
