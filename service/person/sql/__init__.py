@@ -1024,21 +1024,25 @@ WITH prospect AS (
     FROM photo
     JOIN prospect
     ON   prospect.id = photo.person_id
+    WHERE photo.moderation_status = 'approved'
 ), photo_extra_exts AS (
     SELECT COALESCE(json_agg(photo.extra_exts ORDER BY position), '[]'::json) AS j
     FROM photo
     JOIN prospect
     ON   prospect.id = photo.person_id
+    WHERE photo.moderation_status = 'approved'
 ), photo_blurhashes AS (
     SELECT COALESCE(json_agg(photo.blurhash ORDER BY position), '[]'::json) AS j
     FROM photo
     JOIN prospect
     ON   prospect.id = photo.person_id
+    WHERE photo.moderation_status = 'approved'
 ), photo_verifications AS (
     SELECT COALESCE(json_agg(photo.verified ORDER BY position), '[]'::json) AS j
     FROM photo
     JOIN prospect
     ON   prospect.id = photo.person_id
+    WHERE photo.moderation_status = 'approved'
 ), audio_bio_uuid AS (
     SELECT audio.uuid AS j
     FROM   audio

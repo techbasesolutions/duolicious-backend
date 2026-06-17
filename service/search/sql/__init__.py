@@ -314,6 +314,7 @@ SELECT
             SELECT json_agg(ph.uuid ORDER BY ph.position)
             FROM photo ph
             WHERE ph.person_id = p.id
+              AND ph.moderation_status = 'approved'
         ),
         '[]'::json
     )::jsonb AS photo_uuids,
@@ -324,6 +325,7 @@ SELECT
         SELECT ph.uuid
         FROM photo ph
         WHERE ph.person_id = p.id
+          AND ph.moderation_status = 'approved'
         ORDER BY ph.position
         LIMIT 1
     ) AS profile_photo_uuid,
@@ -378,6 +380,7 @@ Q_MAP_MARKERS = """
         (
             SELECT ph.uuid FROM photo ph
             WHERE ph.person_id = p.id
+              AND ph.moderation_status = 'approved'
             ORDER BY ph.position
             LIMIT 1
         ) AS photo_uuid

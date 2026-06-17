@@ -151,6 +151,7 @@ SELECT
             SELECT json_agg(ph.uuid ORDER BY ph.position)
             FROM photo ph
             WHERE ph.person_id = peer.id
+              AND ph.moderation_status = 'approved'
         ),
         '[]'::json
     )::jsonb AS peer_photo_uuids,
@@ -187,6 +188,7 @@ SELECT
             SELECT json_agg(ph.uuid ORDER BY ph.position)
             FROM photo ph
             WHERE ph.person_id = liker.id
+              AND ph.moderation_status = 'approved'
         ),
         '[]'::json
     )::jsonb AS liker_photo_uuids,
@@ -238,6 +240,7 @@ SELECT
             SELECT json_agg(ph.uuid ORDER BY ph.position)
             FROM photo ph
             WHERE ph.person_id = peer.id
+              AND ph.moderation_status = 'approved'
         ),
         '[]'::json
     )::jsonb AS peer_photo_uuids,

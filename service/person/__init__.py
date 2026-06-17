@@ -842,7 +842,6 @@ def get_me(
 
     out = {
         'name': row['person_name'],
-        'person_id': row['person_id'],
         # The chat WebSocket SASL flow needs the bare uuid; /check-otp only
         # returns person_uuid for accounts that already had a person row at
         # OTP time (i.e. NOT fresh onboardees). Returning it here lets the
@@ -856,6 +855,10 @@ def get_me(
         # /settings/account renders these as the current values; without
         # them we showed hardcoded fakes ("ehud@example.com", etc.).
         out['email'] = row['email']
+        # Internal sequential integer person.id — only the authed /me path
+        # exposes it. The public /me/<uuid> path (include_email=False) must
+        # not leak it to an attacker who only knows a UUID.
+        out['person_id'] = row['person_id']
     return out
 
 def get_prospect_profile(s: Optional[t.SessionInfo], prospect_uuid):
