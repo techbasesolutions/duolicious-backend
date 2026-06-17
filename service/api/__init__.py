@@ -296,16 +296,7 @@ def post_finish_onboarding(s: t.SessionInfo):
 
 @aget('/map/markers')
 def get_map_markers(s: t.SessionInfo):
-    bbox_raw = request.args.get('bbox', '')
-    parts = bbox_raw.split(',')
-    if len(parts) != 4:
-        return 'bbox must be south,west,north,east', 400
-    try:
-        south, west, north, east = (float(x) for x in parts)
-        zoom = int(request.args.get('zoom', '1'))
-    except ValueError:
-        return 'invalid bbox or zoom', 400
-    return search.get_map_markers(s, (south, west, north, east), zoom)
+    return search.get_map_markers(s)
 
 
 @aget('/search')

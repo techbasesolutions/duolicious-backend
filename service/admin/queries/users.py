@@ -166,20 +166,17 @@ Q_USER_WAITLIST_ANSWERS = """
      WHERE email = (SELECT email FROM person WHERE uuid = %(uuid)s::uuid)
 """
 
-# GET /admin/map — viewport-clustered markers for the admin "Show everyone"
-# view. Same grid-aggregation as the normal map's Q_MAP_MARKERS, but sourced
-# straight from `person` (ALL activated users) instead of a per-viewer cache:
-# UNFILTERED (no verified/gender/age/skip), and it ignores the showOnMap
-# privacy opt-out (admin oversight sees everyone). A cell with count=1 carries
-# that user's detail for an avatar pin; count>1 is a count bubble.
+# GET /admin/map — every activated user as an individual point, for the admin
+# "Show everyone" view. UNFILTERED (no verified/gender/age/skip) and ignores
+# the showOnMap opt-out (admin oversight sees everyone). The frontend clusters
+# + spiderfies client-side, same as the normal map.
 Q_ADMIN_MAP_MARKERS = """
-WITH filtered AS (
     SELECT
-        p.id,
         p.uuid::text AS uuid,
         p.name,
         p.country,
-        p.coordinates::geometry AS geom,
+        ST_Y(p.coordinates::geometry) AS lat,
+        ST_X(p.coordinates::geometry) AS lng,
         (
             SELECT ph.uuid FROM photo ph
             WHERE ph.person_id = p.id
@@ -188,27 +185,4 @@ WITH filtered AS (
         ) AS photo_uuid
     FROM person p
     WHERE p.activated = TRUE
-      AND p.coordinates::geometry && ST_MakeEnvelope(
-          %(west)s, %(south)s, %(east)s, %(north)s, 4326)
-),
-grid AS (
-    SELECT
-        ST_SnapToGrid(geom, %(cell)s, %(cell)s) AS cell,
-        count(*) AS cnt,
-        ST_Y(ST_Centroid(ST_Collect(geom))) AS lat,
-        ST_X(ST_Centroid(ST_Collect(geom))) AS lng,
-        (array_agg(id ORDER BY id))[1] AS rep_id
-    FROM filtered
-    GROUP BY ST_SnapToGrid(geom, %(cell)s, %(cell)s)
-)
-SELECT
-    g.lat,
-    g.lng,
-    g.cnt AS count,
-    CASE WHEN g.cnt = 1 THEN f.uuid END       AS uuid,
-    CASE WHEN g.cnt = 1 THEN f.name END       AS name,
-    CASE WHEN g.cnt = 1 THEN f.photo_uuid END AS photo_uuid,
-    CASE WHEN g.cnt = 1 THEN f.country END    AS country
-FROM grid g
-LEFT JOIN filtered f ON f.id = g.rep_id
 """
