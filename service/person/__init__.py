@@ -826,7 +826,8 @@ def get_me(
                 name AS person_name,
                 uuid::TEXT AS person_uuid,
                 email,
-                primary_language
+                primary_language,
+                COALESCE((ahavah_extra->>'citySet')::boolean, FALSE) AS city_set
             FROM person
             WHERE
                 (%(person_id_as_int)s::INT IS NOT NULL AND id = %(person_id_as_int)s::INT)
@@ -849,6 +850,9 @@ def get_me(
         'person_uuid': row['person_uuid'],
         'primary_language': row.get('primary_language'),
         'personality': [],   # populated when matching system relands in Phase 1+
+        # Whether the user has picked a real city (vs sitting on their
+        # country-centroid default). Drives the "set your city" nudge banner.
+        'citySet': row.get('city_set', False),
     }
     if include_email:
         # Account-management surface fields. The frontend's
