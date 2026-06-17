@@ -343,11 +343,17 @@ SELECT
     -- /map filters markers on this; /discover ignores it (the same row
     -- is allowed to appear in the swipe deck).
     COALESCE((p.ahavah_extra->>'showOnMap')::boolean, TRUE) AS show_on_map,
-    -- Precise map position (city-level) from person.coordinates. NULL when the
-    -- prospect has no stored point; the FE map-avatar then falls back to the
-    -- country centroid. GEOGRAPHY(Point,4326) -> geometry cast for ST_X/ST_Y.
-    ST_Y(p.coordinates::geometry) AS latitude,
-    ST_X(p.coordinates::geometry) AS longitude
+    -- City-level map position. Gated on the SAME opt-outs as /map/markers
+    -- (show_my_location + showOnMap) so a prospect who removed themselves from
+    -- the map doesn't have their coordinate handed to every searcher. NULL
+    -- when opted out or no stored point. Same `(SELECT ... WHERE)` pattern as
+    -- `location` above. GEOGRAPHY(Point,4326) -> geometry for ST_X/ST_Y.
+    (SELECT ST_Y(p.coordinates::geometry)
+       WHERE p.show_my_location
+         AND COALESCE((p.ahavah_extra->>'showOnMap')::boolean, TRUE)) AS latitude,
+    (SELECT ST_X(p.coordinates::geometry)
+       WHERE p.show_my_location
+         AND COALESCE((p.ahavah_extra->>'showOnMap')::boolean, TRUE)) AS longitude
 FROM search_cache sc
 JOIN person p ON p.id = sc.prospect_person_id
 WHERE sc.searcher_person_id = %(searcher_person_id)s

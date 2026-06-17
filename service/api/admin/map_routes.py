@@ -11,7 +11,7 @@ from __future__ import annotations
 import duotypes as t
 
 from service.api.decorators import aget
-from service.admin import require_admin
+from service.admin import require_admin, record_audit
 from service.admin.queries import Q_ADMIN_MAP_MARKERS
 from database import api_tx
 
@@ -22,4 +22,7 @@ def get_admin_map(s: t.SessionInfo):
     with api_tx('read committed') as tx:
         tx.execute('SET LOCAL statement_timeout = 10000')  # 10 seconds
         markers = [dict(r) for r in tx.execute(Q_ADMIN_MAP_MARKERS).fetchall()]
+        # Audit: this read exposes EVERY user's location + face, including
+        # those who opted out of the map. A strong capability -- log each use.
+        record_audit(tx, s, 'admin_map_view', metadata={'count': len(markers)})
     return {'markers': markers}

@@ -25,10 +25,15 @@ _SCOPES = ("waitlist", "beta", "notifications", "claim")
 
 
 def _secret() -> bytes:
-    """HMAC key. Falls back to a dev-only constant if SESSION_TOKEN_SECRET
-    is unset (it should always be set in prod — compose.production.yml
-    requires it via `${VAR:?...}`)."""
-    return (os.environ.get("SESSION_TOKEN_SECRET") or "dev-only-unsub-secret").encode()
+    """HMAC key. Fails CLOSED if SESSION_TOKEN_SECRET is unset. These tokens
+    can mint a signed-in session (the `claim` scope), so a known dev-fallback
+    key would let an attacker forge them -- never silently sign with a weak
+    key. Prod sets the var via compose's `${VAR:?...}`; this guards every
+    other entrypoint (workers, one-off scripts) too."""
+    secret = os.environ.get("SESSION_TOKEN_SECRET")
+    if not secret:
+        raise RuntimeError("SESSION_TOKEN_SECRET is required to sign/verify tokens")
+    return secret.encode()
 
 
 def _sign(scope: str, email: str) -> str:

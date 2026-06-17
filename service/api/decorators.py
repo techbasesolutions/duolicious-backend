@@ -113,7 +113,11 @@ def _get_remote_address() -> str:
     """
     return mock_ip_address() or request.remote_addr or "127.0.0.1"
 
-CORS_ORIGINS = os.environ.get('DUO_CORS_ORIGINS', '*')
+# Fail CLOSED: default to no allowed origins. With supports_credentials=True
+# (below), a '*' default makes flask-cors REFLECT any request origin and allow
+# credentialed cross-site reads -- so an env that forgets to set
+# DUO_CORS_ORIGINS must get zero CORS, not wildcard. Prod sets this explicitly.
+CORS_ORIGINS = os.environ.get('DUO_CORS_ORIGINS', '')
 REDIS_HOST: str = os.environ.get("DUO_REDIS_HOST", "redis")
 REDIS_PORT: int = int(os.environ.get("DUO_REDIS_PORT", 6379))
 
