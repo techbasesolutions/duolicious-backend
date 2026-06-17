@@ -70,13 +70,9 @@ def perform(tx, viewer_uuid: Union[UUID, str], target_uuid: Union[UUID, str]) ->
     The caller owns the transaction via `with api_tx() as tx:` so the
     debit, liked-upsert, and match-upsert commit atomically.
     """
-    debit(
-        tx, str(viewer_uuid), COST,
-        reason='super_like',
-        metadata={'super_liked_person_id': str(target_uuid)},
-    )
-
-    # Resolve uuids → person.id (liked table keys on INT).
+    # Resolve + validate the target BEFORE debiting, so a bogus target never
+    # touches the wallet -- don't rely on the api_tx rolling the debit back.
+    # (Mirrors the validate-first ordering in reveal.py.)
     viewer_row = tx.execute(
         _Q_RESOLVE_UUID_TO_ID, dict(uuid=str(viewer_uuid))
     ).fetchone()
@@ -84,12 +80,15 @@ def perform(tx, viewer_uuid: Union[UUID, str], target_uuid: Union[UUID, str]) ->
         _Q_RESOLVE_UUID_TO_ID, dict(uuid=str(target_uuid))
     ).fetchone()
     if not viewer_row or not target_row:
-        # Defensive — debit already happened, but if the target id is
-        # bogus we still want to avoid writing a half-baked liked row.
-        # The api_tx will roll the debit back on the raise.
         raise ValueError("unknown person uuid")
     viewer_id = viewer_row['id']
     target_id = target_row['id']
+
+    debit(
+        tx, str(viewer_uuid), COST,
+        reason='super_like',
+        metadata={'super_liked_person_id': str(target_uuid)},
+    )
 
     tx.execute(
         _Q_UPSERT_SUPER_LIKE,
