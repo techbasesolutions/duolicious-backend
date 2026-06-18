@@ -873,11 +873,19 @@ def get_prospect_profile(s: Optional[t.SessionInfo], prospect_uuid):
 
     with api_tx('READ COMMITTED') as tx:
         api_row = tx.execute(Q_SELECT_PROSPECT_PROFILE, params).fetchone()
-        if not api_row:
-            return '', 404
-
-        profile = api_row.get('j')
+        profile = api_row.get('j') if api_row else None
         if not profile:
+            # Hidden-only fallback: a prospect that would be visible except for
+            # hide_me_from_strangers gets a truncated profile (signed-in viewers
+            # only). Every other miss -- deactivated, passed-you, verification,
+            # anonymous -- stays 404.
+            if s is not None:
+                limited_row = tx.execute(
+                    Q_SELECT_PROSPECT_PROFILE_LIMITED, params
+                ).fetchone()
+                limited = limited_row.get('j') if limited_row else None
+                if limited:
+                    return limited
             return '', 404
 
     if s is None:

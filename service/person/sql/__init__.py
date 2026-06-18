@@ -1224,6 +1224,67 @@ WHERE
     EXISTS (SELECT 1 FROM prospect)
 """
 
+
+# Truncated fallback for hidden members. Runs ONLY after the full
+# Q_SELECT_PROSPECT_PROFILE returns nothing, and matches ONLY when the sole
+# barrier is `hide_me_from_strangers` (still activated, verification level OK,
+# hasn't passed/blocked the viewer, viewer is signed in). Every other miss
+# (deactivated, passed-you, verification-gated, anonymous) keeps returning 404.
+# Returns a small `j` with `limited: true` so the frontend renders a truncated
+# profile (primary photo + name/age + verified badge + "looking for") rather
+# than a dead-end. Deliberately omits location, bio, and all detail sections.
+Q_SELECT_PROSPECT_PROFILE_LIMITED = """
+WITH prospect AS (
+    SELECT
+        p.*,
+        (SELECT EXTRACT(YEAR FROM AGE(p.date_of_birth))::SMALLINT
+          WHERE p.show_my_age) AS age
+    FROM person AS p
+    WHERE p.uuid = uuid_or_null(%(prospect_uuid)s::TEXT)
+      AND p.activated
+      AND p.hide_me_from_strangers
+      AND %(person_id)s IS NOT NULL
+      AND p.privacy_verification_level_id <= (
+          SELECT verification_level_id FROM person WHERE id = %(person_id)s
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM skipped
+          WHERE subject_person_id = p.id
+            AND object_person_id  = %(person_id)s
+      )
+)
+SELECT json_build_object(
+    'limited',                  TRUE,
+    'person_id',                (SELECT id   FROM prospect),
+    'name',                     (SELECT name FROM prospect),
+    'age',                      (SELECT age  FROM prospect),
+    'photo_uuids', COALESCE((
+        SELECT json_agg(t.uuid) FROM (
+            SELECT ph.uuid FROM photo ph
+            WHERE ph.person_id = (SELECT id FROM prospect)
+              AND ph.moderation_status = 'approved'
+            ORDER BY ph.position
+            LIMIT 1
+        ) t
+    ), '[]'::json),
+    'looking_for', (
+        SELECT looking_for.name FROM looking_for
+        JOIN prospect ON prospect.looking_for_id = looking_for.id
+        WHERE looking_for.name != 'Unanswered'
+    ),
+    'gender', (
+        SELECT gender.name FROM gender
+        JOIN prospect ON prospect.gender_id = gender.id
+        WHERE gender.name != 'Unanswered'
+    ),
+    'ahavah_verification_tier', (SELECT ahavah_verification_tier::text FROM prospect),
+    'verified_age',             (SELECT verified_age       FROM prospect),
+    'verified_gender',          (SELECT verified_gender    FROM prospect),
+    'verified_ethnicity',       (SELECT verified_ethnicity FROM prospect)
+) AS j
+WHERE EXISTS (SELECT 1 FROM prospect)
+"""
+
 # Slim variant of `Q_SELECT_PROSPECT_PROFILE` for the chat header. Returns just
 # the fields the conversation screen renders (name, primary photo, skipped
 # state) and deliberately does NOT write to `visited` — opening someone's
