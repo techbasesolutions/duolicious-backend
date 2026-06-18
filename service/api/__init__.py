@@ -1071,10 +1071,15 @@ def post_tokens_see_passes(s: t.SessionInfo):
     """Spend tokens to bring ALL of the caller's passed profiles back into
     the deck (self-only, pass-only). Wired to the discover empty-state."""
     assert s.person_uuid is not None
-    from service.tokens.actions.see_passes import perform as _perform_see_passes
+    from service.tokens.actions.see_passes import (
+        perform as _perform_see_passes,
+        NothingToSeeAgain as _NothingToSeeAgain,
+    )
     try:
         with api_tx() as tx:
             return _perform_see_passes(tx, str(s.person_uuid), s.person_id)
+    except _NothingToSeeAgain:
+        return {'error': 'nothing_to_bring_back'}, 409
     except _InsufficientTokens:
         return {'error': 'insufficient_tokens'}, 402
 
