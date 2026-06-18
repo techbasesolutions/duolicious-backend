@@ -565,6 +565,13 @@ def post_decisions_reset(s: t.SessionInfo):
         each other's /discover during a re-test)
       - the user's search_cache so /search recomputes
     """
+    # Destructive + BIDIRECTIONAL: also wipes incoming likes/matches/chat for
+    # the OTHER party. Admin/seed-only now -- the owner can still use it for
+    # re-testing, but no regular user can trigger it. The user-facing
+    # "Reset my swipes (testing)" button was removed for the same reason
+    # (a peer resetting was silently deleting real users' likes + matches).
+    from service.admin import require_admin
+    require_admin(s)
     with api_tx() as tx:
         # Bidirectional skipped wipe — clears both Ehud→Jada and
         # Jada→Ehud rows when Ehud resets. Necessary for symmetric
