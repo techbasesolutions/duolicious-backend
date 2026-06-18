@@ -1669,7 +1669,14 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
                 = location.long_friendly,
 
             country
-                = COALESCE(NULLIF(%(country_iso)s, ''), person.country)
+                = COALESCE(NULLIF(%(country_iso)s, ''), person.country),
+
+            -- A post-onboarding location pick is a real city, so flag citySet.
+            -- Without this, picking a city here (e.g. via /profile/edit) left
+            -- the flag stale and the map's hide-country-only filter wrongly
+            -- hid the user (the Anthony/Brisbane case).
+            ahavah_extra
+                = COALESCE(person.ahavah_extra, '{}'::jsonb) || '{"citySet": true}'::jsonb
         FROM location
         WHERE person.id = %(person_id)s
         AND long_friendly = %(field_value)s
@@ -1728,13 +1735,24 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
                 location_short_friendly =
                     COALESCE(loc.short_friendly, person.location_short_friendly),
                 location_long_friendly =
-                    COALESCE(loc.long_friendly, person.location_long_friendly)
+                    COALESCE(loc.long_friendly, person.location_long_friendly),
+                -- Changing country drops the user on a country default (not a
+                -- real city), so clear citySet: they stay off the map until
+                -- they pick a city again.
+                ahavah_extra =
+                    COALESCE(person.ahavah_extra, '{}'::jsonb) || '{"citySet": false}'::jsonb
             FROM (SELECT 1) AS d
             LEFT JOIN (
                 SELECT coordinates, short_friendly, long_friendly
                 FROM location
                 WHERE country = %(country_name)s
-                ORDER BY long_friendly
+                -- Country centre (nearest city to the centroid), matching
+                -- get_country_location. Was ORDER BY long_friendly (the
+                -- alphabetically-first city, e.g. Abbeville for the US).
+                ORDER BY coordinates::geometry <-> (
+                    SELECT ST_Centroid(ST_Collect(coordinates::geometry))
+                    FROM location WHERE country = %(country_name)s
+                )
                 LIMIT 1
             ) AS loc ON TRUE
             WHERE person.id = %(person_id)s
