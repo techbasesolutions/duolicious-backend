@@ -185,4 +185,8 @@ Q_ADMIN_MAP_MARKERS = """
         ) AS photo_uuid
     FROM person p
     WHERE p.activated = TRUE
+      -- Same as the public map: hide country-only (citySet=false) users who
+      -- sit on a country-centroid default rather than a real city, so they
+      -- don't read as a fake cluster. They return once they set a city.
+      AND COALESCE((p.ahavah_extra->>'citySet')::boolean, FALSE)
 """

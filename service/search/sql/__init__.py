@@ -389,6 +389,10 @@ Q_MAP_MARKERS = """
     WHERE sc.searcher_person_id = %(searcher_person_id)s
       AND p.show_my_location
       AND COALESCE((p.ahavah_extra->>'showOnMap')::boolean, TRUE)
+      -- Only pin users who picked a REAL city. Country-only users sit on a
+      -- country-centroid default (not where they actually are), so a precise
+      -- pin there fabricates a cluster. They reappear once they set a city.
+      AND COALESCE((p.ahavah_extra->>'citySet')::boolean, FALSE)
 """
 
 # Q_QUIZ_SEARCH removed in Task 0.3e — it was the Q&A-scored "first result"
