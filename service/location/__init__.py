@@ -102,3 +102,28 @@ def get_country_location(cc: Optional[str]):
     with api_tx('READ COMMITTED') as tx:
         tx.execute(Q_COUNTRY_LOCATION, dict(country=rec.name))
         return [row['long_friendly'] for row in tx.fetchall()]
+
+
+Q_NEAREST_LOCATION = """
+SELECT long_friendly
+FROM location
+ORDER BY coordinates <-> ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326)::geography
+LIMIT 1
+"""
+
+def get_nearest_location(lat, lng):
+    """lat/lng (e.g. from the browser's geolocation) -> the nearest gazetteer
+    long_friendly. Returns a 0- or 1-element list mirroring
+    get_search_locations / get_country_location. Snapping to the nearest city
+    keeps placement at city-level (never an exact address)."""
+    try:
+        lat_f = float(lat)
+        lng_f = float(lng)
+    except (TypeError, ValueError):
+        return []
+    if not (-90.0 <= lat_f <= 90.0 and -180.0 <= lng_f <= 180.0):
+        return []
+    with api_tx('READ COMMITTED') as tx:
+        tx.execute(Q_NEAREST_LOCATION, dict(lat=lat_f, lng=lng_f))
+        row = tx.fetchone()
+        return [row['long_friendly']] if row else []

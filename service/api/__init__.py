@@ -276,6 +276,17 @@ def get_search_locations(_):
 def get_country_location(_):
     return location.get_country_location(cc=request.args.get('cc'))
 
+@aget(
+    '/nearest-location',
+    expected_onboarding_status=None,
+    expected_sign_in_status=None,
+)
+def get_nearest_location(_):
+    return location.get_nearest_location(
+        lat=request.args.get('lat'),
+        lng=request.args.get('lng'),
+    )
+
 @apatch('/onboardee-info', expected_onboarding_status=False)
 @validate(t.PatchOnboardeeInfo)
 def patch_onboardee_info(req: t.PatchOnboardeeInfo, s: t.SessionInfo):
