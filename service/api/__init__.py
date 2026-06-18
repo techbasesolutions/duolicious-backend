@@ -549,49 +549,25 @@ def post_unskip_by_uuid(s: t.SessionInfo, prospect_uuid: str):
 # See service/decisions/__init__.py + migrations/0006_match_loop.sql.
 @apost('/decisions/reset')
 def post_decisions_reset(s: t.SessionInfo):
-    """Wipe the current user's swipe history (liked + skipped + matches).
-    Phase W cutover testing convenience — lets a developer / seed
-    account exhaust the candidate pool, then reset to re-test the
-    full /discover loop without manual DB intervention.
+    """Reset ONLY the caller's own outgoing swipe history so they can
+    re-see profiles they passed/liked and re-test the /discover loop.
 
-    Test-mode semantics: this is destructive. We delete:
-      - rows where this user is the SUBJECT in skipped/liked/swipe,
-        AND rows where this user is the OBJECT (so a peer's prior
-        block of this user also clears — both halves needed for
-        Q_UNCACHED_SEARCH_2's bidirectional skipped exclusion)
-      - ahavah_match rows where this user is either user_a or user_b
-        (matches re-form on the next mutual like; without this delete
-        Ehud + Jada would stay in /matches and never reappear in
-        each other's /discover during a re-test)
-      - the user's search_cache so /search recomputes
+    Self-only (2026-06-18): deletes just the caller's own likes (liker_id),
+    skips (subject), swipes (swiper), and search_cache. It does NOT touch
+    incoming likes, a peer's skips, or shared matches -- the old
+    bidirectional version let one account silently wipe real users'
+    likes/matches/chats. Admin-gated as defence in depth.
     """
-    # Destructive + BIDIRECTIONAL: also wipes incoming likes/matches/chat for
-    # the OTHER party. Admin/seed-only now -- the owner can still use it for
-    # re-testing, but no regular user can trigger it. The user-facing
-    # "Reset my swipes (testing)" button was removed for the same reason
-    # (a peer resetting was silently deleting real users' likes + matches).
     from service.admin import require_admin
     require_admin(s)
     with api_tx() as tx:
-        # Bidirectional skipped wipe — clears both Ehud→Jada and
-        # Jada→Ehud rows when Ehud resets. Necessary for symmetric
-        # re-test (any one-sided block would otherwise persist).
+        # Only the caller's OWN outgoing decisions -- never a peer's rows.
         tx.execute(
-            """
-            DELETE FROM skipped
-             WHERE subject_person_id = %(p)s
-                OR object_person_id  = %(p)s
-            """,
+            "DELETE FROM skipped WHERE subject_person_id = %(p)s",
             dict(p=s.person_id),
         )
-        # Bidirectional liked wipe — same reason; reset wipes incoming
-        # likes too so the peer can re-like from a clean slate.
         tx.execute(
-            """
-            DELETE FROM liked
-             WHERE liker_id = %(p)s
-                OR liked_id = %(p)s
-            """,
+            "DELETE FROM liked WHERE liker_id = %(p)s",
             dict(p=s.person_id),
         )
         # `swipe` is the upstream Duolicious swipe-history table that
@@ -602,22 +578,7 @@ def post_decisions_reset(s: t.SessionInfo):
             "DELETE FROM swipe WHERE swiper_person_id = %(p)s",
             dict(p=s.person_id),
         )
-        # ahavah_match — Phase W match-loop table. Match rows survive
-        # liked/skipped wipes by FK (CASCADE only fires on person row
-        # deletion). Explicit delete here so a reset truly returns the
-        # pair to the "never met" state for re-test. Cascade also
-        # removes any chat history tied to the match (mam_message,
-        # inbox conversation rows) per the FK chain in init-api.sql.
-        tx.execute(
-            """
-            DELETE FROM ahavah_match
-             WHERE user_a_id = %(p)s
-                OR user_b_id = %(p)s
-            """,
-            dict(p=s.person_id),
-        )
-        # Clear the search_cache so the next /search recomputes
-        # against the now-clean swipe/skipped/match state.
+        # Clear the caller's own cache so /search recomputes for them.
         tx.execute(
             "DELETE FROM search_cache WHERE searcher_person_id = %(p)s",
             dict(p=s.person_id),
