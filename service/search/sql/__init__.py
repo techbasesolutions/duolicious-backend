@@ -168,11 +168,14 @@ prospect_pool AS (
             AND l.liked_id = p.id
       )
 
-      -- Blocked exclusion (the upstream Duolicious fork's existing skipped table — both directions)
+      -- Blocked exclusion (the upstream Duolicious fork's existing skipped table — both directions).
+      -- 2026-06-18: passes expire after 7 days so the feed refills naturally on
+      -- a small pool; reports (reported=true) stay permanent.
       AND NOT EXISTS (
           SELECT 1 FROM skipped sk
-          WHERE (sk.subject_person_id = %(searcher_person_id)s AND sk.object_person_id = p.id)
-             OR (sk.subject_person_id = p.id AND sk.object_person_id = %(searcher_person_id)s)
+          WHERE ((sk.subject_person_id = %(searcher_person_id)s AND sk.object_person_id = p.id)
+              OR (sk.subject_person_id = p.id AND sk.object_person_id = %(searcher_person_id)s))
+            AND (sk.reported OR sk.created_at > NOW() - INTERVAL '7 days')
       )
 
       -- Phase W: "Verified only" filter. Triggered either by the

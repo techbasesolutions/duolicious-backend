@@ -1066,6 +1066,19 @@ def post_tokens_super_like(s: t.SessionInfo):
         return {'error': 'insufficient_tokens'}, 402
 
 
+@apost('/tokens/see-passes')
+def post_tokens_see_passes(s: t.SessionInfo):
+    """Spend tokens to bring ALL of the caller's passed profiles back into
+    the deck (self-only, pass-only). Wired to the discover empty-state."""
+    assert s.person_uuid is not None
+    from service.tokens.actions.see_passes import perform as _perform_see_passes
+    try:
+        with api_tx() as tx:
+            return _perform_see_passes(tx, str(s.person_uuid), s.person_id)
+    except _InsufficientTokens:
+        return {'error': 'insufficient_tokens'}, 402
+
+
 # Discover Rewind (2026-05-19) — spend 1 token to undo the last pass and
 # re-show that profile. perform() owns the debit + skipped/swipe deletes
 # inside a single api_tx() so they commit atomically. Pass-only: the
