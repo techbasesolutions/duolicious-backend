@@ -362,6 +362,13 @@ SELECT
 FROM search_cache sc
 JOIN person p ON p.id = sc.prospect_person_id
 WHERE sc.searcher_person_id = %(searcher_person_id)s
+  -- Re-validate the two privacy invariants on every cached read: a prospect
+  -- who hid themselves or deactivated AFTER being cached must drop out of the
+  -- deck immediately, not linger as a stale card that 404s on tap. Mirrors
+  -- Q_UNCACHED_SEARCH_2's `activated` + `hide_me_from_strangers` gates (a cache
+  -- rebuild would apply these anyway; this just stops waiting for the rebuild).
+  AND p.activated
+  AND NOT p.hide_me_from_strangers
 ORDER BY sc.position
 LIMIT %(n)s OFFSET %(o)s
 """
