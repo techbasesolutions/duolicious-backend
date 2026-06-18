@@ -885,6 +885,16 @@ def get_prospect_profile(s: Optional[t.SessionInfo], prospect_uuid):
                 ).fetchone()
                 limited = limited_row.get('j') if limited_row else None
                 if limited:
+                    # Same view-notification as the full path (throttled +
+                    # opt-in gated). The `visited` row was already written by
+                    # the query's updated_visited CTE.
+                    try:
+                        from service.notifications import record_profile_view
+                        record_profile_view(
+                            viewer_id=s.person_id, viewed_uuid=prospect_uuid
+                        )
+                    except Exception:
+                        pass
                     return limited
             return '', 404
 

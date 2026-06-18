@@ -1252,6 +1252,23 @@ WITH prospect AS (
           WHERE subject_person_id = p.id
             AND object_person_id  = %(person_id)s
       )
+), updated_visited AS (
+    -- Record the view in `visited` so the hidden member sees it in their
+    -- "who viewed me" list, exactly like a full-profile view. The viewer is a
+    -- stranger here (a messaged peer would have matched the full query), so
+    -- the invisibility flag reduces to the viewer's own browse_invisibly /
+    -- hide_me_from_strangers (mirrors Q_SELECT_PROSPECT_PROFILE's CTE).
+    INSERT INTO visited (subject_person_id, object_person_id, updated_at, invisible)
+    SELECT
+        %(person_id)s,
+        prospect.id,
+        now(),
+        (SELECT browse_invisibly OR hide_me_from_strangers
+           FROM person WHERE id = %(person_id)s)
+    FROM prospect
+    ON CONFLICT (subject_person_id, object_person_id) DO UPDATE SET
+        updated_at = now(),
+        invisible  = EXCLUDED.invisible
 )
 SELECT json_build_object(
     'limited',                  TRUE,
