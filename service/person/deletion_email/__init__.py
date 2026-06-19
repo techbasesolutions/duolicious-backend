@@ -43,7 +43,7 @@ def deletion_pending_template(name: str, purge_iso: str) -> str:
                         </tr>
                         <tr>
                             <td bgcolor="#f1e5ff" align="left" style="color: #70f; padding-left: 30px; padding-right: 30px; padding-bottom: 10px;">
-                                <p style="color: #70f; font-size: 22px; font-weight: 900; margin: 0 0 16px 0;">Your account is scheduled for deletion</p>
+                                <p style="color: #70f; font-size: 22px; font-weight: 900; margin: 0 0 16px 0;">Sorry to see you go</p>
                                 <p style="color: #333; font-size: 16px; line-height: 1.5; margin: 0 0 12px 0;">
                                     Hi {safe_name},
                                 </p>
@@ -71,9 +71,17 @@ def deletion_pending_template(name: str, purge_iso: str) -> str:
                           </td>
                         </tr>
                         <tr>
+                            <td bgcolor="#f1e5ff" align="left" style="padding-left: 30px; padding-right: 30px; padding-bottom: 18px;">
+                                <p style="color: #70f; font-size: 16px; font-weight: 800; margin: 0 0 8px 0;">Before you go: what could we have done better?</p>
+                                <p style="color: #333; font-size: 16px; line-height: 1.5; margin: 0;">
+                                    Whether it was the matches, a missing feature, or just not the right time, we'd genuinely love to know. Just reply to this email and tell us. It comes straight to our team and helps us build something better for the community.
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
                             <td bgcolor="#f1e5ff" align="left" style="color: #666; padding-left: 30px; padding-right: 30px; padding-bottom: 20px;">
                                 <p style="color: #666; font-size: 13px; line-height: 1.5; margin: 0;">
-                                    If you didn't request this, sign in immediately and cancel — someone may have access to your session.
+                                    If you didn't request this, sign in immediately and cancel, as someone may have access to your session.
                                 </p>
                             </td>
                         </tr>

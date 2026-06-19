@@ -1107,9 +1107,11 @@ def _send_deletion_pending_email(email: str, name: str, deletion_requested_at):
 
         body = deletion_pending_template(name=name, purge_iso=purge_pretty)
         aws_smtp.send(
-            subject=f'Your {PRODUCT_NAME} account is scheduled for deletion',
+            subject='Sorry to see you go',
             body=body,
             to_addr=email,
+            # Feedback replies route to a human inbox, not the no-reply From.
+            reply_to='admin@techbaseltd.com',
         )
         from emails.base import mask_email
         print(f'delete_or_ban_account: deletion email sent to {mask_email(email)}')
