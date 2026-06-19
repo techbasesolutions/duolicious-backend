@@ -67,7 +67,7 @@ def new_signup_html(
         count_line = f"{count} beta testers now." if count else "New beta tester."
     else:
         chip_label = "New signup"
-        count_line = f"Waitlist is now at {count}." if count else "New waitlist signup."
+        count_line = f"Ahavah is now at {count} members." if count else "A new member just signed up."
     email_cell = f'<a href="mailto:{safe_email}" style="color:{INDIGO};font-weight:600;text-decoration:none;">{safe_email}</a>'
     # Beta-status row (only when known). Green Yes / muted No so it reads at a glance.
     beta_row = ""
@@ -82,7 +82,7 @@ def new_signup_html(
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <meta name="color-scheme" content="light"/>
-<title>New waitlist signup</title>
+<title>New Ahavah signup</title>
 </head>
 <body style="margin:0;padding:0;background:{CANVAS};">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:{CANVAS};">
@@ -101,7 +101,7 @@ def new_signup_html(
         </table>
       </td></tr>
     </table>
-    <p style="margin:16px 0 0;font-family:{SANS};font-size:12px;color:{MUTED};">Sent by ahavah.app on each new waitlist signup.</p>
+    <p style="margin:16px 0 0;font-family:{SANS};font-size:12px;color:{MUTED};">Sent by ahavah.app on each new signup.</p>
   </td></tr>
 </table>
 </body>
