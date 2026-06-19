@@ -1275,10 +1275,17 @@ SELECT json_build_object(
     'person_id',                (SELECT id   FROM prospect),
     'name',                     (SELECT name FROM prospect),
     'age',                      (SELECT age  FROM prospect),
-    -- Photos are LOCKED for hidden members: the truncated view shows a
-    -- gradient + initial, never the image. We deliberately do NOT send any
-    -- photo uuid -- the image CDN is auth-free, so emitting a uuid would let
-    -- a stranger fetch the photo despite the locked UI.
+    -- Primary photo only (the locked hero shows the member's face). Additional
+    -- gallery photos + all the detail sections stay locked until a match.
+    'photo_uuids', COALESCE((
+        SELECT json_agg(t.uuid) FROM (
+            SELECT ph.uuid FROM photo ph
+            WHERE ph.person_id = (SELECT id FROM prospect)
+              AND ph.moderation_status = 'approved'
+            ORDER BY ph.position
+            LIMIT 1
+        ) t
+    ), '[]'::json),
     'looking_for', (
         SELECT looking_for.name FROM looking_for
         JOIN prospect ON prospect.looking_for_id = looking_for.id
