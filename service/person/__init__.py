@@ -787,6 +787,17 @@ def post_finish_onboarding(s: t.SessionInfo):
         client_user_agent=request.headers.get('User-Agent'),
     )
 
+    # Admin signup notification — email the team on each new member, replacing
+    # the old waitlist-join notice now that the waitlist is gone. The helper
+    # suppression-checks the signer (skips test addresses) and fires on a daemon
+    # thread, so it never blocks or fails graduation. Post-commit: can't fire for
+    # a rolled-back registration.
+    try:
+        from emails.waitlist_admin import send_new_signup_notice_async
+        send_new_signup_notice_async(email=s.email)
+    except Exception:
+        pass
+
     chat_params = dict(
         person_id=row['person_id'],
         person_uuid=row['person_uuid'],

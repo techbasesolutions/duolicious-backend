@@ -115,7 +115,7 @@ def send_new_signup_notice(email: str, answers: Optional[dict] = None, count: Op
     from smtp import aws_smtp
 
     aws_smtp.send(
-        subject="New Ahavah waitlist signup",
+        subject="New Ahavah signup 💜",
         body=new_signup_html(email, answers, count, mode="signup", beta=beta),
         to_addr=TO_ADDR,
         from_addr=FROM_ADDR,
