@@ -1110,8 +1110,8 @@ def _send_deletion_pending_email(email: str, name: str, deletion_requested_at):
             subject='Sorry to see you go',
             body=body,
             to_addr=email,
-            # Feedback replies route to a human inbox, not the no-reply From.
-            reply_to='admin@techbaseltd.com',
+            # Feedback replies route to a monitored brand inbox, not no-reply.
+            reply_to='admin@ahavah.app',
         )
         from emails.base import mask_email
         print(f'delete_or_ban_account: deletion email sent to {mask_email(email)}')
