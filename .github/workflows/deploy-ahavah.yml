@@ -113,7 +113,7 @@ jobs:
             docker compose -f docker-compose.yml \
                            -f docker-compose.production.yml \
                            --env-file .env.production \
-                           up -d api chat cron
+                           up -d --force-recreate api chat cron
             echo "::endgroup::"
 
             echo "::group::health check"
