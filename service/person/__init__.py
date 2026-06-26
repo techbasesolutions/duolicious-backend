@@ -1270,7 +1270,7 @@ def change_email_verify(s: t.SessionInfo, otp: str):
                 """,
                 dict(person_id=s.person_id),
             )
-            return 'Code expired — request a new one', 400
+            return 'Code expired | request a new one', 400
 
         new_email = row['pending_email']
 

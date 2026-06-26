@@ -79,4 +79,4 @@ def get_moderation_rude_messages(s: t.SessionInfo):
     except Exception:
         # Table may not exist on a given env; degrade gracefully so the
         # FE shows the "no data" state instead of 500.
-        return {'rows': [], 'note': 'rude_message query failed — see backend logs'}
+        return {'rows': [], 'note': 'rude_message query failed | see backend logs'}
