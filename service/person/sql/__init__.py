@@ -530,7 +530,8 @@ WITH onboardee_location AS (
         verification_required,
         location_short_friendly,
         location_long_friendly,
-        ahavah_extra
+        ahavah_extra,
+        lead_source
     ) SELECT
         email,
         %(normalized_email)s,
@@ -562,7 +563,10 @@ WITH onboardee_location AS (
         -- Carry the Torah-observant fields from the onboardee row onto
         -- the new person row. Without this copy, every wizard answer
         -- that lived only in ahavah_extra would vanish at graduation.
-        ahavah_extra
+        ahavah_extra,
+        -- Carry acquisition attribution (e.g. 'marriage_checklist') so a
+        -- converted lead stays distinguishable from organic signups.
+        lead_source
     FROM
         onboardee,
         onboardee_location

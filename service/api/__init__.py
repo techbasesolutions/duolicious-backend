@@ -228,6 +228,29 @@ def post_check_otp(req: t.PostCheckOtp, s: t.SessionInfo):
     ):
         return person.post_check_otp(req, s)
 
+# Two outbound emails per call; 10/day per account is generous for a
+# legitimate respondent re-sending, tight enough to stop relay abuse.
+_marriage_checklist_send_limit = limiter.shared_limit(
+    "10 per day",
+    scope="marriage_checklist_send",
+    key_func=limiter_account,
+    exempt_when=disable_account_rate_limit,
+)
+
+
+@apost(
+    '/marriage-checklist/send',
+    limiter=_marriage_checklist_send_limit,
+    expected_onboarding_status=None,
+)
+@validate(t.PostMarriageChecklistSend)
+def post_marriage_checklist_send(req: t.PostMarriageChecklistSend, s: t.SessionInfo):
+    """Stateless send of the marriage-checklist activity results to the
+    authed respondent + their spouse. Onboardees allowed (checklist users
+    are onboardees, not full members). Answers are never stored."""
+    return person.post_marriage_checklist_send(req, s)
+
+
 @apost('/sign-out', expected_onboarding_status=None)
 def post_sign_out(s: t.SessionInfo):
     return person.post_sign_out(s)

@@ -444,11 +444,54 @@ def post_check_otp(req: t.PostCheckOtp, s: t.SessionInfo):
 
         tx.execute(Q_UPDATE_LAST, dict(person_uuid=row['person_uuid']))
 
+        # Qualified-lead attribution: tag NEW onboardees created via a
+        # tagged flow (e.g. the marriage-checklist activity). Existing
+        # members (person_id set) and already-tagged rows are untouched,
+        # so an organic lead is never downgraded.
+        if req.source and row['person_id'] is None:
+            tx.execute(
+                """
+                UPDATE onboardee
+                   SET lead_source = %(source)s
+                 WHERE email = %(email)s
+                   AND lead_source IS NULL
+                """,
+                dict(source=req.source, email=s.email),
+            )
+
     return dict(
         onboarded=row['person_id'] is not None,
         **row,
         **clubs,
     )
+
+def post_marriage_checklist_send(req: t.PostMarriageChecklistSend, s: t.SessionInfo):
+    """Email the marriage-checklist results to the respondent and their
+    spouse. Stateless by design: the answers are composed into the two
+    emails in-request and never persisted (no table write, no answer
+    logging). See docs: the checklist page promises 'we do not store
+    your answers'."""
+    from emails.marriage_checklist import send_checklist_results
+    from emails.base import mask_email
+
+    answers = [a.model_dump() for a in req.answers]
+
+    sent_self = send_checklist_results(s.email, None, answers)
+    sent_spouse = send_checklist_results(
+        req.spouse_email, None, answers, is_spouse_copy=True,
+    )
+
+    print(
+        'marriage-checklist: sent='
+        f'{bool(sent_self)}/{bool(sent_spouse)} '
+        f'to {mask_email(s.email)} + {mask_email(req.spouse_email)}'
+    )
+
+    if not sent_self and not sent_spouse:
+        return 'Could not send. Please try again.', 502
+
+    return dict(sent=True)
+
 
 def post_sign_out(s: t.SessionInfo):
     params = dict(session_token_hash=s.session_token_hash)

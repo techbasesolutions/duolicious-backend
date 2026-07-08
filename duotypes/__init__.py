@@ -486,6 +486,26 @@ class PostFeedback(BaseModel):
 
 class PostCheckOtp(BaseModel):
     otp: str = Field(pattern=r"^\d{6}$")
+    # Optional acquisition tag. Only stamped onto NEW onboardees (never
+    # existing members). Currently: the public marriage-checklist activity.
+    source: Optional[Literal['marriage_checklist']] = None
+
+
+class MarriageChecklistAnswer(BaseModel):
+    """One answered checklist item. Composed into the results email and
+    then discarded; never persisted."""
+    section: Literal['biblical', 'nice-to-have', 'challenge']
+    role: Optional[Literal['husband', 'wife']] = None
+    title: str = Field(min_length=1, max_length=200)
+    verse: Optional[str] = Field(default=None, max_length=100)
+    importance: int = Field(ge=1, le=5)
+    stance: Literal['agree', 'disagree', 'other']
+    comment: Optional[str] = Field(default=None, max_length=500)
+
+
+class PostMarriageChecklistSend(BaseModel):
+    spouse_email: EmailStr
+    answers: List[MarriageChecklistAnswer] = Field(min_length=1, max_length=60)
 
 
 class PostChangeEmailRequest(BaseModel):
