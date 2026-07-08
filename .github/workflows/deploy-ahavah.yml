@@ -103,10 +103,14 @@ jobs:
             echo "::endgroup::"
 
             echo "::group::docker build"
+            # GIT_SHA busts the Dockerfiles' code-copy layer per commit.
+            # The labs COPY --exclude cache key missed ADDED files, which
+            # shipped a green build with the new module absent (2026-06).
             docker compose -f docker-compose.yml \
                            -f docker-compose.production.yml \
                            --env-file .env.production \
-                           build api chat cron
+                           build --build-arg GIT_SHA=$(git rev-parse HEAD) \
+                           api chat cron
             echo "::endgroup::"
 
             echo "::group::recreate api+chat+cron"
