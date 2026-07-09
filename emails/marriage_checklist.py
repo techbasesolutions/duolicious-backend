@@ -1,11 +1,16 @@
 """Marriage checklist results email.
 
-Sent to the respondent AND their spouse when the public checklist activity
-is completed. Built on the canonical brand shell (emails.base.render), like
-every other lifecycle email. The answers are composed into HTML in-request
-and then discarded; nothing is persisted.
+The SAME email goes to the respondent and their spouse (the design frames
+it as one shared summary: "We sent the same note to you and your spouse").
+Built on the canonical brand shell (emails.base.render). Composed from the
+posted answers in-request and then discarded; nothing is persisted.
 
-Copy rule: NO em dashes anywhere in this template (customer-facing).
+Faithful to the Claude Design export ("Ahavah Marriage Checklist Email"):
+chip, display title, lede, ranked rows (reference, section + frequency,
+"What it means to me." / "How I would carry it out." / "Note.", importance
+dots, stance chip), lime Share CTA, privacy footer.
+
+Copy rule: NO em dashes anywhere (customer-facing).
 """
 from __future__ import annotations
 
@@ -13,7 +18,6 @@ from emails.base import (
     render,
     button,
     chip,
-    callout,
     INK,
     INK_SOFT,
     INDIGO,
@@ -22,121 +26,117 @@ from emails.base import (
 )
 
 SITE = "https://ahavah.app"
-SUBJECT = "Your marriage checklist results"
+SUBJECT = "Your marriage checklist summary"
 
 _SECTION_LABELS = {
-    "biblical": "Biblical obligations",
-    "nice-to-have": "Nice-to-haves",
-    "challenge": "Challenges and obstacles",
+    "biblical": "Biblical Obligations",
+    "nice-to-have": "Nice to Haves",
+    "challenge": "Challenges and Obstacles",
 }
-_STANCE_LABELS = {"agree": "Agree", "disagree": "Disagree", "other": "Other"}
+_STANCE = {
+    "agree": ("Agree", "#D3F8DF", "#06310f"),
+    "disagree": ("Disagree", "#FF4566", "#ffffff"),
+    "other": ("Other", "#BC96FF", "#1a0c3d"),
+}
+_FREQ = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly", "yearly": "Yearly"}
 
 
-def _hearts(importance: int) -> str:
-    """Importance 1 to 5 as filled/empty hearts."""
-    filled = '<span style="color:#FF4566;">&#10084;</span>' * importance
-    empty = f'<span style="color:rgba(15,11,31,0.18);">&#10084;</span>' * (5 - importance)
-    return filled + empty
-
-
-def _answer_row(a: dict) -> str:
-    verse = (
-        f'<div style="font-family:{SANS};font-size:12px;font-weight:700;color:{INDIGO};margin-top:2px;">{a["verse"]}</div>'
-        if a.get("verse") else ""
+def _dots(importance: int) -> str:
+    cells = "".join(
+        f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;'
+        f'background:{"#5524F5" if n <= importance else "rgba(15,11,31,0.12)"};'
+        f'margin-right:3px;"></span>'
+        for n in (1, 2, 3, 4, 5)
     )
-    role = (
-        f'<span style="font-family:{SANS};font-size:11px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:{MUTED};">{a["role"]} &middot; </span>'
-        if a.get("role") else ""
+    return f'<div style="margin-top:8px;line-height:1;">{cells}</div>'
+
+
+def _note(label: str, text: str) -> str:
+    return (
+        f'<div style="font-family:{SANS};font-size:13px;line-height:1.5;color:{INK_SOFT};margin-top:6px;">'
+        f'<strong style="color:{INK};font-weight:700;">{label} </strong>{text}</div>'
     )
-    comment = (
-        f'<div style="font-family:{SANS};font-size:13px;line-height:1.5;color:{INK_SOFT};margin-top:6px;">&ldquo;{a["comment"]}&rdquo;</div>'
-        if a.get("comment") else ""
-    )
+
+
+def _row(n: int, a: dict) -> str:
+    heading = a.get("ref") or a.get("title") or ""
+    meta = _SECTION_LABELS.get(a.get("section", ""), "")
+    if a.get("frequency"):
+        meta += f' &middot; {_FREQ.get(a["frequency"], a["frequency"])}'
+    stance_label, stance_bg, stance_fg = _STANCE.get(a.get("stance", ""), ("", "#eee", INK))
+
+    notes = ""
+    if a.get("comment"):
+        notes += _note("What it means to me.", a["comment"])
+    examples = [e.strip() for e in (a.get("examples") or []) if e and e.strip()]
+    if examples:
+        notes += _note("How I would carry it out.", "; ".join(examples))
+    if a.get("stance") == "other" and a.get("other_note"):
+        notes += _note("Note.", a["other_note"])
+
     return f"""
-    <tr><td style="padding:12px 0;border-bottom:1px solid rgba(15,11,31,0.06);">
-      <div>{role}<span style="font-family:{SANS};font-size:15px;font-weight:700;color:{INK};">{a["title"]}</span></div>
-      {verse}
-      <div style="margin-top:6px;font-family:{SANS};font-size:13px;">
-        {_hearts(int(a["importance"]))}
-        &nbsp;&nbsp;<span style="font-weight:800;color:{INK};">{_STANCE_LABELS.get(a["stance"], a["stance"])}</span>
-      </div>
-      {comment}
-    </td></tr>"""
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:{'none' if n == 1 else '1px solid rgba(15,11,31,0.06)'};">
+      <tr>
+        <td width="40" valign="top" style="padding:16px 0;">
+          <div style="width:28px;height:28px;border-radius:8px;background:#0F0B1F;color:#EFFFC8;font-family:{SANS};font-weight:800;font-size:13px;text-align:center;line-height:28px;">{n}</div>
+        </td>
+        <td valign="top" style="padding:16px 0;">
+          <div style="font-family:{SANS};font-size:15px;font-weight:700;color:{INK};">{heading}</div>
+          <div style="font-family:{SANS};font-size:12px;color:{MUTED};margin-top:3px;">{meta}</div>
+          {notes}
+          {_dots(int(a.get("importance", 0)))}
+        </td>
+        <td width="70" valign="top" align="right" style="padding:16px 0;">
+          <span style="display:inline-block;font-family:{SANS};font-size:10px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;padding:4px 8px;border-radius:7px;background:{stance_bg};color:{stance_fg};">{stance_label}</span>
+        </td>
+      </tr>
+    </table>"""
 
 
-def checklist_results_html(name: str | None, answers: list[dict], *, is_spouse_copy: bool = False) -> str:
-    safe_name = (name or "there").strip() or "there"
+def checklist_results_html(role: str | None, answers: list[dict]) -> str:
+    # Highest-rated first, mirroring the activity's summary.
+    ordered = sorted(answers, key=lambda a: -int(a.get("importance", 0)))
+    role_part = f" as the {role}" if role in ("husband", "wife") else ""
 
-    if is_spouse_copy:
-        intro = (
-            "Your spouse just completed the Ahavah marriage checklist and "
-            "wanted to share their answers with you. Here is what matters "
-            "most to them, in their own words."
-        )
-    else:
-        intro = (
-            f"Hi {safe_name}, here are your marriage checklist answers. "
-            "A copy also went to your spouse so you can talk through them together."
-        )
-
-    # Group by section, keep input order inside each.
-    sections_html = ""
-    for key, label in _SECTION_LABELS.items():
-        rows = [a for a in answers if a.get("section") == key]
-        if not rows:
-            continue
-        sections_html += f"""
-        <h2 class="e-h2" style="margin:26px 0 4px;font-family:{SANS};font-size:18px;font-weight:800;color:{INK};">{label}</h2>
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-          {''.join(_answer_row(a) for a in rows)}
-        </table>"""
+    rows = "".join(_row(i + 1, a) for i, a in enumerate(ordered))
 
     body_html = f"""
-{chip("Marriage checklist")}
+{chip("Marriage Checklist")}
 
-<h1 class="e-title" style="margin:14px 0 14px;font-family:{SANS};font-size:26px;font-weight:800;letter-spacing:-0.01em;line-height:1.15;color:{INK};">What matters most</h1>
+<h1 class="e-title" style="margin:16px 0 12px;font-family:{SANS};font-size:30px;font-weight:800;letter-spacing:-0.02em;line-height:1.1;color:{INK};">What matters most to you<span style="color:{INDIGO};">.</span></h1>
 
-<p class="e-text" style="margin:0 0 8px;font-family:{SANS};font-size:16px;line-height:1.55;color:{INK_SOFT};">{intro}</p>
+<p class="e-text" style="margin:0 0 20px;font-family:{SANS};font-size:15px;line-height:1.6;color:{INK_SOFT};">Here is the summary you completed{role_part}. We sent the same note to you and your spouse, so you can read it side by side and talk it through together.</p>
 
-{sections_html}
+{rows}
 
-<div style="line-height:26px;height:26px;font-size:0;">&nbsp;</div>
+<div style="line-height:28px;height:28px;font-size:0;">&nbsp;</div>
 
-{callout(
-    "<strong>A note on privacy.</strong> We did not store these answers. "
-    "This email is the only copy, so keep it if you want to revisit the conversation."
-)}
+{button("Share Ahavah", SITE, variant="lime", full=True)}
 
-{button("Share Ahavah with someone seeking a spouse", SITE, variant="lime", full=True)}
+<p class="e-text" style="margin:14px 0 0;font-family:{SANS};font-size:13px;color:{MUTED};text-align:center;">Know someone seeking a Torah-observant spouse? Pass this along.</p>
 """
 
     footer_html = (
-        "Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>"
-        "You received this because the marriage checklist at "
-        f'<a href="{SITE}/marriage-checklist" style="color:{INDIGO};font-weight:600;text-decoration:none;">ahavah.app/marriage-checklist</a> '
-        "was completed with this email address."
+        "We never stored your answers. This summary was composed when you sent "
+        "it, then your responses were discarded.<br/>"
+        "Reply to this email to reach a real person. "
+        f'<a href="{SITE}" style="color:{INDIGO};font-weight:600;text-decoration:none;">Ahavah</a>, made for the diaspora.'
     )
 
     return render(
         title=SUBJECT,
-        preheader="Your checklist answers, ready to talk through together. We did not store them.",
+        preheader="The summary you completed, sent to you both. We never stored your answers.",
         body_html=body_html,
         footer_html=footer_html,
     )
 
 
-def send_checklist_results(
-    to_email: str,
-    name: str | None,
-    answers: list[dict],
-    *,
-    is_spouse_copy: bool = False,
-) -> str | None:
+def send_checklist_results(to_email: str, role: str | None, answers: list[dict]) -> str | None:
     from smtp import aws_smtp
 
     return aws_smtp.send(
         subject=SUBJECT,
-        body=checklist_results_html(name, answers, is_spouse_copy=is_spouse_copy),
+        body=checklist_results_html(role, answers),
         to_addr=to_email,
         reply_to="admin@ahavah.app",
     )

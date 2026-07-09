@@ -476,10 +476,8 @@ def post_marriage_checklist_send(req: t.PostMarriageChecklistSend, s: t.SessionI
 
     answers = [a.model_dump() for a in req.answers]
 
-    sent_self = send_checklist_results(s.email, None, answers)
-    sent_spouse = send_checklist_results(
-        req.spouse_email, None, answers, is_spouse_copy=True,
-    )
+    sent_self = send_checklist_results(s.email, req.role, answers)
+    sent_spouse = send_checklist_results(req.spouse_email, req.role, answers)
 
     print(
         'marriage-checklist: sent='

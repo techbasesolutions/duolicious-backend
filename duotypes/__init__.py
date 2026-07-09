@@ -493,18 +493,30 @@ class PostCheckOtp(BaseModel):
 
 class MarriageChecklistAnswer(BaseModel):
     """One answered checklist item. Composed into the results email and
-    then discarded; never persisted."""
+    then discarded; never persisted. Scripture items carry `ref` (e.g.
+    "Ephesians 5:22-33"); the couple's own items carry `title`."""
     section: Literal['biblical', 'nice-to-have', 'challenge']
-    role: Optional[Literal['husband', 'wife']] = None
-    title: str = Field(min_length=1, max_length=200)
-    verse: Optional[str] = Field(default=None, max_length=100)
+    ref: Optional[str] = Field(default=None, max_length=60)
+    title: Optional[str] = Field(default=None, max_length=200)
     importance: int = Field(ge=1, le=5)
     stance: Literal['agree', 'disagree', 'other']
-    comment: Optional[str] = Field(default=None, max_length=500)
+    frequency: Optional[Literal['daily', 'weekly', 'monthly', 'yearly']] = None
+    # "What does this mean to you?" (scripture) / "Your notes" (own items).
+    comment: Optional[str] = Field(default=None, max_length=1000)
+    # The respondent's own practical examples.
+    examples: List[str] = Field(default_factory=list, max_length=10)
+    # Free text shown when stance is "other".
+    other_note: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator('examples')
+    @classmethod
+    def _cap_example_length(cls, v: List[str]) -> List[str]:
+        return [e[:300] for e in v]
 
 
 class PostMarriageChecklistSend(BaseModel):
     spouse_email: EmailStr
+    role: Optional[Literal['husband', 'wife']] = None
     answers: List[MarriageChecklistAnswer] = Field(min_length=1, max_length=60)
 
 
