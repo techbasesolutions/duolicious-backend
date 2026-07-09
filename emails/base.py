@@ -162,9 +162,14 @@ def render(
 ) -> str:
     """Canonical 600px brand shell (white .e card: header + body + footer)."""
     if hero_html is None:
-        header_row = f"""<tr><td class="e-head" style="padding:30px 36px 24px;border-bottom:1px solid rgba(15,11,31,0.06);">
-        <img class="e-logo-light" src="{LOGO_URL}" alt="Ahavah" height="34" style="height:34px;width:auto;display:block;border:0;outline:none;text-decoration:none;"/>
-        <img class="e-logo-dark" src="{LOGO_WHITE_URL}" alt="Ahavah" height="34" style="height:34px;width:auto;border:0;outline:none;text-decoration:none;"/>
+        # Header band is ALWAYS dark indigo with the white logo, inline.
+        # Gmail's dark mode force-inverts light HTML but never touches
+        # images, so a light header + ink logo turned into ink-on-dark
+        # (invisible wordmark). A dark band survives both Gmail modes and
+        # needs no light/dark image swap (Gmail ignores the <style> swap
+        # anyway).
+        header_row = f"""<tr><td class="e-head" bgcolor="#1A1340" style="padding:30px 36px 24px;background:#1A1340;">
+        <img src="{LOGO_WHITE_URL}" alt="Ahavah" height="34" style="height:34px;width:auto;display:block;border:0;outline:none;text-decoration:none;"/>
       </td></tr>"""
     else:
         header_row = f'<tr><td style="padding:0;">{hero_html}</td></tr>'
