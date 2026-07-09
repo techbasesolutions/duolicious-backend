@@ -84,7 +84,7 @@ def button(label: str, href: str, *, variant: str = "lime", full: bool = True) -
     return f"""
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="{width}margin:0;">
       <tr><td align="center" bgcolor="{bg}" style="border-radius:14px;">
-        <a href="{href}" target="_blank" style="display:block;padding:18px 32px;font-family:{SANS};font-size:18px;font-weight:800;letter-spacing:0.01em;line-height:1;color:{color};text-decoration:none;border-radius:14px;">{label}</a>
+        <a href="{href}" target="_blank" style="display:block;padding:18px 32px;font-family:{SANS};font-size:18px;font-weight:800;letter-spacing:0.01em;line-height:1;color:{color};text-decoration:none;border-radius:14px;white-space:nowrap;">{label}</a>
       </td></tr>
     </table>"""
 

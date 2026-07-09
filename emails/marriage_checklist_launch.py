@@ -1,68 +1,78 @@
 """Marriage checklist announcement email.
 
 One-off campaign to the list (waitlist + members): the Marriage Checklist
-is live. Sells it three ways: married couples do it together, courting
-members send it to the person they are serious about, singles use it for
-self-clarity. Built on the canonical brand shell.
+is live. Faithful to the canonical campaign template (emails/reengagement.py,
+the E4 structure): chip, Ultra display title rendered as an IMAGE (so the
+typeface shows in clients that do not load web fonts), lede, lime CTA,
+canonical footer with an unsubscribe line.
 
 Copy rule: NO em dashes anywhere (customer-facing).
 """
 from __future__ import annotations
 
+from service.config import EMAIL_DOMAIN, WEB_BASE_URL
 from emails.base import (
     render,
     button,
     chip,
+    title_image,
+    is_suppressed_send,
     INK,
     INK_SOFT,
     INDIGO,
     MUTED,
     SANS,
 )
-from service.config import EMAIL_DOMAIN, WEB_BASE_URL
 from service.unsubscribe import make_url as _unsub_url
 
-SITE = "https://ahavah.app"
 SUBJECT = "The Marriage Checklist is here. Send it to someone."
 PREHEADER = "Work through Scripture, decide what matters to you, and share it. Answers never stored."
 FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+SITE = "https://ahavah.app"
 
 
 def _who(label: str, text: str) -> str:
-    return (
-        f'<p class="e-text" style="margin:0 0 14px;font-family:{SANS};font-size:15px;line-height:1.6;color:{INK_SOFT};">'
-        f'<strong style="color:{INK};font-weight:700;">{label}</strong> {text}</p>'
-    )
+    return f"""
+<p class="e-text" style="margin:0 0 14px;font-family:{SANS};font-size:16px;line-height:1.55;color:{INK_SOFT};">
+  <strong class="e-strong" style="color:{INK};font-weight:700;">{label}</strong> {text}
+</p>"""
 
 
-def launch_checklist_html(email: str) -> str:
-    body_html = f"""
+def _body() -> str:
+    return f"""
 {chip("New free resource")}
 
-<h1 class="e-title" style="margin:16px 0 12px;font-family:{SANS};font-size:30px;font-weight:800;letter-spacing:-0.02em;line-height:1.1;color:{INK};">The Marriage Checklist<span style="color:{INDIGO};">.</span></h1>
+{title_image("title-marriage-checklist.png", "title-marriage-checklist-wht.png", "The Marriage Checklist.", 528)}
 
-<p class="e-text" style="margin:0 0 14px;font-family:{SANS};font-size:16px;line-height:1.6;color:{INK_SOFT};">Hi there,</p>
-
-<p class="e-text" style="margin:0 0 14px;font-family:{SANS};font-size:16px;line-height:1.6;color:{INK_SOFT};">We just released something we think you will love. The Marriage Checklist is a free, guided activity: read the passages Scripture sets for a husband and a wife, decide in your own words what each one means to you, rate what matters most, and add your own nice-to-haves and challenges.</p>
-
-<p class="e-text" style="margin:0 0 22px;font-family:{SANS};font-size:16px;line-height:1.6;color:{INK_SOFT};">At the end, your personal summary is emailed to you and whoever you choose. We never store your answers.</p>
-
-<h2 class="e-h2" style="margin:0 0 12px;font-family:{SANS};font-size:18px;font-weight:800;color:{INK};">Who is it for?</h2>
+<p class="e-text" style="margin:0 0 16px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
+  We just released something we think you will love. The Marriage Checklist is
+  a free, guided activity: read the passages Scripture sets for a husband and
+  a wife, decide in your own words what each one means to you, rate what
+  matters most, and add your own nice-to-haves and challenges.
+</p>
+<p class="e-text" style="margin:0 0 24px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
+  At the end, your personal summary is emailed to you and whoever you choose.
+  We never store your answers.
+</p>
 
 {_who("Married?", "Work through it together and compare summaries over dinner.")}
 {_who("Courting, or talking to someone you are serious about?", "Send them your summary, or better, send them the checklist. There are few clearer ways to say you are intentional than asking someone where they stand on Scripture and marriage.")}
 {_who("Single and clarifying what you want?", "Complete it for yourself. You will walk away knowing your own non-negotiables.")}
 
-<div style="line-height:10px;height:10px;font-size:0;">&nbsp;</div>
+<div style="line-height:14px;height:14px;font-size:0;">&nbsp;</div>
 
-{button("Take the checklist", f"{SITE}/marriage-checklist", variant="lime", full=True)}
+{button("Take the checklist &rarr;", f"{SITE}/marriage-checklist", variant="lime", full=True)}
 
-<p class="e-text" style="margin:14px 0 0;font-family:{SANS};font-size:13px;color:{MUTED};text-align:center;">Know someone seeking a Torah-observant spouse? Pass this along.</p>
+<p class="e-text" style="margin:18px 0 0;font-family:{SANS};font-size:14px;line-height:1.6;color:{MUTED};text-align:center;">
+  Know someone seeking a Torah-observant spouse? Pass this along.
+</p>
 """
 
+
+def _footer(email: str) -> str:
     unsub = _unsub_url("waitlist", email, WEB_BASE_URL)
     link_style = f"color:{MUTED};font-weight:600;text-decoration:underline;"
-    footer_html = f"""
+    return f"""
 Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
 You are receiving this because you signed up at
 <a href="{SITE}" style="color:{INDIGO};font-weight:600;text-decoration:none;">ahavah.app</a>.
@@ -75,9 +85,11 @@ You are receiving this because you signed up at
 </div>
 """
 
+
+def launch_checklist_html(email: str) -> str:
     return render(
         title=SUBJECT,
         preheader=PREHEADER,
-        body_html=body_html,
-        footer_html=footer_html,
+        body_html=_body(),
+        footer_html=_footer(email),
     )
