@@ -169,7 +169,7 @@ def render(
         # needs no light/dark image swap (Gmail ignores the <style> swap
         # anyway).
         header_row = f"""<tr><td class="e-head" bgcolor="#1A1340" style="padding:30px 36px 24px;background:#1A1340;">
-        <img src="{LOGO_WHITE_URL}" alt="Ahavah" height="34" style="height:34px;width:auto;display:block;border:0;outline:none;text-decoration:none;"/>
+        <img src="{LOGO_WHITE_URL}" alt="Ahavah" height="40" style="height:40px;width:auto;display:block;border:0;outline:none;text-decoration:none;"/>
       </td></tr>"""
     else:
         header_row = f'<tr><td style="padding:0;">{hero_html}</td></tr>'
