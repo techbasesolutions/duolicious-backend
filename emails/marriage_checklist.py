@@ -14,6 +14,8 @@ Copy rule: NO em dashes anywhere (customer-facing).
 """
 from __future__ import annotations
 
+import html as _html
+
 from emails.base import (
     render,
     button,
@@ -52,14 +54,19 @@ def _dots(importance: int) -> str:
 
 
 def _note(label: str, text: str) -> str:
+    """`text` is attacker-controlled free text: ALWAYS escaped here."""
     return (
         f'<div style="font-family:{SANS};font-size:13px;line-height:1.5;color:{INK_SOFT};margin-top:6px;">'
-        f'<strong style="color:{INK};font-weight:700;">{label} </strong>{text}</div>'
+        f'<strong style="color:{INK};font-weight:700;">{label} </strong>{_html.escape(text)}</div>'
     )
 
 
 def _row(n: int, a: dict) -> str:
-    heading = a.get("ref") or a.get("title") or ""
+    # Every user-supplied field is HTML-escaped before interpolation. This
+    # email is composed from free text a user typed and can be sent to an
+    # arbitrary spouse address, so unescaped HTML here would be a phishing
+    # vector from our verified domain (review finding, 2026-07-08).
+    heading = _html.escape(a.get("ref") or a.get("title") or "")
     meta = _SECTION_LABELS.get(a.get("section", ""), "")
     if a.get("frequency"):
         meta += f' &middot; {_FREQ.get(a["frequency"], a["frequency"])}'

@@ -238,9 +238,29 @@ _marriage_checklist_send_limit = limiter.shared_limit(
 )
 
 
+def _spouse_recipient_key() -> str:
+    """Per-TARGET cap for the checklist send, keyed on spouse_email. Shares
+    the "recipient" scope with /request-otp so a victim inbox is bounded
+    across every send vector (inbox-bomb prevention; accounts are cheap to
+    mint, so the per-account limit alone is not enough)."""
+    try:
+        body = request.get_json(silent=True) or {}
+        email = (body.get("spouse_email") or "").strip().lower()
+    except Exception:
+        email = ""
+    return f"to:{email}" if email else (request.remote_addr or "unknown")
+
+
+_checklist_recipient_limit = limiter.shared_limit(
+    "5 per hour; 20 per day",
+    scope="recipient",
+    key_func=_spouse_recipient_key,
+)
+
+
 @apost(
     '/marriage-checklist/send',
-    limiter=_marriage_checklist_send_limit,
+    limiter=[_marriage_checklist_send_limit, _checklist_recipient_limit],
     expected_onboarding_status=None,
 )
 @validate(t.PostMarriageChecklistSend)

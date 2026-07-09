@@ -488,6 +488,15 @@ def post_marriage_checklist_send(req: t.PostMarriageChecklistSend, s: t.SessionI
     if not sent_self and not sent_spouse:
         return 'Could not send. Please try again.', 502
 
+    # Anonymous completions counter: timestamp only, no email, no answers,
+    # no person reference. The activity's privacy promise covers answers
+    # and identity; a bare tally stores neither.
+    try:
+        with api_tx() as tx:
+            tx.execute('INSERT INTO marriage_checklist_send DEFAULT VALUES')
+    except Exception:
+        pass  # counting is best-effort; never fail the send over it
+
     return dict(sent=True)
 
 
@@ -736,6 +745,24 @@ def post_finish_onboarding(s: t.SessionInfo):
         normalized_email=normalize_email(s.email),
         pending_club_name=s.pending_club_name,
     )
+
+    # Guard: Q_FINISH_ONBOARDING copies name/date_of_birth from the
+    # onboardee row into person, whose columns are NOT NULL. A wizard
+    # persistence gap (fixed 2026-07-08, but any regression or stale
+    # client) would otherwise 500 here in an unrecoverable retry loop
+    # ("We couldn't finalize your profile"). Return a distinct 409 so the
+    # client can route the user back to re-enter the missing fields.
+    with api_tx() as tx:
+        row = tx.execute(
+            """
+            SELECT (name IS NULL OR date_of_birth IS NULL) AS incomplete
+              FROM onboardee
+             WHERE email = %(email)s
+            """,
+            dict(email=s.email),
+        ).fetchone()
+    if row and row['incomplete']:
+        return 'Onboarding incomplete', 409
 
     with api_tx() as tx:
         tx.execute('SET LOCAL statement_timeout = 15000') # 15 seconds
