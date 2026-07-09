@@ -70,7 +70,15 @@ def _row(n: int, a: dict) -> str:
     meta = _SECTION_LABELS.get(a.get("section", ""), "")
     if a.get("frequency"):
         meta += f' &middot; {_FREQ.get(a["frequency"], a["frequency"])}'
-    stance_label, stance_bg, stance_fg = _STANCE.get(a.get("stance", ""), ("", "#eee", INK))
+    stance = a.get("stance")
+    stance_chip = ""
+    if stance in _STANCE:
+        stance_label, stance_bg, stance_fg = _STANCE[stance]
+        stance_chip = (
+            f'<span style="display:inline-block;font-family:{SANS};font-size:10px;font-weight:800;'
+            f'letter-spacing:0.04em;text-transform:uppercase;padding:4px 8px;border-radius:7px;'
+            f'background:{stance_bg};color:{stance_fg};">{stance_label}</span>'
+        )
 
     notes = ""
     if a.get("comment"):
@@ -94,7 +102,7 @@ def _row(n: int, a: dict) -> str:
           {_dots(int(a.get("importance", 0)))}
         </td>
         <td width="70" valign="top" align="right" style="padding:16px 0;">
-          <span style="display:inline-block;font-family:{SANS};font-size:10px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;padding:4px 8px;border-radius:7px;background:{stance_bg};color:{stance_fg};">{stance_label}</span>
+          {stance_chip}
         </td>
       </tr>
     </table>"""

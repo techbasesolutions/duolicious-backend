@@ -499,7 +499,8 @@ class MarriageChecklistAnswer(BaseModel):
     ref: Optional[str] = Field(default=None, max_length=60)
     title: Optional[str] = Field(default=None, max_length=200)
     importance: int = Field(ge=1, le=5)
-    stance: Literal['agree', 'disagree', 'other']
+    # Absent for nice-to-haves (no stance question on the couple's own wishes).
+    stance: Optional[Literal['agree', 'disagree', 'other']] = None
     frequency: Optional[Literal['daily', 'weekly', 'monthly', 'yearly']] = None
     # "What does this mean to you?" (scripture) / "Your notes" (own items).
     comment: Optional[str] = Field(default=None, max_length=1000)
