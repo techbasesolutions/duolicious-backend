@@ -228,6 +228,132 @@ LIMIT 200
 """
 
 
+Q_LIST_OUTGOING_LIKES = """
+-- People the session user liked who have NOT liked back yet (and no
+-- skip / report either direction, no confirmed match). Powers the
+-- /matches "You liked" tab. Mirror of Q_LIST_INCOMING_LIKES with the
+-- roles flipped: l.liker_id is me, the peer is l.liked_id.
+SELECT
+    peer.uuid::text  AS peer_uuid,
+    peer.name        AS peer_name,
+    -- Conditional on peer.show_my_age — same gate as profile detail.
+    (SELECT EXTRACT(YEAR FROM AGE(peer.date_of_birth))::int WHERE peer.show_my_age) AS peer_age,
+    l.is_super       AS is_super,
+    COALESCE(
+        (
+            SELECT json_agg(ph.uuid ORDER BY ph.position)
+            FROM photo ph
+            WHERE ph.person_id = peer.id
+              AND ph.moderation_status = 'approved'
+        ),
+        '[]'::json
+    )::jsonb AS peer_photo_uuids,
+    EXTRACT(EPOCH FROM NOW() - peer.last_online_time)::int AS peer_seconds_since_last_online,
+    l.created_at::text AS created_at
+FROM
+    liked l
+JOIN person peer ON peer.id = l.liked_id
+WHERE
+    l.liker_id = %(me_id)s
+    -- Exclude anyone who already liked back (they're a match, or about
+    -- to be — either way they belong in 'Matches', not here).
+    AND NOT EXISTS (
+        SELECT 1 FROM liked rev
+        WHERE rev.liker_id = l.liked_id
+          AND rev.liked_id = %(me_id)s
+    )
+    -- Exclude anyone skipped / reported in either direction.
+    AND NOT EXISTS (
+        SELECT 1 FROM skipped s
+        WHERE (s.subject_person_id = %(me_id)s AND s.object_person_id = l.liked_id)
+           OR (s.subject_person_id = l.liked_id AND s.object_person_id = %(me_id)s)
+    )
+    -- Peer must still be activated (no soft-deleted accounts).
+    AND peer.activated = TRUE
+    -- Defensive: same match guard as the incoming query.
+    AND NOT EXISTS (
+        SELECT 1 FROM ahavah_match m
+        WHERE (m.user_a_id = %(me_id)s AND m.user_b_id = l.liked_id)
+           OR (m.user_b_id = %(me_id)s AND m.user_a_id = l.liked_id)
+    )
+ORDER BY
+    l.created_at DESC
+LIMIT 200
+"""
+
+
+Q_TAKE_BACK_LIKE = """
+-- Remove the session user's own outgoing like, unless a confirmed
+-- match already exists (matched people belong in 'Matches'; taking a
+-- like back would strand a live match row).
+DELETE FROM liked l
+ USING person peer
+WHERE peer.uuid = uuid_or_null(%(prospect_uuid)s)
+  AND l.liker_id = %(me_id)s
+  AND l.liked_id = peer.id
+  AND NOT EXISTS (
+      SELECT 1 FROM ahavah_match m
+      WHERE (m.user_a_id = l.liker_id AND m.user_b_id = l.liked_id)
+         OR (m.user_a_id = l.liked_id AND m.user_b_id = l.liker_id)
+  )
+RETURNING l.liked_id
+"""
+
+
+def get_outgoing_likes(s: t.SessionInfo):
+    """People the session user liked who haven't matched back yet.
+    Powers the /matches 'You liked' tab. No premium gate — this is the
+    caller's own outgoing data. Tokens spent on super-likes are not
+    refundable, so is_super is display-only here."""
+    if s.person_id is None:
+        return "Not signed in", 401
+
+    with api_tx() as tx:
+        rows = tx.execute(Q_LIST_OUTGOING_LIKES, dict(me_id=s.person_id)).fetchall()
+
+    likes = [
+        {
+            "with_profile": {
+                "id": r["peer_uuid"],
+                "firstName": r["peer_name"],
+                "age": r["peer_age"],
+                "photo_uuids": r["peer_photo_uuids"],
+                "seconds_since_last_online": r["peer_seconds_since_last_online"],
+            },
+            "liked_at": r["created_at"],
+            "is_super": bool(r["is_super"]),
+        }
+        for r in rows
+    ]
+    return {"count": len(likes), "likes": likes}
+
+
+def take_back_like(req: 't.PostTakeBackLike', s: t.SessionInfo):
+    """Delete the caller's own outgoing like so the person returns to
+    their discover deck. 404 when there is nothing to take back (no
+    like, unknown uuid, or a confirmed match already exists). Clears
+    the caller's search_cache so the next deck/map build re-includes
+    the person (the cache was built with the liked-exclusion applied).
+    No token refund for super-likes — the spend already happened."""
+    if s.person_id is None:
+        return "Not signed in", 401
+
+    with api_tx() as tx:
+        removed = tx.execute(
+            Q_TAKE_BACK_LIKE,
+            dict(me_id=s.person_id, prospect_uuid=req.profile_uuid),
+        ).fetchall()
+        if removed:
+            tx.execute(
+                "DELETE FROM search_cache WHERE searcher_person_id = %(p)s",
+                dict(p=s.person_id),
+            )
+
+    if not removed:
+        return "Nothing to take back", 404
+    return {"ok": True}
+
+
 Q_GET_MATCH = """
 SELECT
     m.match_id::text   AS match_id,

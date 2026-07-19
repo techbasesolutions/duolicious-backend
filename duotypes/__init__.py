@@ -1061,3 +1061,10 @@ class PostDecision(BaseModel):
     """
     profile_uuid: str = Field(min_length=1, max_length=64)
     decision: Literal['like', 'nope']
+
+
+class PostTakeBackLike(BaseModel):
+    """'You liked' tab (2026-07-19): withdraw an outgoing like so the
+    person returns to the caller's discover deck. Mirrors PostDecision's
+    uuid shape; POSTed to /likes/outgoing/take-back."""
+    profile_uuid: str = Field(min_length=1, max_length=64)

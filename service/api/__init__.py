@@ -647,6 +647,19 @@ def get_incoming_likes(s: t.SessionInfo):
     on yet. Powers the /matches 'Liked you' tab on the frontend."""
     return decisions.get_incoming_likes(s)
 
+@aget('/likes/outgoing')
+def get_outgoing_likes(s: t.SessionInfo):
+    """People the session user liked who haven't matched back yet.
+    Powers the /matches 'You liked' tab on the frontend."""
+    return decisions.get_outgoing_likes(s)
+
+@apost('/likes/outgoing/take-back')
+@validate(t.PostTakeBackLike)
+def post_take_back_like(req: t.PostTakeBackLike, s: t.SessionInfo):
+    """Withdraw an outgoing like so the person returns to the caller's
+    discover deck. 404 when there's nothing to take back."""
+    return decisions.take_back_like(req, s)
+
 @apost('/inbox-info')
 @validate(t.PostInboxInfo)
 def post_inbox_info(req: t.PostInboxInfo, s: t.SessionInfo):
