@@ -138,9 +138,14 @@ prospect_pool AS (
           OR ST_DWithin(sp.searcher_coords, p.coordinates, %(local_radius_m)s)
       )
 
-      -- Language overlap: applied only if user has expressed preferences
+      -- Language overlap: applied only if user has expressed preferences.
+      -- Fail-open on an UNSET prospect field (2026-07-19): a member who
+      -- never filled languages must not be invisible to every filtering
+      -- viewer. Unknown is not a mismatch.
       AND (
           cardinality(sp.preferred_languages) = 0
+          OR p.languages_spoken IS NULL
+          OR cardinality(p.languages_spoken) = 0
           OR p.languages_spoken && sp.preferred_languages
       )
 
@@ -209,10 +214,14 @@ prospect_pool AS (
           -- ->>'intent' = ANY(...) scalar test silently stopped matching once
           -- intent became an array.
           OR p.ahavah_extra->'intent' ?| %(intents)s::TEXT[]
+          -- Fail-open on unset (2026-07-19): unknown is not a mismatch.
+          OR p.ahavah_extra->'intent' IS NULL
+          OR p.ahavah_extra->'intent' = '[]'::jsonb
       )
       AND (
           cardinality(%(marital_statuses)s::TEXT[]) = 0
           OR p.ahavah_extra->>'maritalStatus' = ANY(%(marital_statuses)s::TEXT[])
+          OR p.ahavah_extra->>'maritalStatus' IS NULL
       )
       -- Children: 2-bucket filter ("has" / "none"). The frontend
       -- multi-select can pass both buckets (meaning "any value
@@ -234,28 +243,40 @@ prospect_pool AS (
           -- assembly is a multi-value array (ahavah_extra.assembly). Match on
           -- array overlap, same scalar-vs-array fix as the intent filter above.
           OR p.ahavah_extra->'assembly' ?| %(assemblies)s::TEXT[]
+          -- Fail-open on unset (2026-07-19): unknown is not a mismatch.
+          OR p.ahavah_extra->'assembly' IS NULL
+          OR p.ahavah_extra->'assembly' = '[]'::jsonb
       )
       AND (
           cardinality(%(torah_levels)s::TEXT[]) = 0
           OR p.ahavah_extra->>'torahLevel' = ANY(%(torah_levels)s::TEXT[])
+          OR p.ahavah_extra->>'torahLevel' IS NULL
       )
       AND (
           cardinality(%(polygyny_stances)s::TEXT[]) = 0
           OR p.ahavah_extra->>'polygyny' = ANY(%(polygyny_stances)s::TEXT[])
+          OR p.ahavah_extra->>'polygyny' IS NULL
       )
       AND (
           cardinality(%(calendars)s::TEXT[]) = 0
           OR p.ahavah_extra->>'calendar' = ANY(%(calendars)s::TEXT[])
+          OR p.ahavah_extra->>'calendar' IS NULL
       )
       AND (
           cardinality(%(educations)s::TEXT[]) = 0
           OR p.ahavah_extra->>'education' = ANY(%(educations)s::TEXT[])
+          OR p.ahavah_extra->>'education' IS NULL
       )
       -- Health tags: prospect.healthTags JSON array must include every
       -- selected tag (AND semantics — picking "non-smoker" + "fitness"
       -- requires both). JSONB containment via `?&` operator.
       AND (
           cardinality(%(health_tags)s::TEXT[]) = 0
+          -- Fail-open on unset (2026-07-19): a prospect who never answered
+          -- health tags is unknown, not a mismatch. A SET-but-different
+          -- value still filters out (AND semantics preserved below).
+          OR p.ahavah_extra->'healthTags' IS NULL
+          OR p.ahavah_extra->'healthTags' = '[]'::jsonb
           OR (
               p.ahavah_extra->'healthTags' IS NOT NULL
               AND p.ahavah_extra->'healthTags' ?& %(health_tags)s::TEXT[]
