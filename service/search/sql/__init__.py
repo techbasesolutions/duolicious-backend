@@ -102,7 +102,21 @@ prospect_pool AS (
         ''::text AS sexual_orientation,
         p.verification_level_id,
         p.last_online_time,
-        (ab.person_id IS NOT NULL) AS is_boosted
+        (ab.person_id IS NOT NULL) AS is_boosted,
+        -- "Local only" is a RANKING SIGNAL, not a filter (2026-07-20):
+        -- when the searcher's intent includes local-only, prospects
+        -- within %(local_radius_m)s metres sort first, but nobody is
+        -- removed from the pool. The old hard gate emptied the whole
+        -- deck+map on a small pool (Stewart: nearest prospect 664 km,
+        -- cap 160 km, zero results), and its only override
+        -- ('open-to-relocation') is a female-only intent option that
+        -- male members cannot even select.
+        (
+            sp.searcher_intent ? 'local-only'
+            AND sp.searcher_coords IS NOT NULL
+            AND p.coordinates IS NOT NULL
+            AND ST_DWithin(sp.searcher_coords, p.coordinates, %(local_radius_m)s)
+        ) AS is_local
     FROM person p
     CROSS JOIN searcher_prefs sp
     -- Phase 7 Task 7.2 — surface boosted candidates first in /search.
@@ -123,20 +137,9 @@ prospect_pool AS (
           OR p.country = ANY(sp.preferred_countries)
       )
 
-      -- Distance gate (functional local-only / open-to-relocation): when the
-      -- searcher's intent includes "local-only", restrict the pool to
-      -- prospects within %(local_radius_m)s metres. "open-to-relocation"
-      -- overrides it (distance never blocks), and an absent/legacy intent or
-      -- a missing point on either side also means no cap (fail open — never
-      -- silently empty the deck).
-      AND (
-          sp.searcher_intent IS NULL
-          OR NOT (sp.searcher_intent ? 'local-only')
-          OR (sp.searcher_intent ? 'open-to-relocation')
-          OR sp.searcher_coords IS NULL
-          OR p.coordinates IS NULL
-          OR ST_DWithin(sp.searcher_coords, p.coordinates, %(local_radius_m)s)
-      )
+      -- NOTE (2026-07-20): the hard local-only distance gate that lived
+      -- here was removed — see the is_local ranking signal in the SELECT
+      -- list above. Distance never excludes anyone from the deck or map.
 
       -- Language overlap: applied only if user has expressed preferences.
       -- Fail-open on an UNSET prospect field (2026-07-19): a member who
@@ -305,7 +308,9 @@ INSERT INTO search_cache (
 )
 SELECT
     %(searcher_person_id)s,
-    (ROW_NUMBER() OVER (ORDER BY p.is_boosted DESC, p.verification_level_id DESC, p.last_online_time DESC, p.id) - 1)::SMALLINT,
+    -- is_local (local-only signal, 2026-07-20) ranks nearby prospects
+    -- first for local-minded searchers; boosts stay on top (paid).
+    (ROW_NUMBER() OVER (ORDER BY p.is_boosted DESC, p.is_local DESC, p.verification_level_id DESC, p.last_online_time DESC, p.id) - 1)::SMALLINT,
     p.id,
     p.uuid_raw,
     NULL,

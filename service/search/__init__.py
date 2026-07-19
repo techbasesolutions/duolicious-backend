@@ -33,10 +33,12 @@ class ClubHttpArg:
     club: str | None
 
 
-# "Local only" distance cap (metres) for the discover distance gate. Applied
-# only when a searcher's intent includes "local-only" and not
-# "open-to-relocation". ~100 miles -- generous enough not to empty the deck in
-# low-density areas while still meaning "same region, not long-distance".
+# "Local only" radius (metres) for the is_local RANKING SIGNAL in
+# Q_UNCACHED_SEARCH_2. Since 2026-07-20 distance never filters anyone out
+# of the deck or map; when a searcher's intent includes "local-only",
+# prospects within this radius simply sort first. (The old hard gate
+# emptied Stewart's whole deck: nearest prospect 664 km on a 25-member
+# pool, and its only override was a female-only intent option.)
 LOCAL_RADIUS_M = 160_000
 
 
