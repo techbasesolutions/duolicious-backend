@@ -215,51 +215,32 @@ def get_search(
 def get_map_markers(s: t.SessionInfo):
     """All map markers for the current viewer, as individual points.
 
-    Reads the viewer's search_cache, REBUILDING it first when it is empty
-    or stale (>60 min). The cache used to be a write-once snapshot that
-    only /search filter changes refreshed, so new members stayed invisible
-    on the map for days ("why is X missing" class, 2026-07-19: Christopher
-    was absent from a stale snapshot while passing every live gate). The
-    rebuild uses the viewer's stored preferences with no pill filters; a
-    subsequent /discover first-page load re-applies the viewer's sheet
-    filters exactly as before. The frontend clusters + spiderfies
-    client-side."""
+    MAP = DIRECTORY, DECK = QUEUE (2026-07-19). Queries members directly
+    (Q_MAP_MARKERS) instead of reading the viewer's search_cache. The old
+    cache coupling produced two whole bug classes: stale snapshots (new
+    members invisible for days) and deck-exclusion mirroring (a member
+    who swiped through the whole pool saw an empty world map for the
+    7-day skip window). Gender-relevant + privacy-gated; swipe history
+    never hides anyone here; reports/blocks always do. The frontend
+    clusters + spiderfies client-side."""
     if s.person_id is None:
         return '', 500
-
-    params = dict(searcher_person_id=s.person_id)
 
     with api_tx('READ COMMITTED') as tx:
         tx.execute('SET LOCAL statement_timeout = 10000')  # 10 seconds
 
-        state = tx.execute(
-            """
-            SELECT count(*) AS n,
-                   COALESCE(MIN(built_at) > NOW() - INTERVAL '60 minutes', FALSE) AS fresh
-              FROM search_cache
-             WHERE searcher_person_id = %(searcher_person_id)s
-            """,
-            params,
-        ).fetchone()
-
-        if not state['n'] or not state['fresh']:
-            genders = [
-                r['gender_id']
-                for r in tx.execute(
-                    'SELECT gender_id FROM search_preference_gender '
-                    'WHERE person_id = %(searcher_person_id)s',
-                    params,
-                ).fetchall()
-            ]
-            if genders:
-                _uncached_search_results(
-                    tx,
-                    searcher_person_id=s.person_id,
-                    no=(500, 0),
-                    gender_preference=genders,
-                )
-
-        rows = tx.execute(Q_MAP_MARKERS, params).fetchall()
+        genders = [
+            r['gender_id']
+            for r in tx.execute(
+                'SELECT gender_id FROM search_preference_gender '
+                'WHERE person_id = %(searcher_person_id)s',
+                dict(searcher_person_id=s.person_id),
+            ).fetchall()
+        ]
+        rows = tx.execute(
+            Q_MAP_MARKERS,
+            dict(searcher_person_id=s.person_id, gender_preference=genders),
+        ).fetchall()
 
     return {'markers': [dict(r) for r in rows]}
 

@@ -407,6 +407,15 @@ LIMIT %(n)s OFFSET %(o)s
 # MarkerClusterGroup cluster + spiderfy them (so same-coordinate users can be
 # fanned apart). Fetched once per filter set, not per pan.
 Q_MAP_MARKERS = """
+    -- MAP = DIRECTORY, DECK = QUEUE (2026-07-19). The map used to read
+    -- the viewer's search_cache, inheriting every deck exclusion:
+    -- liked, passed, passed-by. On a small pool a member who swipes
+    -- through everyone then sees an EMPTY WORLD MAP for the 7-day skip
+    -- window (Ehud, 2026-07-19) - the second bug from coupling the map
+    -- to the deck cache (stale-snapshot invisibility was the first).
+    -- The map now queries members directly: gender-relevant and
+    -- privacy-gated, but swipe history NEVER hides anyone here. Only
+    -- reports/blocks exclude, in either direction.
     SELECT
         p.uuid::text AS uuid,
         p.name,
@@ -420,9 +429,23 @@ Q_MAP_MARKERS = """
             ORDER BY ph.position
             LIMIT 1
         ) AS photo_uuid
-    FROM search_cache sc
-    JOIN person p ON p.id = sc.prospect_person_id
-    WHERE sc.searcher_person_id = %(searcher_person_id)s
+    FROM person p
+    WHERE p.activated
+      AND p.id != %(searcher_person_id)s
+      -- Gender preference, fail-open when the viewer never set one.
+      AND (
+          cardinality(%(gender_preference)s::SMALLINT[]) = 0
+          OR p.gender_id = ANY(%(gender_preference)s::SMALLINT[])
+      )
+      AND NOT p.hide_me_from_strangers
+      -- Reports/blocks hide permanently, either direction. Plain passes
+      -- do NOT - they are deck state, not map state.
+      AND NOT EXISTS (
+          SELECT 1 FROM skipped sk
+          WHERE ((sk.subject_person_id = %(searcher_person_id)s AND sk.object_person_id = p.id)
+              OR (sk.subject_person_id = p.id AND sk.object_person_id = %(searcher_person_id)s))
+            AND sk.reported
+      )
       AND p.show_my_location
       AND COALESCE((p.ahavah_extra->>'showOnMap')::boolean, TRUE)
       -- Only pin users who picked a REAL city. Country-only users sit on a
