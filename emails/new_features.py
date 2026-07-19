@@ -73,7 +73,7 @@ def _body() -> str:
 {_feature(
     "Nobody stays hidden",
     "Distance and unanswered profile questions no longer hide anyone. "
-    "Local members first, the wider community right after."
+    "If you prefer local, nearby members simply appear first."
 )}
 
 {callout(
