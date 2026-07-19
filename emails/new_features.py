@@ -24,8 +24,8 @@ from emails.base import (
 )
 from service.unsubscribe import make_url as _unsub_url
 
-SUBJECT = "Three upgrades just landed on Ahavah"
-PREHEADER = "See everyone you liked, point discovery at your map, and meet more of the community."
+SUBJECT = "Four upgrades just landed on Ahavah"
+PREHEADER = "See who viewed you, see everyone you liked, and point discovery at your map."
 FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
 SITE = "https://ahavah.app"
 
@@ -48,43 +48,41 @@ def _body() -> str:
 {title_image("title-new-features.png", "title-new-features-wht.png", "New features, live now.", 520)}
 
 <p class="e-text" style="margin:0 0 4px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
-  Your feedback has been shaping Ahavah all week. Three upgrades are
-  live for every member today.
+  Live for every member today:
 </p>
 
 {_feature(
+    "See who viewed you",
+    "New under Profile: <strong style='color:" + INK + ";font-weight:700;'>Who viewed you</strong>. "
+    "Every view of your profile, with new ones flagged."
+)}
+
+{_feature(
     "See everyone you liked",
-    "Matches has a new tab: <strong style='color:" + INK + ";font-weight:700;'>You liked</strong>. "
-    "Everyone you liked or super liked, waiting for a like back. "
-    "Changed your mind? Open the small menu on a card and take the like "
-    "back. They return to your Discover deck, no harm done."
+    "Matches has a new <strong style='color:" + INK + ";font-weight:700;'>You liked</strong> tab. "
+    "Changed your mind? Take a like back from the card menu."
 )}
 
 {_feature(
     "Point discovery at your map",
     "Turn on <strong style='color:" + INK + ";font-weight:700;'>Use my map view</strong> in the "
-    "Discover filters. Browse the map to any part of the world, and the "
-    "people in the area you last looked at appear first in your deck. "
-    "Turn it off any time with one tap."
+    "Discover filters. People near where you last browsed the map "
+    "appear first."
 )}
 
 {_feature(
-    "Nobody stays hidden anymore",
-    "We fixed how discovery treats distance and unanswered profile "
-    "questions. If you prefer local matches you will see nearby people "
-    "first, with the wider community right after. And leaving a profile "
-    "question blank no longer hides you from anyone."
+    "Nobody stays hidden",
+    "Distance and unanswered profile questions no longer hide anyone. "
+    "Local members first, the wider community right after."
 )}
 
 {callout(
-    "<strong>Seeing an empty feed before?</strong> That is fixed. Close "
-    "and reopen the app once and your Discover feed and map will be "
-    "full again."
+    "<strong>Saw an empty feed before?</strong> Fixed. Close and reopen "
+    "the app once."
 )}
 
 <p class="e-text" style="margin:24px 0 24px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
-  Every one of these came from a member telling us what felt off. Keep
-  it coming: just reply to this email.
+  All four came from member feedback. Reply with yours.
 </p>
 
 {button("Open Ahavah &rarr;", SITE, variant="lime", full=True)}
