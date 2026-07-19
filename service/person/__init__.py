@@ -752,17 +752,31 @@ def post_finish_onboarding(s: t.SessionInfo):
     # client) would otherwise 500 here in an unrecoverable retry loop
     # ("We couldn't finalize your profile"). Return a distinct 409 so the
     # client can route the user back to re-enter the missing fields.
+    # 2026-07-19 (Laura's loop): gender_id joined the guard — a wizard
+    # client whose gender PATCH silently failed reached the copy with
+    # gender_id NULL and 500ed unrecoverably. The body NAMES the missing
+    # fields so the client can route the user to the right step instead
+    # of restarting the whole wizard.
     with api_tx() as tx:
         row = tx.execute(
             """
-            SELECT (name IS NULL OR date_of_birth IS NULL) AS incomplete
+            SELECT (name IS NULL)          AS missing_name,
+                   (date_of_birth IS NULL) AS missing_dob,
+                   (gender_id IS NULL)     AS missing_gender
               FROM onboardee
              WHERE email = %(email)s
             """,
             dict(email=s.email),
         ).fetchone()
-    if row and row['incomplete']:
-        return 'Onboarding incomplete', 409
+    if row and (row['missing_name'] or row['missing_dob'] or row['missing_gender']):
+        missing = [
+            f for f, m in (
+                ('name', row['missing_name']),
+                ('date_of_birth', row['missing_dob']),
+                ('gender', row['missing_gender']),
+            ) if m
+        ]
+        return 'Onboarding incomplete: ' + ', '.join(missing), 409
 
     with api_tx() as tx:
         tx.execute('SET LOCAL statement_timeout = 15000') # 15 seconds
