@@ -73,7 +73,7 @@ def send_beta_welcome(email: str) -> None:
         to_addr=email,
         from_addr=FROM_ADDR,
         list_unsubscribe=(
-            f"<mailto:admin@ahavah.app?subject=Unsubscribe>, <{unsub}>"
+            f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{unsub}>"
         ),
     )
 

@@ -60,7 +60,7 @@ def main() -> None:
             body=new_features_html(email),
             to_addr=email,
             from_addr=FROM_ADDR,
-            list_unsubscribe=f"<mailto:admin@ahavah.app?subject=Unsubscribe>, <{unsub}>",
+            list_unsubscribe=f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{unsub}>",
         )
         print(f"sent to {mask_email(email)}")
         sent += 1

@@ -153,5 +153,5 @@ def send_checklist_results(to_email: str, role: str | None, answers: list[dict])
         subject=SUBJECT,
         body=checklist_results_html(role, answers),
         to_addr=to_email,
-        reply_to="admin@ahavah.app",
+        reply_to="support@ahavah.app",
     )

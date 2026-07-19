@@ -8,7 +8,7 @@ Soft-delete flow (Phase W cutover, migration 0008):
   3. This cron scans for rows with deletion_requested_at < NOW() - 7 days
      and hard-deletes them (cascades remove messages, photos, swipes).
 
-Cancellation: a user emails admin@ahavah.app within 7 days; admin
+Cancellation: a user emails support@ahavah.app within 7 days; admin
 flips activated=true + clears deletion_requested_at. A self-service
 cancel-deletion endpoint can land later.
 """
