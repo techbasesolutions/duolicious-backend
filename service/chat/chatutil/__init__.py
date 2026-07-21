@@ -31,6 +31,21 @@ SELECT id FROM person WHERE uuid = uuid_or_null(%(username)s)
 """
 
 
+# A confirmed mutual match. `ahavah_match` stores the pair with
+# LEAST/GREATEST ordering, so check both orientations rather than
+# assuming which side is user_a.
+Q_IS_MATCHED = """
+SELECT
+    1
+FROM
+    ahavah_match
+WHERE
+    user_a_id = %(from_id)s AND user_b_id = %(to_id)s
+OR
+    user_a_id = %(to_id)s   AND user_b_id = %(from_id)s
+"""
+
+
 def build_element(
     tag: str,
     text: str | None = None,
@@ -113,6 +128,18 @@ def message_string_to_etree(
 async def fetch_is_skipped(from_id: int, to_id: int) -> bool:
     async with api_tx('read committed') as tx:
         await tx.execute(Q_IS_SKIPPED, dict(from_id=from_id, to_id=to_id))
+        row = await tx.fetchone()
+
+    return bool(row)
+
+
+@AsyncLruCache(ttl=5)  # 5 seconds
+async def fetch_is_matched(from_id: int, to_id: int) -> bool:
+    """TRUE when the two people hold a confirmed mutual match. Matched
+    pairs have each opted in to the other, so consent-based gates (the
+    location age-verification hold) do not apply between them."""
+    async with api_tx('read committed') as tx:
+        await tx.execute(Q_IS_MATCHED, dict(from_id=from_id, to_id=to_id))
         row = await tx.fetchone()
 
     return bool(row)

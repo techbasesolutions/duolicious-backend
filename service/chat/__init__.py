@@ -38,6 +38,7 @@ from service.chat.ratelimit import (
 from lxml import etree
 from service.chat.chatutil import (
     fetch_is_skipped,
+    fetch_is_matched,
     message_string_to_etree,
     to_bare_jid,
     fetch_id_from_username,
@@ -406,10 +407,19 @@ async def process_text(
     if not to_id:
         return
 
+    # MATCHED PEOPLE CAN ALWAYS CHAT (operator ruling 2026-07-21). The
+    # location-inherited age-verification hold is a gate on approaching
+    # STRANGERS; once two members have mutually matched, both have opted
+    # in and the hold no longer applies. Previously it silently rejected
+    # every message from a flagged member even inside a confirmed match:
+    # a new member matched, received a message, and could not reply
+    # (Laura, match #2, 0 messages sent). Reports/blocks are enforced
+    # separately by fetch_is_skipped just below and are NOT bypassed.
     if await verification_required(person_id=from_id):
-        return await redis_publish_many(connection_uuid, [
-            FMT_VERIFICATION_REQUIRED.format(stanza_id=stanza_id)
-        ])
+        if not await fetch_is_matched(from_id=from_id, to_id=to_id):
+            return await redis_publish_many(connection_uuid, [
+                FMT_VERIFICATION_REQUIRED.format(stanza_id=stanza_id)
+            ])
 
     if await fetch_is_skipped(from_id=from_id, to_id=to_id):
         return await redis_publish_many(connection_uuid, [
