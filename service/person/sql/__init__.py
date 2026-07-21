@@ -3514,39 +3514,34 @@ WITH checker AS (
     AND
         prospect.id <> %(person_id)s
     AND
-        -- The prospect did not skip the checker
+        -- VIEWS IS A LOG, NOT A QUEUE (2026-07-21). Reports/blocks hide
+        -- permanently in EITHER direction; plain passes never hide.
+        -- Previously ANY skipped row (a pass, with no 7-day expiry and no
+        -- `reported` distinction) removed that person from both tabs
+        -- forever, so active swipers saw empty lists: Josiah had 12 real
+        -- visits and was shown 0, Ehud 11 outgoing views and was shown 2.
+        -- Same deck-state-leak class as the map/search_cache coupling.
         NOT EXISTS (
             SELECT
                 1
             FROM
                 skipped
             WHERE
-                subject_person_id = prospect.id
+                skipped.reported
             AND
-                object_person_id = %(person_id)s
-        )
-    AND
-        -- The checker did not skip the prospect, or wishes to view skipped prospects
-        (
-            NOT EXISTS (
-                SELECT
-                    1
-                FROM
-                    skipped
-                WHERE
-                    subject_person_id = %(person_id)s
-                AND
-                    object_person_id = prospect.id
-            )
-        OR
-            1 = (
-                SELECT
-                    skipped_id
-                FROM
-                    search_preference_skipped
-                WHERE
-                    person_id = %(person_id)s
-            )
+                (
+                    (
+                        subject_person_id = prospect.id
+                    AND
+                        object_person_id = %(person_id)s
+                    )
+                OR
+                    (
+                        subject_person_id = %(person_id)s
+                    AND
+                        object_person_id = prospect.id
+                    )
+                )
         )
     AND
         -- The prospect wants to be shown to strangers or isn't a stranger
