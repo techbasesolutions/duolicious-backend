@@ -407,14 +407,31 @@ async def process_text(
     if not to_id:
         return
 
-    # MATCHED PEOPLE CAN ALWAYS CHAT (operator ruling 2026-07-21). The
-    # location-inherited age-verification hold is a gate on approaching
-    # STRANGERS; once two members have mutually matched, both have opted
-    # in and the hold no longer applies. Previously it silently rejected
-    # every message from a flagged member even inside a confirmed match:
-    # a new member matched, received a message, and could not reply
-    # (Laura, match #2, 0 messages sent). Reports/blocks are enforced
-    # separately by fetch_is_skipped just below and are NOT bypassed.
+    # ONLY MATCHED PEOPLE CAN CHAT (operator ruling 2026-07-21).
+    #
+    # Every messaging affordance in the app is already gated on a
+    # confirmed match (matches list, map pin, both profile buttons), but
+    # the transport accepted a message from ANY member to ANY member:
+    # the upstream Duolicious "intro" model (cold first contact, guarded
+    # only by spam heuristics + rate limits) was still wired up
+    # underneath. That left the product rule enforced in the UI alone,
+    # so a modified or replayed client could message anyone. The rule
+    # now lives where it is actually enforceable.
+    #
+    # Consequence, deliberately accepted: the intro path is dead while
+    # this holds. The spam / rate-limit / uniqueness machinery below is
+    # retained untouched so re-enabling intros is a one-line revert.
+    if not await fetch_is_matched(from_id=from_id, to_id=to_id):
+        return await redis_publish_many(connection_uuid, [
+            f'<duo_message_blocked id="{stanza_id}" reason="not-matched"/>'
+        ])
+
+    # Age-verification hold. Now only ever evaluated for a matched pair
+    # (the match check above precedes it), and matched people are exempt
+    # because both sides opted in — so in the current product this never
+    # fires. Kept as defence in depth for the day intros come back: it is
+    # the gate that stops a flagged, unverified account cold-approaching
+    # strangers. Reports/blocks are enforced separately just below.
     if await verification_required(person_id=from_id):
         if not await fetch_is_matched(from_id=from_id, to_id=to_id):
             return await redis_publish_many(connection_uuid, [
