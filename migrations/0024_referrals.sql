@@ -42,7 +42,12 @@ ALTER TABLE token_ledger
   ADD CONSTRAINT token_ledger_reason_check
   CHECK (reason IN (
     'purchase','subscription_stipend','reveal_liker','super_like',
-    'day_pass','boost','refund','referral'
+    'day_pass','boost','refund','referral',
+    -- 'rewind' (0015/0028) omitted here originally, but this migration
+    -- re-runs on every deploy and drops the constraint first, so the
+    -- re-add failed every time against the 19 live rewind rows
+    -- (2026-07-22). Keep this a superset of every allowed reason.
+    'rewind'
   ));
 
 COMMIT;

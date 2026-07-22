@@ -25,7 +25,15 @@ BEGIN
         'day_pass',
         'boost',
         'refund',
-        'rewind'
+        'rewind',
+        -- 'referral' arrived later (0024) but this migration RE-RUNS on
+        -- every deploy: it drops the constraint unconditionally, so
+        -- omitting a reason already present in the data made the re-add
+        -- fail every single time ("check constraint is violated by some
+        -- row", 2026-07-22). The transaction rolled back so no damage,
+        -- but the noise would mask a migration that genuinely broke.
+        -- Keep this list a superset of every reason ever allowed.
+        'referral'
       ));
   END IF;
 END $$;

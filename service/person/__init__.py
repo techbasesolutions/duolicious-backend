@@ -22,6 +22,7 @@ from service.referrals import (
     credit_pending_for_invitee,
     credit_pending_for_inviter,
 )
+import time
 import traceback
 import re
 from smtp import aws_smtp
@@ -2092,9 +2093,25 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
     else:
         return f'Unhandled field name {field_name}', 500
 
-    with api_tx() as tx:
-        if q1: tx.execute(q1, params)
-        if q2: tx.execute(q2, params)
+    # Retry on serialization conflict (2026-07-22). api_tx defaults to
+    # REPEATABLE READ, so two concurrent writes to the SAME person row
+    # abort one of them with SerializationFailure. That is expected and
+    # transient, but it was surfacing as a 500 and silently losing the
+    # write: the client fans profile edits out as one PATCH per field
+    # and the profile back-sync fires unawaited, so a burst against one
+    # row is routine (6 such 500s in one 300ms window on 2026-07-22).
+    # Retrying the whole transaction is the standard remedy; the writes
+    # here are idempotent field assignments, so a replay is safe.
+    for _attempt in range(3):
+        try:
+            with api_tx() as tx:
+                if q1: tx.execute(q1, params)
+                if q2: tx.execute(q2, params)
+            break
+        except psycopg.errors.SerializationFailure:
+            if _attempt == 2:
+                raise
+            time.sleep(0.05 * (_attempt + 1))
 
     if uuid and base64_file and crop_size:
         try:
