@@ -80,7 +80,7 @@ def session_token(person):
     """Insert a duo_session row, return the bearer token."""
     from database import api_tx
     import secrets, hashlib
-    tok = secrets.token_urlsafe(32)
+    tok = secrets.token_hex(32)
     tok_hash = hashlib.sha512(tok.encode()).hexdigest()
     with api_tx() as tx:
         tx.execute(

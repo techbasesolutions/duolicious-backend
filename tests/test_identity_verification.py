@@ -98,19 +98,19 @@ class TestPromoteUser:
         assert promote_user(1, 'gold') is False
 
     def test_already_at_same_level_returns_false(self, monkeypatch):
-        self._patch_api_tx(monkeypatch, rows=[FakeRow(verification_level='gold')])
+        self._patch_api_tx(monkeypatch, rows=[FakeRow(ahavah_verification_tier='gold')])
         from service.identity_verification import promote_user
         assert promote_user(1, 'gold') is False
 
     def test_already_at_higher_level_blocks_demotion(self, monkeypatch):
         # User is gold; a stale silver event must NOT demote them.
-        self._patch_api_tx(monkeypatch, rows=[FakeRow(verification_level='gold')])
+        self._patch_api_tx(monkeypatch, rows=[FakeRow(ahavah_verification_tier='gold')])
         from service.identity_verification import promote_user
         assert promote_user(1, 'silver') is False
 
     def test_promotes_none_to_gold_with_country(self, monkeypatch):
         queries = self._patch_api_tx(
-            monkeypatch, rows=[FakeRow(verification_level='none')]
+            monkeypatch, rows=[FakeRow(ahavah_verification_tier='none')]
         )
         from service.identity_verification import promote_user
         assert promote_user(42, 'gold', country='US') is True
@@ -118,14 +118,14 @@ class TestPromoteUser:
         # We should see two queries: the SELECT + the UPDATE.
         assert len(queries) == 2
         update_sql, update_params = queries[1]
-        assert 'verification_level' in update_sql
+        assert 'ahavah_verification_tier' in update_sql
         assert 'id_verified_country' in update_sql
         assert update_params['country'] == 'US'
         assert update_params['id'] == 42
 
     def test_promotes_silver_to_gold(self, monkeypatch):
         queries = self._patch_api_tx(
-            monkeypatch, rows=[FakeRow(verification_level='silver')]
+            monkeypatch, rows=[FakeRow(ahavah_verification_tier='silver')]
         )
         from service.identity_verification import promote_user
         assert promote_user(7, 'gold', country='GB') is True
@@ -133,11 +133,11 @@ class TestPromoteUser:
 
     def test_promotes_none_to_bronze_no_country_column(self, monkeypatch):
         queries = self._patch_api_tx(
-            monkeypatch, rows=[FakeRow(verification_level='none')]
+            monkeypatch, rows=[FakeRow(ahavah_verification_tier='none')]
         )
         from service.identity_verification import promote_user
         assert promote_user(7, 'bronze') is True
-        # bronze writes only verification_level, no country
+        # bronze writes only ahavah_verification_tier, no country
         assert 'id_verified_country' not in queries[1][0]
 
 

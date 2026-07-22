@@ -49,6 +49,19 @@ def searcher_and_candidates():
             _insert_person(tx, email_prefix=f'search-cand-{i}')
             for i in range(4)
         ]
+        # The deck query gates on `p.gender_id = ANY(gender_preference)`,
+        # and the service builds that array from search_preference_gender.
+        # Without a row here the array is empty, so /search can only ever
+        # return [] and this test cannot pass. Everyone above is created
+        # with the same (first) gender, so prefer exactly that.
+        tx.execute(
+            """
+            INSERT INTO search_preference_gender (person_id, gender_id)
+            VALUES (%(p)s, (SELECT id FROM gender LIMIT 1))
+            ON CONFLICT DO NOTHING
+            """,
+            dict(p=searcher['id']),
+        )
     yield {'searcher': searcher, 'candidates': candidates}
     with api_tx() as tx:
         ids = [searcher['id']] + [c['id'] for c in candidates]
@@ -60,7 +73,7 @@ def searcher_and_candidates():
 
 @pytest.fixture
 def session_token(searcher_and_candidates):
-    tok = secrets.token_urlsafe(32)
+    tok = secrets.token_hex(32)
     tok_hash = hashlib.sha512(tok.encode()).hexdigest()
     sid = searcher_and_candidates['searcher']['id']
     from database import api_tx

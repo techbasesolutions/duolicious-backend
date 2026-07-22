@@ -61,7 +61,7 @@ def person_uuid():
 def session_token(person_uuid):
     """Create a duo_session row for the test person and return its token."""
     from database import api_tx
-    tok = secrets.token_urlsafe(32)
+    tok = secrets.token_hex(32)
     tok_hash = hashlib.sha512(tok.encode()).hexdigest()
     with api_tx() as tx:
         tx.execute(
@@ -162,12 +162,16 @@ def test_checkout_tokens_requires_auth(client, fake_stripe):
 # Task 2.3 — webhook credits tokens on session.mode=payment (idempotent)
 # ---------------------------------------------------------------------------
 
-def _make_payment_event(person_uuid_str: str, sku: str, *,
+def _make_payment_event(person: dict, sku: str, *,
                         event_id: str | None = None,
                         session_id: str | None = None,
                         amount_total: int = 999):
     """Build a Stripe-shaped checkout.session.completed payload with
-    mode=payment. Returns (body_bytes, parsed_dict) for client.post + assert.
+    mode=payment, mirroring exactly what /checkout/tokens stamps on the
+    session (service/checkout/__init__.py ~250): metadata carries BOTH
+    user_id (int person_id, used by _resolve_person_id) and user_uuid;
+    client_reference_id carries the person UUID. Without user_id the
+    webhook logs "could not resolve person_id" and never credits.
     """
     sid = session_id or f'cs_test_{uuid4().hex}'
     eid = event_id or f'evt_test_{uuid4().hex}'
@@ -180,8 +184,12 @@ def _make_payment_event(person_uuid_str: str, sku: str, *,
                 'object':               'checkout.session',
                 'id':                   sid,
                 'mode':                 'payment',
-                'client_reference_id':  person_uuid_str,
-                'metadata':             {'sku': sku, 'user_uuid': person_uuid_str},
+                'client_reference_id':  person['uuid'],
+                'metadata':             {
+                    'sku':       sku,
+                    'user_id':   str(person['id']),
+                    'user_uuid': person['uuid'],
+                },
                 'amount_total':         amount_total,
             }
         },
@@ -207,7 +215,7 @@ def _balance(person_uuid_str):
 def test_webhook_credits_tokens_on_payment_session(
     client, person_uuid, webhook_env,
 ):
-    payload = _make_payment_event(person_uuid['uuid'], 'starter')
+    payload = _make_payment_event(person_uuid, 'starter')
     body = json.dumps(payload).encode()
 
     res = client.post(
@@ -227,8 +235,8 @@ def test_webhook_token_credit_is_idempotent(
     # session_id. Use distinct event_ids so the second post gets past
     # record_event and is caught only by the ledger guard.
     session_id = f'cs_test_{uuid4().hex}'
-    p1 = _make_payment_event(person_uuid['uuid'], 'plus', session_id=session_id)
-    p2 = _make_payment_event(person_uuid['uuid'], 'plus', session_id=session_id)
+    p1 = _make_payment_event(person_uuid, 'plus', session_id=session_id)
+    p2 = _make_payment_event(person_uuid, 'plus', session_id=session_id)
     assert p1['id'] != p2['id']
 
     headers = {'Stripe-Signature': 't=0,v1=fake', 'Content-Type': 'application/json'}
