@@ -23,14 +23,14 @@ def _insert_person(tx, *, email_prefix='search'):
         """
         INSERT INTO person (
             email, normalized_email, name, date_of_birth,
-            coordinates, gender_id, about, location_short_friendly,
+            coordinates, gender_id, about, location_short_friendly, location_long_friendly, unit_id,
             activated, last_online_time
         )
         VALUES (
             %(email)s, %(email)s, 'Test', '1990-01-01',
             ST_SetSRID(ST_MakePoint(0, 0), 4326)::geography,
             (SELECT id FROM gender LIMIT 1),
-            'about', 'somewhere',
+            'about', 'somewhere', 'somewhere, nowhere', (SELECT id FROM unit LIMIT 1),
             TRUE, NOW()
         )
         RETURNING uuid::text AS uuid, id
@@ -67,8 +67,8 @@ def session_token(searcher_and_candidates):
     with api_tx() as tx:
         tx.execute(
             """
-            INSERT INTO duo_session (session_token_hash, email, person_id, signed_in)
-            VALUES (%s, %s, %s, TRUE)
+            INSERT INTO duo_session (session_token_hash, email, person_id, signed_in, otp)
+            VALUES (%s, %s, %s, TRUE, '123456')
             """,
             (tok_hash, f'search-session-{sid}@example.com', sid),
         )

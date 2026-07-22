@@ -206,12 +206,9 @@ WHERE
         WHERE rev.liker_id = %(me_id)s
           AND rev.liked_id = l.liker_id
     )
-    -- Exclude anyone we've skipped / reported in either direction.
-    AND NOT EXISTS (
-        SELECT 1 FROM skipped s
-        WHERE (s.subject_person_id = %(me_id)s AND s.object_person_id = l.liker_id)
-           OR (s.subject_person_id = l.liker_id AND s.object_person_id = %(me_id)s)
-    )
+    -- Reports/blocks only, either direction. A plain pass must not erase
+    -- someone from the Liked-you tab (migration 0035).
+    AND NOT is_blocked_pair(%(me_id)s, l.liker_id)
     -- Liker must still be activated (no soft-deleted accounts).
     AND liker.activated = TRUE
     -- Defensive: skip anyone we already share a confirmed match with
@@ -262,12 +259,9 @@ WHERE
         WHERE rev.liker_id = l.liked_id
           AND rev.liked_id = %(me_id)s
     )
-    -- Exclude anyone skipped / reported in either direction.
-    AND NOT EXISTS (
-        SELECT 1 FROM skipped s
-        WHERE (s.subject_person_id = %(me_id)s AND s.object_person_id = l.liked_id)
-           OR (s.subject_person_id = l.liked_id AND s.object_person_id = %(me_id)s)
-    )
+    -- Reports/blocks only, either direction. A plain pass must not erase
+    -- someone from the You-liked tab (migration 0035).
+    AND NOT is_blocked_pair(%(me_id)s, l.liked_id)
     -- Peer must still be activated (no soft-deleted accounts).
     AND peer.activated = TRUE
     -- Defensive: same match guard as the incoming query.

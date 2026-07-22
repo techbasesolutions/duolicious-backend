@@ -952,24 +952,9 @@ WITH prospect AS (
                 )
         )
         AND
-            -- Only a REPORT/BLOCK hides a profile (2026-07-22). This used
-            -- to 404 whenever the prospect had merely PASSED the viewer,
-            -- with no reported check and no 7-day expiry, so a single
-            -- swipe made that profile permanently unopenable. Since the
-            -- map became a directory (660e209) it shows people who
-            -- passed you, so those markers were clickable but led to
-            -- "This profile isn't available" — reported by a member who
-            -- could open only 1 of 7 women's profiles from the map.
-            -- Consistent with Views and search: passes are deck state,
-            -- reports are the hard barrier.
-            NOT EXISTS (
-                SELECT 1
-                FROM skipped
-                WHERE
-                    subject_person_id = prospect.id AND
-                    object_person_id  = %(person_id)s AND
-                    reported
-            )
+            -- Only a REPORT/BLOCK hides a profile. A plain pass used to
+            -- 404 it permanently; see migration 0035.
+            NOT is_blocked_pair(prospect.id, %(person_id)s)
         )
         OR
         -- Anonymous viewer: only when the prospect has opted in to
@@ -1263,13 +1248,7 @@ WITH prospect AS (
           SELECT verification_level_id FROM person WHERE id = %(person_id)s
       )
       AND NOT EXISTS (
-          SELECT 1 FROM skipped
-          WHERE subject_person_id = p.id
-            AND object_person_id  = %(person_id)s
-            -- Reports/blocks only, matching the full-profile gate above
-            -- (2026-07-22): a plain pass must not make a profile
-            -- permanently unopenable.
-            AND reported
+          SELECT 1 WHERE is_blocked_pair(p.id, %(person_id)s)
       )
 ), updated_visited AS (
     -- Record the view in `visited` so the hidden member sees it in their
@@ -1369,13 +1348,9 @@ WITH prospect AS (
                 m.prospect_has_messaged_person
         )
         AND
-            NOT EXISTS (
-                SELECT 1
-                FROM skipped
-                WHERE
-                    subject_person_id = person.id AND
-                    object_person_id  = %(person_id)s
-            )
+            -- Reports/blocks only. A pass must not break an existing
+            -- conversation surface (migration 0035).
+            NOT is_blocked_pair(person.id, %(person_id)s)
         )
         OR
             person.id = %(person_id)s
@@ -3536,28 +3511,7 @@ WITH checker AS (
         -- forever, so active swipers saw empty lists: Josiah had 12 real
         -- visits and was shown 0, Ehud 11 outgoing views and was shown 2.
         -- Same deck-state-leak class as the map/search_cache coupling.
-        NOT EXISTS (
-            SELECT
-                1
-            FROM
-                skipped
-            WHERE
-                skipped.reported
-            AND
-                (
-                    (
-                        subject_person_id = prospect.id
-                    AND
-                        object_person_id = %(person_id)s
-                    )
-                OR
-                    (
-                        subject_person_id = %(person_id)s
-                    AND
-                        object_person_id = prospect.id
-                    )
-                )
-        )
+        NOT is_blocked_pair(prospect.id, %(person_id)s)
     AND
         -- The prospect wants to be shown to strangers or isn't a stranger
         (

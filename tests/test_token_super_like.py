@@ -27,14 +27,14 @@ def _insert_person():
             """
             INSERT INTO person (
                 email, normalized_email, name, date_of_birth,
-                coordinates, gender_id, about, location_short_friendly,
+                coordinates, gender_id, about, location_short_friendly, location_long_friendly, unit_id,
                 activated
             )
             VALUES (
                 %(email)s, %(email)s, 'Test', '1990-01-01',
                 ST_SetSRID(ST_MakePoint(0, 0), 4326)::geography,
                 (SELECT id FROM gender LIMIT 1),
-                'about', 'somewhere', TRUE
+                'about', 'somewhere', 'somewhere, nowhere', (SELECT id FROM unit LIMIT 1), TRUE
             )
             RETURNING uuid::text AS uuid, id
             """,
@@ -70,8 +70,8 @@ def session_token(person):
     with api_tx() as tx:
         tx.execute(
             """
-            INSERT INTO duo_session (session_token_hash, email, person_id, signed_in)
-            VALUES (%s, %s, %s, TRUE)
+            INSERT INTO duo_session (session_token_hash, email, person_id, signed_in, otp)
+            VALUES (%s, %s, %s, TRUE, '123456')
             """,
             (tok_hash, f'sl-session-{person["id"]}@example.com',
              person['id']),

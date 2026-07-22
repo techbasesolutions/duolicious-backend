@@ -14,15 +14,11 @@ import os
 LSERVER = os.environ.get("AHAVAH_XMPP_DOMAIN", "ahavah.app")
 
 
+# Reports/blocks only (migration 0035). This used to match ANY skipped
+# row, so a plain pass between two MATCHED people silently killed their
+# ability to message each other.
 Q_IS_SKIPPED = """
-SELECT
-    1
-FROM
-    skipped
-WHERE
-    subject_person_id = %(from_id)s AND object_person_id  = %(to_id)s
-OR
-    subject_person_id = %(to_id)s   AND object_person_id  = %(from_id)s
+SELECT 1 WHERE is_blocked_pair(%(from_id)s, %(to_id)s)
 """
 
 

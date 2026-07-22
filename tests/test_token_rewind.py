@@ -20,13 +20,13 @@ def _make_person(tx):
         """
         INSERT INTO person (
             email, normalized_email, name, date_of_birth,
-            coordinates, gender_id, about, location_short_friendly
+            coordinates, gender_id, about, location_short_friendly, location_long_friendly, unit_id
         )
         VALUES (
             %(email)s, %(email)s, 'Test', '1990-01-01',
             ST_SetSRID(ST_MakePoint(0, 0), 4326)::geography,
             (SELECT id FROM gender LIMIT 1),
-            'about', 'somewhere'
+            'about', 'somewhere', 'somewhere, nowhere', (SELECT id FROM unit LIMIT 1)
         )
         RETURNING uuid::text AS uuid, id
         """,

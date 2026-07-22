@@ -179,12 +179,10 @@ prospect_pool AS (
       -- Blocked exclusion (the upstream Duolicious fork's existing skipped table — both directions).
       -- 2026-06-18: passes expire after 7 days so the feed refills naturally on
       -- a small pool; reports (reported=true) stay permanent.
-      AND NOT EXISTS (
-          SELECT 1 FROM skipped sk
-          WHERE ((sk.subject_person_id = %(searcher_person_id)s AND sk.object_person_id = p.id)
-              OR (sk.subject_person_id = p.id AND sk.object_person_id = %(searcher_person_id)s))
-            AND (sk.reported OR sk.created_at > NOW() - INTERVAL '7 days')
-      )
+      -- Deck queue state: a pass suppresses for 7 days, a block forever.
+      -- The ONLY gate allowed to hide on a plain pass (see migration
+      -- 0035 for why this is a named predicate).
+      AND NOT is_deck_suppressed(%(searcher_person_id)s, p.id)
 
       -- Phase W: "Verified only" filter. Triggered either by the
       -- discover sheet's verifiedOnly toggle OR the privacy setting
@@ -440,12 +438,7 @@ Q_MAP_MARKERS = """
       AND NOT p.hide_me_from_strangers
       -- Reports/blocks hide permanently, either direction. Plain passes
       -- do NOT - they are deck state, not map state.
-      AND NOT EXISTS (
-          SELECT 1 FROM skipped sk
-          WHERE ((sk.subject_person_id = %(searcher_person_id)s AND sk.object_person_id = p.id)
-              OR (sk.subject_person_id = p.id AND sk.object_person_id = %(searcher_person_id)s))
-            AND sk.reported
-      )
+      AND NOT is_blocked_pair(%(searcher_person_id)s, p.id)
       AND p.show_my_location
       AND COALESCE((p.ahavah_extra->>'showOnMap')::boolean, TRUE)
       -- Only pin users who picked a REAL city. Country-only users sit on a
