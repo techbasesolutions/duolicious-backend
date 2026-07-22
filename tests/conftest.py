@@ -203,3 +203,52 @@ def signed_rc_event() -> Callable[..., SignedEvent]:
         return SignedEvent(body=body, sig='Bearer test-rc-secret')
 
     return _build
+
+
+# ---------------------------------------------------------------------------
+# Shared person factory (2026-07-22).
+#
+# Every test file grew its own `_make_person` INSERT, and all of them omit
+# `location_long_friendly` + `unit_id`. Both are NOT NULL with no default,
+# so those helpers raise NotNullViolation against a correctly-migrated
+# schema — 38 errors in the local suite, masking real signal. This is the
+# one correct definition; new tests should use it.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def make_person():
+    from uuid import uuid4
+
+    from database import api_tx
+
+    created: list[int] = []
+
+    def _make(name: str = 'Test', gender: str = 'Man') -> dict:
+        with api_tx() as tx:
+            row = tx.execute(
+                """
+                INSERT INTO person (
+                    email, normalized_email, name, date_of_birth,
+                    coordinates, gender_id, about,
+                    location_short_friendly, location_long_friendly, unit_id
+                )
+                VALUES (
+                    %(email)s, %(email)s, %(name)s, '1990-01-01',
+                    ST_SetSRID(ST_MakePoint(0, 0), 4326)::geography,
+                    (SELECT id FROM gender WHERE name = %(gender)s),
+                    'about', 'Somewhere', 'Somewhere, Nowhere',
+                    (SELECT id FROM unit LIMIT 1)
+                )
+                RETURNING id, uuid::text AS uuid
+                """,
+                dict(email=f'fixture-{uuid4()}@example.com',
+                     name=name, gender=gender),
+            ).fetchone()
+        created.append(row['id'])
+        return row
+
+    yield _make
+
+    with api_tx() as tx:
+        for pid in created:
+            tx.execute('DELETE FROM person WHERE id = %(p)s', dict(p=pid))
