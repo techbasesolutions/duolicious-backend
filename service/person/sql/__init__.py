@@ -952,12 +952,23 @@ WITH prospect AS (
                 )
         )
         AND
+            -- Only a REPORT/BLOCK hides a profile (2026-07-22). This used
+            -- to 404 whenever the prospect had merely PASSED the viewer,
+            -- with no reported check and no 7-day expiry, so a single
+            -- swipe made that profile permanently unopenable. Since the
+            -- map became a directory (660e209) it shows people who
+            -- passed you, so those markers were clickable but led to
+            -- "This profile isn't available" — reported by a member who
+            -- could open only 1 of 7 women's profiles from the map.
+            -- Consistent with Views and search: passes are deck state,
+            -- reports are the hard barrier.
             NOT EXISTS (
                 SELECT 1
                 FROM skipped
                 WHERE
                     subject_person_id = prospect.id AND
-                    object_person_id  = %(person_id)s
+                    object_person_id  = %(person_id)s AND
+                    reported
             )
         )
         OR
@@ -1255,6 +1266,10 @@ WITH prospect AS (
           SELECT 1 FROM skipped
           WHERE subject_person_id = p.id
             AND object_person_id  = %(person_id)s
+            -- Reports/blocks only, matching the full-profile gate above
+            -- (2026-07-22): a plain pass must not make a profile
+            -- permanently unopenable.
+            AND reported
       )
 ), updated_visited AS (
     -- Record the view in `visited` so the hidden member sees it in their
