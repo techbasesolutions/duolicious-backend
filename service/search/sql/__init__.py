@@ -452,6 +452,13 @@ Q_MAP_MARKERS = """
       -- country-centroid default (not where they actually are), so a precise
       -- pin there fabricates a cluster. They reappear once they set a city.
       AND COALESCE((p.ahavah_extra->>'citySet')::boolean, FALSE)
+    -- Bound the payload. Decoupling the map from search_cache (2026-07-19)
+    -- also dropped the 1000-row cap the cache imposed, leaving this
+    -- unbounded: every map open would serialise the entire member base.
+    -- Invisible at 29 members, a problem in the low thousands. Newest
+    -- members first so the cap favours fresh faces if it is ever hit.
+    ORDER BY p.sign_up_time DESC
+    LIMIT 1000
 """
 
 # Q_QUIZ_SEARCH removed in Task 0.3e — it was the Q&A-scored "first result"
