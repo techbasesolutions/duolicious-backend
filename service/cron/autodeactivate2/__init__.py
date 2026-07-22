@@ -24,7 +24,7 @@ def maybe_send_email(email: str):
         return
 
     send_args = dict(
-        subject="Your profile is invisible 👻",
+        subject="Your Ahavah profile is resting",
         body=emailtemplate(),
         to_addr=email,
     )
