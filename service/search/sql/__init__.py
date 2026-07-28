@@ -176,10 +176,9 @@ prospect_pool AS (
             AND l.liked_id = p.id
       )
 
-      -- Blocked exclusion (the upstream Duolicious fork's existing skipped table — both directions).
-      -- 2026-06-18: passes expire after 7 days so the feed refills naturally on
-      -- a small pool; reports (reported=true) stay permanent.
-      -- Deck queue state: a pass suppresses for 7 days, a block forever.
+      -- Deck queue state (skipped table). YOUR pass suppresses for 7
+      -- days; THEIR pass does not hide them from you (one-directional
+      -- since migration 0036); reports/blocks stay mutual and permanent.
       -- The ONLY gate allowed to hide on a plain pass (see migration
       -- 0035 for why this is a named predicate).
       AND NOT is_deck_suppressed(%(searcher_person_id)s, p.id)

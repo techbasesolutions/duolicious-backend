@@ -138,6 +138,51 @@ def test_views_hides_reported_people_in_both_directions(make_person):
     assert blocked_me['uuid'] not in both, 'person who reported me still visible'
 
 
+# --- Rule 4: deck passes are one-directional (migration 0036) -------------
+
+def test_deck_pass_is_one_directional(make_person):
+    """YOUR pass hides them from YOUR deck; THEIR pass must NOT hide
+    them from your deck. A new member who idly passed a searcher used
+    to erase herself from his feed before he ever saw her."""
+    searcher = make_person(name='Levi', gender='Man')
+    prospect = make_person(name='Miriam', gender='Woman')
+
+    with api_tx() as tx:
+        def suppressed(a, b):
+            return tx.execute(
+                'SELECT is_deck_suppressed(%(a)s, %(b)s) AS s',
+                dict(a=a, b=b),
+            ).fetchone()['s']
+
+        # Their pass on the searcher: searcher still sees them.
+        _skip(tx, prospect['id'], searcher['id'], reported=False)
+        assert not suppressed(searcher['id'], prospect['id']), \
+            'their pass hid them from my deck (must be one-directional)'
+        # ...but their own deck no longer shows the searcher.
+        assert suppressed(prospect['id'], searcher['id']), \
+            "their own pass must still curate their own deck"
+
+
+def test_deck_report_hides_both_directions(make_person):
+    """A report is a safety barrier: it must suppress the deck BOTH
+    ways, unlike a plain pass."""
+    reporter = make_person(name='Noam', gender='Man')
+    reported = make_person(name='Orly', gender='Woman')
+
+    with api_tx() as tx:
+        _skip(tx, reporter['id'], reported['id'], reported=True)
+
+        def suppressed(a, b):
+            return tx.execute(
+                'SELECT is_deck_suppressed(%(a)s, %(b)s) AS s',
+                dict(a=a, b=b),
+            ).fetchone()['s']
+
+        assert suppressed(reporter['id'], reported['id'])
+        assert suppressed(reported['id'], reporter['id']), \
+            'a reported pair leaked back into the reporter\'s deck'
+
+
 # --- Rule 3: privacy is never leaked by Views -----------------------------
 
 def test_views_never_leaks_a_private_profile(make_person):
