@@ -48,10 +48,14 @@ services:
       - ahavah-redis-data:/data
 
   api:
-    volumes: !reset []
+    # FireHOL blocklist: the cron container builds blocklist.bin on this
+    # shared volume; api workers mmap it read-only (antiabuse/firehol).
+    volumes: !override
+      - ahavah-firehol-data:/var/ahavah-firehol:ro
     ports:
       - "5000:5000"
     environment:
+      DUO_FIREHOL_BIN: /var/ahavah-firehol/blocklist.bin
       # Runtime + DB
       DUO_ENV: prod
       DUO_DB_HOST: postgres
@@ -150,8 +154,11 @@ services:
       SESSION_TOKEN_SECRET: ${SESSION_TOKEN_SECRET:?SESSION_TOKEN_SECRET must be set in .env.production}
 
   cron:
-    volumes: !reset []
+    # Writer side of the FireHOL blocklist (see api ro mount).
+    volumes: !override
+      - ahavah-firehol-data:/var/ahavah-firehol
     environment:
+      DUO_FIREHOL_BIN: /var/ahavah-firehol/blocklist.bin
       DUO_ENV: prod
       DUO_DB_HOST: postgres
       DUO_DB_PORT: 5432
@@ -228,3 +235,4 @@ services:
 volumes:
   ahavah-postgres-data:
   ahavah-redis-data:
+  ahavah-firehol-data:

@@ -38,23 +38,17 @@ from antiabuse.lodgereport import (
     skip_by_uuid,
 )
 
-# Phase W staging: the FireHOL multiprocessing-based block-list helper
-# has a child-process fragility that intermittently kills /request-otp
-# and /check-otp under light staging load (the `_rpc` call gets EOFError
-# when the child dies, surfacing as 500s). Set `DUO_DISABLE_FIREHOL=true`
-# to skip the IP-blocklist check entirely — safe for staff-only staging,
-# NEVER for production where it's actual anti-abuse defence.
+# FireHOL IP blocklist on /request-otp + /check-otp. Since 2026-07-29
+# this is an mmap reader over a binary file the cron container builds
+# (see antiabuse/firehol) — per-worker cost is a few shared pages, and
+# a missing file fails open. The old per-worker child-process design
+# (~1GB pytricia trie each; 4.9GiB api container, swap thrashing, EOFError
+# 500s on child death) is what kept the bypass flag on for months.
+# DUO_DISABLE_FIREHOL=true remains honoured as an emergency off-switch.
 import os as _os
 if _os.environ.get("DUO_DISABLE_FIREHOL", "false").lower() in ("true", "1", "yes"):
-    # Loud-warn at import time so the bypass can't silently drift unnoticed
-    # (audit Auth #12). History: the bypass was enabled on the droplet
-    # 2026-05..07 after OOM kills on the old 4GB tier. A 2026-07-29
-    # re-enable attempt on the 8GB tier was ROLLED BACK the same night:
-    # the netsets load per gunicorn worker, taking the api container to
-    # 4.9GiB steady-state (~670MB left system-wide, swap half used) on a
-    # box that also builds images on deploy. Don't re-enable by flipping
-    # the flag; the fix is loading the blocklist ONCE in shared memory
-    # (or an nginx/upstream IP filter) so the cost isn't per-worker.
+    # Loud-warn at import time so the bypass can't silently drift
+    # unnoticed (audit Auth #12).
     print(
         "WARNING: DUO_DISABLE_FIREHOL=true — IP blocklist is OFF. "
         "/request-otp + /check-otp lose their IP-reputation layer. "
@@ -66,12 +60,6 @@ if _os.environ.get("DUO_DISABLE_FIREHOL", "false").lower() in ("true", "1", "yes
             return False
     firehol = _FireholBypass()
 else:
-    # Import here, not at module top, so the FireHOL multiprocessing child --
-    # which loads the blocklists into a ~1GB-per-worker pytricia trie -- is only
-    # spawned when the blocklist is actually enabled. The old top-level import
-    # created it unconditionally, so every gunicorn worker forked a ~1.2GB child
-    # even with the bypass active (DUO_DISABLE_FIREHOL replaced the lookup but
-    # never stopped the process).
     from antiabuse.firehol import firehol as _firehol_impl
     firehol = _firehol_impl
 import blurhash

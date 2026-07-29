@@ -9,6 +9,7 @@ from service.cron.photocleaner import clean_photos_forever
 from service.cron.audiocleaner import clean_audio_forever
 from service.cron.verificationjobrunner import verify_forever
 from service.cron.profilereporter import report_profiles_forever
+from service.cron.fireholbuilder import build_firehol_forever
 import asyncio
 from http.server import SimpleHTTPRequestHandler
 from socketserver import TCPServer
@@ -64,6 +65,10 @@ async def main():
         # have no waitlist demographics — send the follow-up once. Runs
         # every 6 hours; gated by beta_signup.reengagement_sent_at.
         send_beta_reengagement_forever(),
+
+        # Single writer of the FireHOL binary blocklist the api workers
+        # mmap (antiabuse/firehol). Every 4 hours.
+        build_firehol_forever(),
 
         check_connections_forever(),
 
