@@ -48,9 +48,13 @@ import os as _os
 if _os.environ.get("DUO_DISABLE_FIREHOL", "false").lower() in ("true", "1", "yes"):
     # Loud-warn at import time so the bypass can't silently drift unnoticed
     # (audit Auth #12). History: the bypass was enabled on the droplet
-    # 2026-05..07 because firehol's child process was OOM-killed under
-    # load on the old 4GB tier. Re-enabled 2026-07-29 after the resize
-    # to 8GB (verified: loader runs, /request-otp 200, no EOFError).
+    # 2026-05..07 after OOM kills on the old 4GB tier. A 2026-07-29
+    # re-enable attempt on the 8GB tier was ROLLED BACK the same night:
+    # the netsets load per gunicorn worker, taking the api container to
+    # 4.9GiB steady-state (~670MB left system-wide, swap half used) on a
+    # box that also builds images on deploy. Don't re-enable by flipping
+    # the flag; the fix is loading the blocklist ONCE in shared memory
+    # (or an nginx/upstream IP filter) so the cost isn't per-worker.
     print(
         "WARNING: DUO_DISABLE_FIREHOL=true — IP blocklist is OFF. "
         "/request-otp + /check-otp lose their IP-reputation layer. "
