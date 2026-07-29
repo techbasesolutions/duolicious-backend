@@ -103,17 +103,23 @@ async def send_email_notification(row: PersonNotification):
 
 async def send_notification(row: PersonNotification):
     # The real-time web push fires in service/chat/messagestorage. This cron
-    # is the EMAIL FALLBACK: only email users push can't reach (no live
-    # subscription, or message-push disabled). Log only non-sensitive fields
-    # (the full row carries email — a bearer-equivalent — keep it out of logs).
+    # is the EMAIL FALLBACK for members who haven't seen the message after
+    # 10+ minutes offline. Log only non-sensitive fields (the full row
+    # carries email — a bearer-equivalent — keep it out of logs).
+    #
+    # 2026-07-29: a live push_subscription row no longer skips the email.
+    # Web push is fire-and-forget — a stale endpoint looks identical to a
+    # delivered one — and the caller bumps the notification watermark
+    # either way, so a skip here silently ate the only notification the
+    # member would ever get (Abby never learned of 2 unread messages;
+    # Laura of 1; both had watermarks burned minutes after the message).
+    # If the member is still offline with unread messages when this cron
+    # fires, the push evidently didn't bring them back — email them.
     sketch = f"person_uuid={row.person_uuid} intro={row.has_intro} chat={row.has_chat}"
-    if row.has_live_push and row.push_messages:
-        print('Push-reachable; skipping email:', sketch)
-        return
     if not row.email_messages:
-        print('Message email disabled by user; skipping:', sketch)
+        print('Message email disabled by user; skipping:', sketch, flush=True)
         return
-    print('Sending email notification:', sketch)
+    print('Sending email notification:', sketch, flush=True)
     await send_email_notification(row)
 
 async def update_last_notification_time(row: PersonNotification):

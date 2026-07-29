@@ -47,9 +47,10 @@ from antiabuse.lodgereport import (
 import os as _os
 if _os.environ.get("DUO_DISABLE_FIREHOL", "false").lower() in ("true", "1", "yes"):
     # Loud-warn at import time so the bypass can't silently drift unnoticed
-    # (audit Auth #12). Currently intentionally enabled on the droplet
-    # because firehol's child process was OOM-killed under load on the
-    # 4GB tier; revisit when the droplet is resized or firehol is replaced.
+    # (audit Auth #12). History: the bypass was enabled on the droplet
+    # 2026-05..07 because firehol's child process was OOM-killed under
+    # load on the old 4GB tier. Re-enabled 2026-07-29 after the resize
+    # to 8GB (verified: loader runs, /request-otp 200, no EOFError).
     print(
         "WARNING: DUO_DISABLE_FIREHOL=true — IP blocklist is OFF. "
         "/request-otp + /check-otp lose their IP-reputation layer. "
