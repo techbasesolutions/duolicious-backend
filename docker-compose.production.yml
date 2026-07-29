@@ -167,6 +167,10 @@ services:
       DUO_DISABLE_FIREHOL: ${DUO_DISABLE_FIREHOL}
       DUO_RESEND_FROM_OVERRIDE: ${DUO_RESEND_FROM_OVERRIDE}
       DUO_REPORT_EMAIL: "ahavah@example.com 20 a@example.com 0"
+      # Campaign runners (emails/send_*.py) exec in this container (it has
+      # SMTP creds; api does not) and sign unsubscribe tokens, so they need
+      # the same signing secret as the api /u/<token> verifier.
+      SESSION_TOKEN_SECRET: ${SESSION_TOKEN_SECRET:?SESSION_TOKEN_SECRET must be set in .env.production}
       # Phase W push notifications (VAPID). PUSH_ENABLED in
       # service/notifications/__init__.py is bool(public AND private),
       # so leaving these blank disables push without breaking imports.
