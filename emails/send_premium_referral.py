@@ -37,21 +37,26 @@ from service.referrals import mint_person_code
 from service.unsubscribe import make_url as _unsub_url
 from smtp import make_aws_smtp
 
-# Organic = outside the old founding gate. Kept as SQL so wave
-# membership is decided by the same predicate the backfill used.
-_SQL_IS_ORGANIC = """
-    NOT EXISTS (SELECT 1 FROM beta_signup b WHERE b.email = p.email)
-    AND NOT EXISTS (
-        SELECT 1 FROM waitlist_signup w
-         WHERE w.email = p.email
-           AND COALESCE(w.answers, '{}'::jsonb) <> '{}'::jsonb
+# Welcome wave = members whose Premium arrived in THIS rollout's
+# backfill, evidenced by a fresh starter-stipend ledger row. A
+# beta/waitlist-membership predicate is the wrong signal here: several
+# post-launch members already carried Premium from their own
+# onboarding (loose email matching between person and the signup
+# tables), and telling them "your account has been upgraded" would be
+# false. The ledger row is written iff the grant actually fired.
+_SQL_JUST_GRANTED = """
+    EXISTS (
+        SELECT 1 FROM token_ledger tl
+         WHERE tl.person_id = p.uuid
+           AND tl.reason = 'subscription_stipend'
+           AND tl.created_at > NOW() - INTERVAL '2 days'
     )
 """
 
 _Q_MEMBERS = f"""
     SELECT p.id, p.uuid::TEXT AS uuid, p.email, p.name,
            p.referral_code, p.subscription_expires_at,
-           ({_SQL_IS_ORGANIC}) AS is_organic
+           ({_SQL_JUST_GRANTED}) AS is_organic
       FROM person p
      WHERE p.activated AND p.email <> 'admin@ahavah.app'
      ORDER BY p.sign_up_time
