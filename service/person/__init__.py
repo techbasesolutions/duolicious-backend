@@ -21,6 +21,7 @@ from service.referrals import (
     attribute as attribute_referral,
     credit_pending_for_invitee,
     credit_pending_for_inviter,
+    mint_person_code,
 )
 import time
 import traceback
@@ -826,6 +827,10 @@ def post_finish_onboarding(s: t.SessionInfo):
         new_uuid = str(row['person_uuid'])
         credit_pending_for_invitee(tx, s.email)
         credit_pending_for_inviter(tx, s.email, new_uuid)
+
+        # Personal referral code (migration 0037): every member can
+        # invite from day one. Idempotent; codes never change once set.
+        mint_person_code(tx, row['person_id'])
 
         club_params = dict(
             person_id=row['person_id'],

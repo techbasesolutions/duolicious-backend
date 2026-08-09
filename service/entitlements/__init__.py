@@ -62,6 +62,33 @@ def list_entitlements(person_id: int) -> List[str]:
 # Write — single-entitlement granularity
 # ---------------------------------------------------------------------------
 
+def extend_premium_tx(tx, person_uuid: str, days: int) -> None:
+    """Extend a member's Premium by `days`, INSIDE the caller's tx.
+
+    Referral rewards run inside the /finish-onboarding transaction, so
+    this cannot use grant() (which opens its own api_tx). Semantics:
+    extension is anchored at GREATEST(current expiry, now) — a member
+    whose Premium lapsed starts a fresh `days` from now instead of
+    getting a back-dated extension; an active member stacks on top of
+    their remaining time. Ensures 'premium' is present in entitlements
+    (a lapsed member being re-extended gets the flag back)."""
+    if not person_uuid or days <= 0:
+        return
+    tx.execute(
+        """
+        UPDATE person
+           SET subscription_expires_at =
+                   GREATEST(COALESCE(subscription_expires_at, NOW()), NOW())
+                   + make_interval(days => %(days)s),
+               entitlements = CASE
+                   WHEN 'premium' = ANY(entitlements) THEN entitlements
+                   ELSE array_append(entitlements, 'premium')
+               END
+         WHERE uuid = uuid_or_null(%(uuid)s)
+        """,
+        dict(uuid=str(person_uuid), days=days),
+    )
+
 def grant(
     person_id: int,
     name: str,
@@ -226,30 +253,10 @@ def expire_stale(now: Optional[datetime] = None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Founding-member Premium grant
+# Early-member Premium grant
 # ---------------------------------------------------------------------------
 
 _FOUNDING_MEMBER_PREMIUM_DAYS = 183  # ~6 months
-
-# Founding-member status is about WHEN you joined, not your current
-# email-subscription preferences. unsubscribed_at gates marketing
-# emails, not the perk — unsubscribing shouldn't void six months of
-# Premium someone earned by joining early. So the eligibility check
-# is intentionally indifferent to unsubscribed_at on both tables.
-_Q_IS_FOUNDING_MEMBER = """
-    SELECT (
-        EXISTS (
-            SELECT 1 FROM beta_signup
-             WHERE email = %(email)s
-        ) OR EXISTS (
-            SELECT 1 FROM waitlist_signup
-             WHERE email = %(email)s
-               AND answers IS NOT NULL
-               AND answers <> '{}'::jsonb
-        )
-    ) AS is_founding
-"""
-
 
 _FOUNDING_MEMBER_STARTER_TOKENS = 30  # one month's stipend equivalent
 
@@ -259,33 +266,34 @@ def grant_founding_member_if_eligible(
     person_uuid: str,
     email: str,
 ) -> bool:
-    """Grant the 6-month Premium founding-member perk promised in
-    emails/waitlist_welcome.py and the public website copy + a one-time
-    starter token stipend so the user can actually USE Premium features
+    """Grant the 6-month Premium early-member perk + a one-time starter
+    token stipend so the user can actually USE Premium features
     (super-like, boost, day pass, etc.) the moment they finish
     onboarding instead of staring at "Not enough tokens" toasts.
 
-    Eligibility: email is in beta_signup (not unsubscribed) OR has a
-    completed waitlist_signup row (non-empty answers jsonb).
+    Eligibility (2026-08-09, owner decision): EVERY new member. The
+    original founding gate (beta_signup / completed waitlist row)
+    silently excluded organic signups, who arrived to a paid-feeling
+    app while launch-era members rode free. The perk name is kept for
+    call-site stability.
 
-    Returns True iff entitlements changed (granted for the first time).
-    Idempotent: re-calling for the same person is safe — grant() bumps
-    expiry only when later, and doesn't double-append the entitlement.
-    The token credit is gated on entitlements actually changing so a
-    re-call (e.g. on /finish-onboarding replay) doesn't double-stipend.
+    Returns True iff Premium was granted for the first time.
+    Idempotent: if the member already carries the 'premium'
+    entitlement, this is a FULL no-op — it must NOT bump the expiry,
+    because /finish-onboarding replays used to re-extend the window
+    by 183 days from each replay (observed: two members with expiries
+    ~6 months past their cohort's).
 
-    Opens its own api_tx for the eligibility check + stipend write,
-    then delegates to grant() which opens another tx. Caller must NOT
-    be holding an api_tx when calling this (will deadlock or open a
-    nested tx).
+    Opens its own api_tx for the check + stipend write, then delegates
+    to grant() which opens another tx. Caller must NOT be holding an
+    api_tx when calling this (will deadlock or open a nested tx).
     """
     if not person_id or not email:
         return False
 
-    with api_tx('read committed') as tx:
-        row = tx.execute(_Q_IS_FOUNDING_MEMBER, dict(email=email)).fetchone()
-
-    if not row or not row['is_founding']:
+    # Replay guard: an existing 'premium' entitlement means the perk
+    # (or a purchase) is already in force. Never re-extend from here.
+    if has_entitlement(person_id, 'premium'):
         return False
 
     expires_at = datetime.now(timezone.utc) + timedelta(days=_FOUNDING_MEMBER_PREMIUM_DAYS)

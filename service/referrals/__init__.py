@@ -79,7 +79,24 @@ _Q_SET_CODE = """
 """
 
 _Q_INVITER_FROM_CODE = """
+    -- Person codes first (every member has one since migration 0037),
+    -- then legacy beta_signup codes so links shared during the beta
+    -- keep working forever.
+    SELECT email FROM person WHERE referral_code = %(code)s
+    UNION ALL
     SELECT email FROM beta_signup WHERE referral_code = %(code)s
+    LIMIT 1
+"""
+
+_Q_GET_PERSON_CODE = """
+    SELECT referral_code FROM person WHERE id = %(person_id)s
+"""
+
+_Q_SET_PERSON_CODE = """
+    UPDATE person
+       SET referral_code = %(code)s
+     WHERE id = %(person_id)s
+       AND referral_code IS NULL
 """
 
 _Q_INSERT_REFERRAL = """
@@ -194,11 +211,60 @@ _Q_ALREADY_CREDITED = """
 """
 
 
+def mint_person_code(tx, person_id: int) -> Optional[str]:
+    """Idempotent. Returns the member's personal referral_code, minting
+    and storing one if NULL. Every onboarded member gets a code (the
+    beta-era commitment gate does not apply here: having a person row
+    IS the commitment). Returns None only for a missing person row."""
+    if not person_id:
+        return None
+    row = tx.execute(_Q_GET_PERSON_CODE, dict(person_id=person_id)).fetchone()
+    if row is None:
+        return None
+    if row["referral_code"]:
+        return row["referral_code"]
+
+    last_err: Optional[Exception] = None
+    for _ in range(_MAX_MINT_RETRIES):
+        code = _random_code()
+        # SAVEPOINT discipline mirrors mint_code() above: a rare
+        # unique-index collision must not poison the caller's tx.
+        tx.execute("SAVEPOINT mint_person_code_attempt")
+        try:
+            cur = tx.execute(
+                _Q_SET_PERSON_CODE, dict(person_id=person_id, code=code))
+            if cur.rowcount == 1:
+                tx.execute("RELEASE SAVEPOINT mint_person_code_attempt")
+                return code
+            tx.execute("RELEASE SAVEPOINT mint_person_code_attempt")
+            row2 = tx.execute(
+                _Q_GET_PERSON_CODE, dict(person_id=person_id)).fetchone()
+            if row2 and row2["referral_code"]:
+                return row2["referral_code"]
+        except Exception as e:
+            tx.execute("ROLLBACK TO SAVEPOINT mint_person_code_attempt")
+            last_err = e
+    raise ReferralCodeCollision(
+        f"could not mint person referral_code for person {person_id} after "
+        f"{_MAX_MINT_RETRIES} tries; last error: {last_err!r}"
+    )
+
+
+# Reward for one successful referral (invitee finished onboarding):
+# tokens for spending power plus a Premium extension, promised in the
+# member emails (emails/premium_welcome.py / premium_reminder.py).
+REFERRAL_REWARD_TOKENS = 5
+REFERRAL_REWARD_PREMIUM_DAYS = 30
+
+
 def _credit_one(tx, person_uuid: str, referral_id: str) -> bool:
-    """Idempotent +5 token credit. Returns True if a new ledger row was
-    inserted, False if a row already exists for this referral_id (safe
-    no-op, never should happen but defends against concurrent /finish-
-    onboarding races on the same email).
+    """Idempotent referral reward: +REFERRAL_REWARD_TOKENS tokens and
+    +REFERRAL_REWARD_PREMIUM_DAYS of Premium for the inviter. Returns
+    True if a new ledger row was inserted, False if a row already
+    exists for this referral_id (safe no-op, never should happen but
+    defends against concurrent /finish-onboarding races on the same
+    email). The token-ledger row doubles as the idempotency latch for
+    the Premium extension: both fire together or not at all.
 
     Caller is responsible for flipping the referral row to
     status='credited' AFTER this returns True."""
@@ -213,10 +279,12 @@ def _credit_one(tx, person_uuid: str, referral_id: str) -> bool:
     credit(
         tx,
         person_uuid,
-        5,
+        REFERRAL_REWARD_TOKENS,
         reason="referral",
         metadata={"referral_id": referral_id},
     )
+    from service.entitlements import extend_premium_tx
+    extend_premium_tx(tx, person_uuid, REFERRAL_REWARD_PREMIUM_DAYS)
     return True
 
 
