@@ -847,14 +847,20 @@ def post_finish_onboarding(s: t.SessionInfo):
 
         clubs = tx.execute(Q_GET_SESSION_CLUBS, club_params).fetchone()
 
-    # Founding-member 6-month Premium grant. Promised in
-    # emails/waitlist_welcome.py and the public site copy. Eligible:
-    # email is in beta_signup or has a completed waitlist_signup row.
-    # Idempotent via entitlements.grant(); harmless for non-founders.
-    # Opens its own tx, so called AFTER the api_tx above commits.
-    entitlements.grant_founding_member_if_eligible(
+    # Early-member 6-month Premium grant (every new member since
+    # 2026-08-09). Idempotent: replays return False without touching
+    # the expiry. Opens its own tx, so called AFTER the api_tx above
+    # commits.
+    granted_now = entitlements.grant_founding_member_if_eligible(
         row['person_id'], row['person_uuid'], s.email,
     )
+
+    # Member welcome email (Premium expiry + personal invite link).
+    # Latched on granted_now, which is True exactly once per member,
+    # so onboarding replays can never double-send it.
+    if granted_now:
+        from emails.member_welcome import send_member_welcome_async
+        send_member_welcome_async(s.email)
 
     # Server-side ad-conversion event (Meta Conversions API). Shares
     # event_id `reg-<person_uuid>` with the browser pixel's
