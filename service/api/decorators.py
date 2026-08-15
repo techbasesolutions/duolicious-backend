@@ -323,6 +323,19 @@ def require_auth(expected_onboarding_status, expected_sign_in_status, auth='requ
                 )
 
                 g.normalized_email = normalize_email(email)
+
+                # F15: throttled REST presence bump. last_online_time was
+                # only written by OTP sign-in and the chat socket, so
+                # members active over plain HTTP with a dead websocket
+                # looked idle and were force-logged-out by autodeactivate2
+                # at day 30. Fire-and-forget: person-backed sessions only
+                # (bump_presence no-ops on a falsy person_id, which covers
+                # onboardees) and must never fail the request.
+                try:
+                    from service.person import bump_presence
+                    bump_presence(person_id)
+                except Exception:
+                    pass
             else:
                 if auth == 'optional':
                     return call_anonymous(*args, **kwargs)

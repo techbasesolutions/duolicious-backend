@@ -270,6 +270,23 @@ def _has_gold(person_id: int) -> bool:
     return row.get('has_gold', False)
 
 
+def bump_presence(person_id: int) -> None:
+    """Throttled REST presence: one UPDATE per 10 minutes per member.
+    F15: last_online_time was only written by OTP sign-in and the chat
+    socket, so members actively swiping over plain HTTP looked idle and
+    autodeactivate2 logged them out at day 30. Called from the session
+    check on every authenticated request; the WHERE clause makes the
+    hot path a no-op read."""
+    if not person_id:
+        return
+    with api_tx() as tx:
+        tx.execute(
+            """
+            UPDATE person SET last_online_time = NOW()
+            WHERE id = %(id)s
+              AND last_online_time < NOW() - INTERVAL '10 minutes'
+            """, dict(id=person_id))
+
 
 def _send_otp(email: str, otp: str):
     if email.endswith('@example.com'):

@@ -54,8 +54,35 @@ _Q_SOFT_DELETE = """
 """
 
 _Q_REACTIVATE = """
-    UPDATE person SET activated = TRUE WHERE uuid = %(uuid)s::uuid
-    RETURNING email
+    WITH before_state AS (
+        SELECT id, activated FROM person WHERE uuid = %(uuid)s::uuid
+    ),
+    reactivated AS (
+        UPDATE person SET
+            activated = TRUE,
+            -- Pull them out of autodeactivate2's 30-50 day window, or the
+            -- cron reverts this within one 300s poll (F14).
+            last_online_time = NOW()
+        WHERE uuid = %(uuid)s::uuid
+        RETURNING id, email
+    ),
+    -- Mirrors Q_MAYBE_SIGN_IN's club_to_increment CTE: only restore the
+    -- count if the row was NOT already activated, so a repeat reactivate
+    -- call (or a race) can't double-increment.
+    club_to_increment AS (
+        SELECT person_club.club_name
+        FROM reactivated
+        JOIN before_state ON before_state.id = reactivated.id
+        JOIN person_club ON person_club.person_id = reactivated.id
+        WHERE NOT before_state.activated
+    ),
+    increment_club_count AS (
+        UPDATE club SET
+            count_members = count_members + 1
+        FROM club_to_increment
+        WHERE club_to_increment.club_name = club.name
+    )
+    SELECT email FROM reactivated
 """
 
 _Q_HARD_DELETE = """
