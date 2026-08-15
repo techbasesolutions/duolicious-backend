@@ -1576,8 +1576,6 @@ WITH person_info AS (
 SELECT
     person_id,
     person_uuid,
-    person_skipped_prospect,
-    prospect_skipped_person,
     CASE
         WHEN is_prospect_activated AND NOT prospect_skipped_person
         THEN
