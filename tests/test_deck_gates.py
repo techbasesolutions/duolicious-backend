@@ -41,6 +41,17 @@ def test_verification_required_hidden_from_deck_and_map(make_person):
     with api_tx() as tx:
         tx.execute('UPDATE person SET verification_required = TRUE WHERE id = %(p)s',
                    dict(p=bot['id']))
+        # Clear every OTHER Q_MAP_MARKERS gate so the assertion below is not
+        # vacuous: show_my_location defaults TRUE and coordinates are set by
+        # the fixture, but citySet defaults FALSE (COALESCE(...,'FALSE')) and
+        # would hide the bot on its own, making the marks assertion pass
+        # whether or not the verification_required clause exists.
+        tx.execute(
+            "UPDATE person SET ahavah_extra = jsonb_set("
+            "COALESCE(ahavah_extra, '{}'::jsonb), '{citySet}', 'true'::jsonb) "
+            "WHERE id = %(p)s",
+            dict(p=bot['id']),
+        )
         assert bot['uuid'] not in _deck_uuids(tx, me['id'], [2])
         marks = tx.execute(Q_MAP_MARKERS, dict(
             searcher_person_id=me['id'], gender_preference=[])).fetchall()
