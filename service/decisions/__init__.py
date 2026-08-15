@@ -102,35 +102,54 @@ WITH new_like AS (
         person.id <> %(me_id)s
     ON CONFLICT DO NOTHING
     RETURNING liker_id, liked_id
+), prospect AS (
+    SELECT id FROM person
+    WHERE uuid = uuid_or_null(%(prospect_uuid)s)
+      AND id <> %(me_id)s
 ), reciprocal AS (
-    SELECT 1 AS exists_reciprocal
-    FROM new_like nl
-    JOIN liked rev
-      ON rev.liker_id = nl.liked_id
-     AND rev.liked_id = nl.liker_id
-), inserted_match AS (
+    -- Derived from CURRENT state, not from whether new_like won.
+    SELECT 1 FROM liked rev, prospect p
+    WHERE rev.liker_id = p.id
+      AND rev.liked_id = %(me_id)s
+), my_like AS (
+    -- My half-row, whether inserted this call or previously.
+    SELECT 1 FROM liked l, prospect p
+    WHERE l.liker_id = %(me_id)s AND l.liked_id = p.id
+    UNION ALL
+    SELECT 1 FROM new_like
+    LIMIT 1
+), upserted_match AS (
     INSERT INTO ahavah_match (user_a_id, user_b_id)
-    SELECT
-        LEAST(nl.liker_id, nl.liked_id),
-        GREATEST(nl.liker_id, nl.liked_id)
-    FROM new_like nl
-    JOIN reciprocal r ON TRUE
+    SELECT LEAST(%(me_id)s, p.id), GREATEST(%(me_id)s, p.id)
+    FROM prospect p
+    WHERE EXISTS (SELECT 1 FROM reciprocal)
+      AND EXISTS (SELECT 1 FROM my_like)
     ON CONFLICT (user_a_id, user_b_id) DO NOTHING
     RETURNING match_id, user_a_id, user_b_id
+), the_match AS (
+    -- Upserted this call OR already existing: either way, return it.
+    SELECT match_id, user_a_id, user_b_id FROM upserted_match
+    UNION ALL
+    SELECT m.match_id, m.user_a_id, m.user_b_id
+    FROM ahavah_match m, prospect p
+    WHERE m.user_a_id = LEAST(%(me_id)s, p.id)
+      AND m.user_b_id = GREATEST(%(me_id)s, p.id)
+      AND EXISTS (SELECT 1 FROM reciprocal)
+    LIMIT 1
 )
 SELECT
     m.match_id::text AS match_id,
-    CASE
-        WHEN m.user_a_id = %(me_id)s THEN m.user_b_id
-        ELSE m.user_a_id
-    END AS peer_id,
-    peer.uuid::text AS peer_uuid
-FROM inserted_match m
+    CASE WHEN m.user_a_id = %(me_id)s THEN m.user_b_id
+         ELSE m.user_a_id END AS peer_id,
+    peer.uuid::text AS peer_uuid,
+    EXISTS (SELECT 1 FROM new_like) AS was_new_like
+FROM the_match m
 JOIN person peer
-  ON peer.id = CASE
-        WHEN m.user_a_id = %(me_id)s THEN m.user_b_id
-        ELSE m.user_a_id
-    END
+  ON peer.id = CASE WHEN m.user_a_id = %(me_id)s THEN m.user_b_id
+                    ELSE m.user_a_id END
+UNION ALL
+SELECT NULL, NULL, NULL, EXISTS (SELECT 1 FROM new_like)
+WHERE NOT EXISTS (SELECT 1 FROM the_match)
 """
 
 
@@ -423,68 +442,78 @@ def post_decisions(req: t.PostDecision, s: t.SessionInfo):
             body, status = blocked[1], blocked[0]
             return body, status
 
-        rows = tx.execute(
+        row = tx.execute(
             Q_RECORD_LIKE,
             dict(me_id=s.person_id, prospect_uuid=req.profile_uuid),
-        ).fetchall()
+        ).fetchone()
 
-    if not rows:
-        # No mutual like yet. Like was recorded; notify the liked person
-        # that they have a new like (identity-blind; gated by push_likes,
-        # default off). Wrapped like the match push below so the push stack
-        # can never block the like response.
-        try:
-            from service.notifications import notify
-            from emails.notification import new_like_email
-            with api_tx() as tx:
-                liked = tx.execute(
-                    "SELECT id FROM person WHERE uuid = %(uuid)s",
-                    dict(uuid=req.profile_uuid),
-                ).fetchone()
-            if liked:
-                notify(
-                    liked["id"], "like",
-                    title="Someone likes you",
-                    body="You have a new like on Ahavah",
-                    url="/matches",
-                    email_subject="Someone likes you on Ahavah",
-                    email_html_factory=new_like_email,
-                )
-        except Exception:
-            import traceback
-            print("decisions like-push trigger failed:")
-            print(traceback.format_exc())
+    was_new_like = bool(row and row["was_new_like"])
+    match_id = row["match_id"] if row else None
+
+    if match_id is None:
+        # No mutual like yet. If this was a new like (not a duplicate),
+        # notify the liked person that they have a new like
+        # (identity-blind; gated by push_likes, default off). Wrapped like
+        # the match push below so the push stack can never block the
+        # like response.
+        if was_new_like:
+            try:
+                from service.notifications import notify
+                from emails.notification import new_like_email
+                with api_tx() as tx:
+                    liked = tx.execute(
+                        "SELECT id FROM person WHERE uuid = %(uuid)s",
+                        dict(uuid=req.profile_uuid),
+                    ).fetchone()
+                if liked:
+                    notify(
+                        liked["id"], "like",
+                        title="Someone likes you",
+                        body="You have a new like on Ahavah",
+                        url="/matches",
+                        email_subject="Someone likes you on Ahavah",
+                        email_html_factory=new_like_email,
+                    )
+            except Exception:
+                import traceback
+                print("decisions like-push trigger failed:")
+                print(traceback.format_exc())
         return {"match": None}
 
-    row = rows[0]
-
-    # Mutual like → push the matched peer. Lazy-import notifications +
-    # wrapped in try/except so a missing pywebpush dependency, missing
-    # VAPID env vars, or any other push-stack issue can never block
-    # the match-create response. send_to_user_safe is itself
-    # fire-and-forget but we belt-and-suspenders the import too.
-    try:
-        from service.notifications import notify
-        from emails.notification import new_match_email
-        with api_tx() as tx:
-            me_row = tx.execute(
-                "SELECT name FROM person WHERE id = %(me_id)s",
-                dict(me_id=s.person_id),
-            ).fetchone()
-        my_name = (me_row or {}).get("name") or "Someone"
-        notify(
-            row["peer_id"], "match",
-            title="It's a match!",
-            body=f"{my_name} likes you back",
-            url="/matches",
-            tag=f"match:{row['match_id']}",
-            email_subject="You have a new match on Ahavah",
-            email_html_factory=new_match_email,
-        )
-    except Exception:
-        import traceback
-        print("decisions.post_decisions push trigger failed:")
-        print(traceback.format_exc())
+    # Mutual match exists. Only push "It's a match" when THIS call is the
+    # one that newly formed the mutual (was_new_like). A repair re-like
+    # (was_new_like False -- my half-row already existed; this call just
+    # let Q_RECORD_LIKE derive + insert the match row from current liked
+    # state) stays silent by design: was_new_like is the only signal this
+    # handler has for "this call is the one that should notify."
+    if was_new_like:
+        # Lazy-import notifications + wrapped in try/except so a missing
+        # pywebpush dependency, missing VAPID env vars, or any other
+        # push-stack issue can never block the match-create response.
+        # send_to_user_safe is itself fire-and-forget but we
+        # belt-and-suspenders the import too.
+        try:
+            from service.notifications import notify
+            from emails.notification import new_match_email
+            with api_tx() as tx:
+                me_row = tx.execute(
+                    "SELECT name FROM person WHERE id = %(me_id)s",
+                    dict(me_id=s.person_id),
+                ).fetchone()
+            my_name = (me_row or {}).get("name") or "Someone"
+            notify(
+                row["peer_id"], "match",
+                title="It's a match!",
+                body=f"{my_name} likes you back",
+                url="/matches",
+                tag=f"match:{row['match_id']}",
+                email_subject="You have a new match on Ahavah",
+                email_html_factory=new_match_email,
+            )
+        except Exception:
+            import traceback
+            print("decisions.post_decisions push trigger failed:")
+            print(traceback.format_exc())
 
     return {
         "match": {
