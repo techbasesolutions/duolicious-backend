@@ -311,3 +311,56 @@ def test_report_after_pass_escalates(make_person):
         ).fetchone()
         assert row['reported'], 'report after plain pass must escalate'
         assert row['report_reason'] == 'Fake photos'
+
+
+# --- Rule 6: a match exempts stranger-privacy gates (2026-08-11 F5) --------
+#
+# hide_me_from_strangers and the verification-privacy gate previously only
+# exempted a peer who had already messaged. A brand-new match with a hidden
+# member had no `messaged` row yet, so it deadlocked: match card exists,
+# chat header 404s, and the profile collapses to the limited stub, until the
+# hidden member messages first. A match is proven mutual consent, so both
+# gates must exempt matched pairs too.
+
+from service.person.sql import Q_SELECT_PROSPECT_PROFILE, Q_SELECT_CONVERSATION_PROSPECT
+
+
+def test_match_exempts_hidden_member_from_privacy_gates(make_person):
+    """F5: matched members must see each other's full profile even when
+    one has hide_me_from_strangers set and no `messaged` row exists yet."""
+    me = make_person(name='Ezra', gender='Man')
+    hidden = make_person(name='Gila', gender='Woman')
+
+    with api_tx() as tx:
+        tx.execute(
+            'UPDATE person SET hide_me_from_strangers = TRUE WHERE id = %(p)s',
+            dict(p=hidden['id']),
+        )
+        _match(tx, me['id'], hidden['id'])
+
+        row = tx.execute(Q_SELECT_PROSPECT_PROFILE, dict(
+            person_id=me['id'], prospect_uuid=hidden['uuid'])).fetchone()
+
+        assert row and row.get('j'), 'matched hidden member must be fetchable'
+        assert row['j'].get('name'), 'profile collapsed to the limited stub'
+
+
+def test_match_exempts_hidden_member_from_conversation_prospect_gate(make_person):
+    """F5 companion: the chat-header fetch (Q_SELECT_CONVERSATION_PROSPECT)
+    must also resolve for a matched hidden member, instead of 404ing."""
+    me = make_person(name='Ilan', gender='Man')
+    hidden = make_person(name='Yael', gender='Woman')
+
+    with api_tx() as tx:
+        tx.execute(
+            'UPDATE person SET hide_me_from_strangers = TRUE WHERE id = %(p)s',
+            dict(p=hidden['id']),
+        )
+        _match(tx, me['id'], hidden['id'])
+
+        row = tx.execute(Q_SELECT_CONVERSATION_PROSPECT, dict(
+            person_id=me['id'], prospect_uuid=hidden['uuid'])).fetchone()
+
+        assert row and row.get('j'), 'matched hidden member chat header 404d'
+        assert row['j'].get('is_available'), 'conversation prospect not available'
+        assert row['j'].get('name'), 'chat header missing name for matched hidden member'

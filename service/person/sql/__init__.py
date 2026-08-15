@@ -931,6 +931,18 @@ WITH prospect AS (
                 NOT prospect.hide_me_from_strangers
             OR
                 prospect_has_messaged_person
+            OR
+                -- A match is proven mutual consent; it exempts the gate
+                -- the same way an existing conversation does, so a fresh
+                -- match with a hidden member doesn't deadlock (F5).
+                EXISTS (
+                    SELECT 1
+                    FROM ahavah_match AS am
+                    WHERE
+                        am.user_a_id = LEAST(%(person_id)s, prospect.id)
+                    AND
+                        am.user_b_id = GREATEST(%(person_id)s, prospect.id)
+                )
         )
         AND (
             prospect.privacy_verification_level_id <= (
@@ -949,6 +961,17 @@ WITH prospect AS (
                         messaged.subject_person_id = prospect.id
                     AND
                         messaged.object_person_id = %(person_id)s
+                )
+            OR
+                -- Same exemption as above, mirrored for the
+                -- verification-level gate (F5).
+                EXISTS (
+                    SELECT 1
+                    FROM ahavah_match AS am
+                    WHERE
+                        am.user_a_id = LEAST(%(person_id)s, prospect.id)
+                    AND
+                        am.user_b_id = GREATEST(%(person_id)s, prospect.id)
                 )
         )
         AND
@@ -1337,6 +1360,18 @@ WITH prospect AS (
                 NOT person.hide_me_from_strangers
             OR
                 m.prospect_has_messaged_person
+            OR
+                -- A match is proven mutual consent; it exempts the gate
+                -- the same way an existing conversation does, so a fresh
+                -- match with a hidden member doesn't deadlock (F5).
+                EXISTS (
+                    SELECT 1
+                    FROM ahavah_match AS am
+                    WHERE
+                        am.user_a_id = LEAST(%(person_id)s, person.id)
+                    AND
+                        am.user_b_id = GREATEST(%(person_id)s, person.id)
+                )
             )
         AND (
                 person.privacy_verification_level_id <= (
@@ -1346,6 +1381,17 @@ WITH prospect AS (
                 )
             OR
                 m.prospect_has_messaged_person
+            OR
+                -- Same exemption as above, mirrored for the
+                -- verification-level gate (F5).
+                EXISTS (
+                    SELECT 1
+                    FROM ahavah_match AS am
+                    WHERE
+                        am.user_a_id = LEAST(%(person_id)s, person.id)
+                    AND
+                        am.user_b_id = GREATEST(%(person_id)s, person.id)
+                )
         )
         AND
             -- Reports/blocks only. A pass must not break an existing
