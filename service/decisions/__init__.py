@@ -184,7 +184,13 @@ JOIN person peer
         ELSE m.user_a_id
     END
 WHERE
-    m.user_a_id = %(me_id)s OR m.user_b_id = %(me_id)s
+    (m.user_a_id = %(me_id)s OR m.user_b_id = %(me_id)s)
+    -- Blocks are permanent on every surface (migration 0035); a reported
+    -- pair must not keep exchanging presence via match cards.
+    AND NOT is_blocked_pair(%(me_id)s, peer.id)
+    -- Deactivated/grace-deleted peers disappear immediately, matching
+    -- the delete_or_ban_account docstring's promise.
+    AND peer.activated
 ORDER BY
     m.created_at DESC
 """
@@ -396,6 +402,12 @@ WHERE
     m.match_id = uuid_or_null(%(match_id)s)
 AND
     (m.user_a_id = %(me_id)s OR m.user_b_id = %(me_id)s)
+    -- Blocks are permanent on every surface (migration 0035); a reported
+    -- pair must not keep exchanging presence via match cards.
+    AND NOT is_blocked_pair(%(me_id)s, peer.id)
+    -- Deactivated/grace-deleted peers disappear immediately, matching
+    -- the delete_or_ban_account docstring's promise.
+    AND peer.activated
 """
 
 
