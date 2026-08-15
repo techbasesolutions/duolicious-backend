@@ -65,6 +65,31 @@ def _skip_exists(tx, me, prospect) -> bool:
     ).fetchone())
 
 
+def _cache_row(tx, me, prospect, position=0):
+    tx.execute(
+        """
+        INSERT INTO search_cache (
+            searcher_person_id, position, prospect_person_id, prospect_uuid,
+            name, match_percentage, personality
+        )
+        VALUES (
+            %(s)s, %(pos)s, %(p)s, %(pu)s,
+            'Test', 0,
+            ('[' || array_to_string(array_fill(0, ARRAY[47]), ',') || ']')::vector
+        )
+        """,
+        dict(s=me['id'], pos=position, p=prospect['id'], pu=prospect['uuid']),
+    )
+
+
+def _cache_row_exists(tx, me, prospect) -> bool:
+    return bool(tx.execute(
+        "SELECT 1 FROM search_cache WHERE searcher_person_id = %(s)s "
+        "AND prospect_person_id = %(p)s",
+        dict(s=me['id'], p=prospect['id']),
+    ).fetchone())
+
+
 def test_rewind_debits_1_and_deletes_skip(pair):
     from database import api_tx
     me, prospect = pair['me'], pair['prospect']
@@ -86,6 +111,21 @@ def test_rewind_with_no_skip_raises_and_does_not_debit(pair):
             perform_rewind(tx, me['uuid'], me['id'], prospect['uuid'])
         # Existence check runs before the debit — balance untouched.
         assert get_balance(tx, me['uuid']) == 5
+
+
+def test_rewind_clears_search_cache_row_for_pair(pair):
+    """F9: rewind must clear the pair's search_cache row so the paid-back
+    profile can reappear inside the current cached deck session (see-passes
+    and take-back-like already do this)."""
+    from database import api_tx
+    me, prospect = pair['me'], pair['prospect']
+    with api_tx() as tx:
+        credit(tx, me['uuid'], 5, reason='purchase', metadata={})
+        _skip(tx, me, prospect)
+        _cache_row(tx, me, prospect)
+        assert _cache_row_exists(tx, me, prospect)
+        perform_rewind(tx, me['uuid'], me['id'], prospect['uuid'])
+        assert not _cache_row_exists(tx, me, prospect)
 
 
 def test_rewind_insufficient_tokens_keeps_skip(pair):

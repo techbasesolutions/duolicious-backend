@@ -45,6 +45,18 @@ _Q_DELETE_SWIPE = """
      )
 """
 
+# The paid-back profile must reappear inside the CURRENT cached deck
+# session, not wait for the next /search rebuild: see-passes and
+# take-back-like both already clear their pair's search_cache row for
+# the same reason.
+_Q_DELETE_CACHE_PAIR = """
+  DELETE FROM search_cache
+   WHERE searcher_person_id = %(me_id)s
+     AND prospect_person_id = (
+       SELECT id FROM person WHERE uuid = uuid_or_null(%(prospect_uuid)s)
+     )
+"""
+
 
 def perform(tx, person_uuid: str, person_id: int, prospect_uuid: str) -> dict:
     """Debit COST tokens and delete the skip (+ pass swipe) for the prospect.
@@ -69,4 +81,5 @@ def perform(tx, person_uuid: str, person_id: int, prospect_uuid: str) -> dict:
           metadata={'prospect': prospect_uuid})
     tx.execute(_Q_DELETE_SKIP, dict(me_id=person_id, prospect_uuid=prospect_uuid))
     tx.execute(_Q_DELETE_SWIPE, dict(me_id=person_id, prospect_uuid=prospect_uuid))
+    tx.execute(_Q_DELETE_CACHE_PAIR, dict(me_id=person_id, prospect_uuid=prospect_uuid))
     return {'rewound': True, 'profile_uuid': prospect_uuid}

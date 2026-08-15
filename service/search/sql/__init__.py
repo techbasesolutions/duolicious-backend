@@ -129,7 +129,12 @@ prospect_pool AS (
           AND ab.expires_at > NOW()
     WHERE p.activated = TRUE
       AND p.id != %(searcher_person_id)s
-      AND p.gender_id = ANY(%(gender_preference)s::SMALLINT[])
+
+      -- Fail-open like the map: empty preference = no gender filter.
+      AND (
+          cardinality(%(gender_preference)s::SMALLINT[]) = 0
+          OR p.gender_id = ANY(%(gender_preference)s::SMALLINT[])
+      )
 
       -- Country filter: applied only if user has expressed preferences
       AND (
@@ -182,6 +187,19 @@ prospect_pool AS (
       -- The ONLY gate allowed to hide on a plain pass (see migration
       -- 0035 for why this is a named predicate).
       AND NOT is_deck_suppressed(%(searcher_person_id)s, p.id)
+
+      -- Automod: a trustworthy report flags verification_required;
+      -- flagged accounts leave deck + map until they verify (0018
+      -- intended this; the rewritten search lost it).
+      AND NOT p.verification_required
+
+      -- Defensive: a match must never re-enter the deck, even if the
+      -- searcher's liked half-row was wiped (/decisions/reset).
+      AND NOT EXISTS (
+          SELECT 1 FROM ahavah_match m
+          WHERE m.user_a_id = LEAST(%(searcher_person_id)s, p.id)
+            AND m.user_b_id = GREATEST(%(searcher_person_id)s, p.id)
+      )
 
       -- Phase W: "Verified only" filter. Triggered either by the
       -- discover sheet's verifiedOnly toggle OR the privacy setting
@@ -428,6 +446,10 @@ Q_MAP_MARKERS = """
         ) AS photo_uuid
     FROM person p
     WHERE p.activated
+      -- Automod: a trustworthy report flags verification_required;
+      -- flagged accounts leave deck + map until they verify (0018
+      -- intended this; the rewritten search lost it).
+      AND NOT p.verification_required
       AND p.id != %(searcher_person_id)s
       -- Gender preference, fail-open when the viewer never set one.
       AND (
