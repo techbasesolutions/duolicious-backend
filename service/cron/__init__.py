@@ -1,6 +1,7 @@
 from service.cron.autodeactivate2 import autodeactivate2_forever
 from service.cron.betareengagement import send_beta_reengagement_forever
 from service.cron.checkphotos import check_photos_forever
+from service.cron.entitlements import entitlements_forever
 from service.cron.garbagerecords import delete_garbage_records_forever
 from service.cron.notifications import send_notifications_forever
 from service.cron.nsfwphotorunner import predict_nsfw_photos_forever
@@ -69,6 +70,11 @@ async def main():
         # Single writer of the FireHOL binary blocklist the api workers
         # mmap (antiabuse/firehol). Every 4 hours.
         build_firehol_forever(),
+
+        # F10: strips 'premium' from person.entitlements once
+        # subscription_expires_at passes. Was dead code (expire_stale had
+        # zero callers) until this task. Runs hourly.
+        entitlements_forever(),
 
         check_connections_forever(),
 
