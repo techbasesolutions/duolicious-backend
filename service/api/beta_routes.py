@@ -36,7 +36,7 @@ def post_beta_tester(req: t.PostBetaTester):
     if not verify_turnstile(req.turnstile_token, request.remote_addr):
         return 'Verification failed', 403
     with api_tx() as tx:
-        is_new = register_beta(tx, req.email, None)
+        is_new, resubscribed = register_beta(tx, req.email, None)
         total = beta_count(tx)
         # Record referral attribution if the FE carried an inviter_code
         # from /i/<code>. Best-effort — bad codes / self-referrals /
@@ -44,7 +44,11 @@ def post_beta_tester(req: t.PostBetaTester):
         # affecting the beta-tester flow. See parent spec.
         if is_new:
             attribute_referral(tx, req.inviter_code, req.email)
-    if is_new:
+    # F21: a re-opt-in after unsubscribing is explicit consent again, so it
+    # gets the welcome + admin notice exactly like a brand-new signup. An
+    # unchanged, still-subscribed row (is_new=False, resubscribed=False)
+    # sends nothing - it's a genuine no-op repeat click.
+    if is_new or resubscribed:
         send_beta_welcome_async(req.email)
         # Notify the admin inbox of the new beta opt-in (mirrors the signup notice).
         send_beta_optin_notice_async(req.email, total)
