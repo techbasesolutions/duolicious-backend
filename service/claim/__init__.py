@@ -39,7 +39,8 @@ _Q_ENSURE_ONBOARDEE = """
 _Q_SET_GENDER = """
     INSERT INTO onboardee (email, gender_id)
     SELECT %(email)s, id FROM gender WHERE name = %(gender)s
-    ON CONFLICT (email) DO UPDATE SET gender_id = EXCLUDED.gender_id
+    ON CONFLICT (email) DO UPDATE SET
+        gender_id = EXCLUDED.gender_id, updated_at = NOW()
 """
 
 _Q_SET_COORDS = """
@@ -56,14 +57,16 @@ _Q_SET_COORDS = """
            THEN 0 ELSE 1 END,
       long_friendly
     LIMIT 1
-    ON CONFLICT (email) DO UPDATE SET coordinates = EXCLUDED.coordinates
+    ON CONFLICT (email) DO UPDATE SET
+        coordinates = EXCLUDED.coordinates, updated_at = NOW()
 """
 
 _Q_MERGE_EXTRA = """
     INSERT INTO onboardee (email, ahavah_extra)
     VALUES (%(email)s, %(blob)s::jsonb)
     ON CONFLICT (email) DO UPDATE SET
-        ahavah_extra = onboardee.ahavah_extra || EXCLUDED.ahavah_extra
+        ahavah_extra = onboardee.ahavah_extra || EXCLUDED.ahavah_extra,
+        updated_at = NOW()
 """
 
 # Direct signed-in session insert -- the claim token already authenticated the

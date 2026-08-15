@@ -131,6 +131,26 @@ def test_onboardee_wiped_when_stale():
 
 
 # ---------------------------------------------------------------------------
+# F16 class (fix-wave) -- claim-link onboardee upserts also bump activity
+# ---------------------------------------------------------------------------
+
+def test_claim_onboardee_upserts_bump_updated_at():
+    """The claim flow (service/claim) pre-fills an onboardee from waitlist
+    answers via its own DO UPDATE SET upserts, parallel to the main
+    onboarding writes above. Each must also stamp updated_at so
+    re-exercising a claim link refreshes the 1-hour wizard-wipe window
+    like every other onboardee write (F16)."""
+    from service.claim import _Q_SET_GENDER, _Q_SET_COORDS, _Q_MERGE_EXTRA
+    for name, q in (
+        ('_Q_SET_GENDER', _Q_SET_GENDER),
+        ('_Q_SET_COORDS', _Q_SET_COORDS),
+        ('_Q_MERGE_EXTRA', _Q_MERGE_EXTRA),
+    ):
+        assert 'updated_at = NOW()' in q, \
+            f'{name} must bump onboardee.updated_at on conflict (F16)'
+
+
+# ---------------------------------------------------------------------------
 # F17 -- source-inspection guard (brief Step 2)
 # ---------------------------------------------------------------------------
 
