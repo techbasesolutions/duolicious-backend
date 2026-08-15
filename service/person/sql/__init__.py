@@ -1527,6 +1527,10 @@ WITH person_info AS (
                 subject_person_id = %(person_id)s
             AND
                 object_person_id = id_table.id
+            AND
+                reported            -- blocks only; a plain pass is
+                                    -- deck state, never inbox state
+                                    -- (0035/0036, fixed 2026-08-11)
         ) AS person_skipped_prospect,
         EXISTS (
             SELECT
@@ -1537,6 +1541,8 @@ WITH person_info AS (
                 subject_person_id = id_table.id
             AND
                 object_person_id = %(person_id)s
+            AND
+                reported
         ) AS prospect_skipped_person
     FROM
         (
@@ -1570,6 +1576,8 @@ WITH person_info AS (
 SELECT
     person_id,
     person_uuid,
+    person_skipped_prospect,
+    prospect_skipped_person,
     CASE
         WHEN is_prospect_activated AND NOT prospect_skipped_person
         THEN
