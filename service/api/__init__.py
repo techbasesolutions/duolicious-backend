@@ -592,14 +592,14 @@ def post_unskip_by_uuid(s: t.SessionInfo, prospect_uuid: str):
 # See service/decisions/__init__.py + migrations/0006_match_loop.sql.
 @apost('/decisions/reset')
 def post_decisions_reset(s: t.SessionInfo):
-    """Reset ONLY the caller's own outgoing swipe history so they can
+    """Reset ONLY the caller's own outgoing decision history so they can
     re-see profiles they passed/liked and re-test the /discover loop.
 
     Self-only (2026-06-18): deletes just the caller's own likes (liker_id),
-    skips (subject), swipes (swiper), and search_cache. It does NOT touch
-    incoming likes, a peer's skips, or shared matches -- the old
-    bidirectional version let one account silently wipe real users'
-    likes/matches/chats. Admin-gated as defence in depth.
+    skips (subject), and search_cache. It does NOT touch incoming likes,
+    a peer's skips, or shared matches -- the old bidirectional version let
+    one account silently wipe real users' likes/matches/chats. Admin-gated
+    as defence in depth.
     """
     from service.admin import require_admin
     require_admin(s)
@@ -611,14 +611,6 @@ def post_decisions_reset(s: t.SessionInfo):
         )
         tx.execute(
             "DELETE FROM liked WHERE liker_id = %(p)s",
-            dict(p=s.person_id),
-        )
-        # `swipe` is the upstream Duolicious swipe-history table that
-        # Q_UNCACHED_SEARCH_2 also excludes against. Without this
-        # delete, /discover stayed empty after a reset because every
-        # prospect was still marked as "already swiped".
-        tx.execute(
-            "DELETE FROM swipe WHERE swiper_person_id = %(p)s",
             dict(p=s.person_id),
         )
         # Clear the caller's own cache so /search recomputes for them.

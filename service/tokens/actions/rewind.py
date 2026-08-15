@@ -2,9 +2,9 @@
 
 Scope: passes only. Likes are not rewindable (a like may have created a
 match + sent a push). The /profile/tokens copy says "Undo your last pass
-and reconsider." Caller owns the transaction so the debit + the
-skipped/swipe deletes commit atomically (rolled back together if the
-debit raises InsufficientTokens).
+and reconsider." Caller owns the transaction so the debit + the skip
+deletion commit atomically (rolled back together if the debit raises
+InsufficientTokens).
 """
 
 from __future__ import annotations
@@ -34,17 +34,6 @@ _Q_DELETE_SKIP = """
      )
 """
 
-# Only the 'pass' swipe — never a 'like'/'super' row, so rewinding a pass
-# can't accidentally undo a like and resurface a matched person in the deck.
-_Q_DELETE_SWIPE = """
-  DELETE FROM swipe
-   WHERE swiper_person_id = %(me_id)s
-     AND direction = 'pass'
-     AND swiped_person_id = (
-       SELECT id FROM person WHERE uuid = uuid_or_null(%(prospect_uuid)s)
-     )
-"""
-
 # The paid-back profile must reappear inside the CURRENT cached deck
 # session, not wait for the next /search rebuild: see-passes and
 # take-back-like both already clear their pair's search_cache row for
@@ -59,7 +48,7 @@ _Q_DELETE_CACHE_PAIR = """
 
 
 def perform(tx, person_uuid: str, person_id: int, prospect_uuid: str) -> dict:
-    """Debit COST tokens and delete the skip (+ pass swipe) for the prospect.
+    """Debit COST tokens and delete the skip for the prospect.
 
     Raises:
         NothingToRewind  if no skip exists for (me, prospect) — caller maps
@@ -80,6 +69,5 @@ def perform(tx, person_uuid: str, person_id: int, prospect_uuid: str) -> dict:
     debit(tx, person_uuid, COST, reason='rewind',
           metadata={'prospect': prospect_uuid})
     tx.execute(_Q_DELETE_SKIP, dict(me_id=person_id, prospect_uuid=prospect_uuid))
-    tx.execute(_Q_DELETE_SWIPE, dict(me_id=person_id, prospect_uuid=prospect_uuid))
     tx.execute(_Q_DELETE_CACHE_PAIR, dict(me_id=person_id, prospect_uuid=prospect_uuid))
     return {'rewound': True, 'profile_uuid': prospect_uuid}

@@ -9,7 +9,6 @@ column, `count_answers`, and JOINs against the `answer` /
 Phase 1 Task 1.1 will rewrite this with:
   - country / region / languages_spoken filters
   - composite index `(country, verification_level DESC, last_active DESC)`
-  - swipe-exclusion JOIN against the `swipe` table
   - block exclusion against the `hide-and-block` table
 
 Until Phase 1, the stubs below return an empty/minimal result so that:
@@ -55,7 +54,7 @@ DELETE FROM search_cache WHERE searcher_person_id = %(searcher_person_id)s
 # Phase 1 Task 1.1 — discovery query.
 #   - filters: country (if user set preferred_countries), language overlap
 #     (if user set preferred_languages), gender preference, activated
-#   - excludes: self, already-swiped (any direction), blocked (skipped table)
+#   - excludes: self, blocked (skipped table)
 #   - sorted by: verification_level DESC, last_online_time DESC
 #     (verified-first, recently-active; matches the composite index)
 #   - paginated via n / o
@@ -163,13 +162,6 @@ prospect_pool AS (
       -- stranger viewpoint — by definition the searcher hasn't messaged
       -- anyone in the discover pool yet, so any TRUE here means exclude.
       AND NOT p.hide_me_from_strangers
-
-      -- Already-swiped exclusion (any direction)
-      AND NOT EXISTS (
-          SELECT 1 FROM swipe s
-          WHERE s.swiper_person_id = %(searcher_person_id)s
-            AND s.swiped_person_id = p.id
-      )
 
       -- Already-liked exclusion. The like flow (service/decisions:Q_RECORD_LIKE)
       -- writes ONLY into `liked`, not `swipe` — so a liked candidate would
