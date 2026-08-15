@@ -308,15 +308,23 @@ WITH valid_session AS (
         otp_expiry > NOW()
     RETURNING email
 )
--- Only wipe stale onboardee state. Within the last hour we assume the
--- user is actively onboarding and the OTP verify is from a "Resend
--- code" tap mid-wizard -- deleting now destroys the name/dob/gender
--- they already entered (which is what burned every retrying user in
--- the early beta). Older rows = an abandoned attempt; a clean start
--- on re-signup is the right UX there.
+-- Only wipe stale onboardee state. Within the last hour of ACTIVITY we
+-- assume the user is actively onboarding and the OTP verify is from a
+-- "Resend code" tap mid-wizard -- deleting now destroys the name/dob/
+-- gender they already entered (which is what burned every retrying
+-- user in the early beta). Older rows = an abandoned attempt; a clean
+-- start on re-signup is the right UX there.
+--
+-- F16: this used to key off created_at, which never moves -- a slow
+-- onboarder who spent 90+ minutes filling out the wizard (or simply
+-- tapped "Resend code" more than an hour after starting) had their row
+-- created over an hour ago even though they were actively typing into
+-- it seconds before this query ran. Every field/photo upsert now
+-- stamps onboardee.updated_at, so the window reads that instead: it
+-- restarts on actual activity, not on row birth.
 DELETE FROM onboardee
 WHERE email IN (SELECT email FROM valid_session)
-  AND created_at < NOW() - INTERVAL '1 hour'
+  AND updated_at < NOW() - INTERVAL '1 hour'
 RETURNING email
 """
 
@@ -2861,6 +2869,16 @@ VALUES
 ON CONFLICT DO NOTHING
 RETURNING
     1
+"""
+
+# F18: read-only anti-replay check, used BEFORE the object-store upload so
+# a failed put can't burn the capture (Q_INSERT_VERIFICATION_PHOTO_HASH
+# above is the write that actually latches the hash; it only runs after
+# a successful upload).
+Q_CHECK_VERIFICATION_PHOTO_HASH = """
+SELECT 1
+FROM verification_photo_hash
+WHERE hash = %(photo_hash)s
 """
 
 Q_UPDATE_VERIFICATION_JOB = """

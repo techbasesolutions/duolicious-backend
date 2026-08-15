@@ -575,7 +575,8 @@ def patch_onboardee_info(req: t.PatchOnboardeeInfo, s: t.SessionInfo):
                 %(email)s,
                 %(field_value)s
             ) ON CONFLICT (email) DO UPDATE SET
-                $field_name = EXCLUDED.$field_name
+                $field_name = EXCLUDED.$field_name,
+                updated_at = NOW()
             """.replace('$field_name', field_name)
 
         with api_tx() as tx:
@@ -596,7 +597,8 @@ def patch_onboardee_info(req: t.PatchOnboardeeInfo, s: t.SessionInfo):
             FROM location
             WHERE long_friendly = %(long_friendly)s
             ON CONFLICT (email) DO UPDATE SET
-                coordinates = EXCLUDED.coordinates
+                coordinates = EXCLUDED.coordinates,
+                updated_at = NOW()
             """
         with api_tx() as tx:
             tx.execute(q_set_onboardee_field, params)
@@ -618,7 +620,8 @@ def patch_onboardee_info(req: t.PatchOnboardeeInfo, s: t.SessionInfo):
             FROM gender
             WHERE name = %(gender)s
             ON CONFLICT (email) DO UPDATE SET
-                gender_id = EXCLUDED.gender_id
+                gender_id = EXCLUDED.gender_id,
+                updated_at = NOW()
             """
 
         with api_tx() as tx:
@@ -645,6 +648,14 @@ def patch_onboardee_info(req: t.PatchOnboardeeInfo, s: t.SessionInfo):
 
         with api_tx() as tx:
             tx.execute(q_set_onboardee_field, params)
+            # F16: onboardee_search_preference_gender is a CHILD table --
+            # the write above doesn't touch onboardee's own row, so stamp
+            # its updated_at here explicitly (same pattern as the photo
+            # upsert below).
+            tx.execute(
+                'UPDATE onboardee SET updated_at = NOW() WHERE email = %(email)s',
+                dict(email=s.email),
+            )
     elif field_name == 'ahavah_extra':
         # Merge partial JSONB patch into onboardee.ahavah_extra. The
         # wizard fires one PATCH per Ahavah-specific field (assembly,
@@ -659,7 +670,8 @@ def patch_onboardee_info(req: t.PatchOnboardeeInfo, s: t.SessionInfo):
             INSERT INTO onboardee (email, ahavah_extra)
             VALUES (%(email)s, %(field_value)s::jsonb)
             ON CONFLICT (email) DO UPDATE SET
-                ahavah_extra = onboardee.ahavah_extra || EXCLUDED.ahavah_extra
+                ahavah_extra = onboardee.ahavah_extra || EXCLUDED.ahavah_extra,
+                updated_at = NOW()
             """
         with api_tx() as tx:
             tx.execute(q_set_onboardee_field, params)
@@ -725,13 +737,24 @@ def patch_onboardee_info(req: t.PatchOnboardeeInfo, s: t.SessionInfo):
                 ) ON CONFLICT (email, position) DO UPDATE SET
                     uuid = EXCLUDED.uuid,
                     blurhash = EXCLUDED.blurhash,
-                    extra_exts = EXCLUDED.extra_exts
+                    extra_exts = EXCLUDED.extra_exts,
+                    hash = EXCLUDED.hash
             )
             SELECT 1
             """
+            # F17: replacing a photo at the same position kept the FIRST
+            # upload's hash (no `hash = EXCLUDED.hash` above), so a later
+            # photo-ban check latched onto stale, wrong image data.
 
         with api_tx() as tx:
             tx.execute(q_set_onboardee_field, params)
+            # F16: onboardee_photo is a CHILD table -- the upsert above
+            # doesn't touch onboardee's own row, so stamp its updated_at
+            # here explicitly in the same tx.
+            tx.execute(
+                'UPDATE onboardee SET updated_at = NOW() WHERE email = %(email)s',
+                dict(email=s.email),
+            )
 
         try:
             put_image_in_object_store(uuid, base64_file, crop_size)
@@ -2516,12 +2539,20 @@ def post_verification_selfie(req: t.PostVerificationSelfie, s: t.SessionInfo):
         expected_previous_status=None,
     )
 
+    # F18: the anti-replay hash used to latch (INSERT ... RETURNING) and
+    # the verification job get inserted BEFORE the object-store upload.
+    # A failed upload then left the hash permanently latched with no
+    # photo behind it, so the user's next attempt -- even with a brand
+    # new selfie -- could collide if they'd resubmitted the same capture,
+    # and a genuine retry of the SAME capture always failed with
+    # V_REUSED_SELFIE even though nothing was ever stored. Reorder so
+    # the latch only commits once the upload has actually succeeded:
+    #   1. read-only reuse check (no write)
+    #   2. upload to the object store
+    #   3. only on a successful upload, latch the hash + insert the job
     with api_tx() as tx:
-        if tx.execute(Q_INSERT_VERIFICATION_PHOTO_HASH, params_ok).fetchall():
-            tx.execute(Q_DELETE_VERIFICATION_JOB, params_ok)
-            tx.execute(Q_INSERT_VERIFICATION_JOB, params_ok)
-        else:
-            tx.execute(Q_UPDATE_VERIFICATION_JOB, params_bad)
+        reused = bool(
+            tx.execute(Q_CHECK_VERIFICATION_PHOTO_HASH, params_ok).fetchall())
 
     try:
         put_image_in_object_store(
@@ -2529,6 +2560,18 @@ def post_verification_selfie(req: t.PostVerificationSelfie, s: t.SessionInfo):
     except Exception as e:
         print('Upload failed with exception:', e)
         return '', 500
+
+    with api_tx() as tx:
+        if reused:
+            tx.execute(Q_UPDATE_VERIFICATION_JOB, params_bad)
+        elif tx.execute(Q_INSERT_VERIFICATION_PHOTO_HASH, params_ok).fetchall():
+            tx.execute(Q_DELETE_VERIFICATION_JOB, params_ok)
+            tx.execute(Q_INSERT_VERIFICATION_JOB, params_ok)
+        else:
+            # Race: another request latched the same hash between our
+            # read-only check and this write. Same outcome as a reuse
+            # detected up front.
+            tx.execute(Q_UPDATE_VERIFICATION_JOB, params_bad)
 
 def post_verification_multi_selfie(
     req: t.PostVerificationMultiSelfie,
