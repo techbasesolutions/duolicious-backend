@@ -308,3 +308,119 @@ def test_selfie_upload_success_latches_hash_and_inserts_job(monkeypatch, make_pe
                 'DELETE FROM verification_job WHERE person_id = %(p)s',
                 dict(p=p['id']),
             )
+
+
+# ---------------------------------------------------------------------------
+# F18 fix round 1 -- the LIVE Silver capture path is
+# post_verification_multi_selfie (ahavah-web's use-silver-verification hook
+# posts there; single-frame Bronze above is the dormant sibling), so the
+# same latch-after-upload reorder must apply to the 3-frame burst: a
+# failure on ANY frame's upload must leave ZERO verification_photo_hash
+# rows from that burst latched, or a retry with the same captures would
+# spuriously hit V_REUSED_SELFIE.
+# ---------------------------------------------------------------------------
+
+def _multi_selfie_frames(hashes: list[str]) -> SimpleNamespace:
+    return SimpleNamespace(frames=[
+        SimpleNamespace(base64='', image=None, top=0, left=0, md5_hash=h)
+        for h in hashes
+    ])
+
+
+def test_multi_selfie_upload_failure_leaves_no_hashes_latched(monkeypatch, make_person):
+    import service.person as sp
+
+    p = make_person(name='Multi Selfie Retry', gender='Woman')
+
+    call_count = {'n': 0}
+
+    def _raise_on_second_frame(*args, **kwargs):
+        call_count['n'] += 1
+        if call_count['n'] == 2:
+            raise RuntimeError('object store unreachable on frame 2')
+
+    monkeypatch.setattr(sp, 'put_image_in_object_store', _raise_on_second_frame)
+
+    hashes = [f'multi-hash-fail-{uuid4()}' for _ in range(3)]
+    req = _multi_selfie_frames(hashes)
+    session = SimpleNamespace(person_id=p['id'])
+
+    try:
+        result = sp.post_verification_multi_selfie(req, session)
+        assert result == ('', 500), \
+            'a mid-burst upload failure must surface an error to the client'
+
+        with api_tx() as tx:
+            for h in hashes:
+                row = tx.execute(
+                    'SELECT 1 FROM verification_photo_hash WHERE hash = %(h)s',
+                    dict(h=h),
+                ).fetchone()
+                assert row is None, \
+                    f'a failed multi-selfie upload must not latch hash {h} (F18)'
+            job_row = tx.execute(
+                'SELECT 1 FROM verification_job WHERE person_id = %(p)s',
+                dict(p=p['id']),
+            ).fetchone()
+        assert job_row is None, \
+            'a failed multi-selfie upload must not insert a verification job either (F18)'
+    finally:
+        with api_tx() as tx:
+            for h in hashes:
+                tx.execute(
+                    'DELETE FROM verification_photo_hash WHERE hash = %(h)s',
+                    dict(h=h),
+                )
+            tx.execute(
+                'DELETE FROM verification_job WHERE person_id = %(p)s',
+                dict(p=p['id']),
+            )
+
+
+def test_multi_selfie_success_latches_all_three_hashes(monkeypatch, make_person):
+    """Happy-path companion: proves the reorder moved the burst's writes
+    rather than dropping them -- every frame's hash latches and the job
+    is inserted with the full silver burst once all uploads succeed."""
+    import service.person as sp
+
+    p = make_person(name='Multi Selfie Ok', gender='Man')
+
+    monkeypatch.setattr(sp, 'put_image_in_object_store', lambda *a, **k: None)
+
+    hashes = [f'multi-hash-ok-{uuid4()}' for _ in range(3)]
+    req = _multi_selfie_frames(hashes)
+    session = SimpleNamespace(person_id=p['id'])
+
+    try:
+        sp.post_verification_multi_selfie(req, session)
+
+        with api_tx() as tx:
+            for h in hashes:
+                row = tx.execute(
+                    'SELECT 1 FROM verification_photo_hash WHERE hash = %(h)s',
+                    dict(h=h),
+                ).fetchone()
+                assert row is not None, \
+                    f'a successful multi-selfie upload must latch hash {h}'
+            job_row = tx.execute(
+                'SELECT status, silver_burst_uuids FROM verification_job '
+                'WHERE person_id = %(p)s',
+                dict(p=p['id']),
+            ).fetchone()
+
+        assert job_row is not None, \
+            'a successful multi-selfie upload must insert the verification job'
+        assert job_row['status'] == 'uploading-photo'
+        assert len(job_row['silver_burst_uuids']) == 2, \
+            'the job must carry the 2 non-proof frames as the silver burst'
+    finally:
+        with api_tx() as tx:
+            for h in hashes:
+                tx.execute(
+                    'DELETE FROM verification_photo_hash WHERE hash = %(h)s',
+                    dict(h=h),
+                )
+            tx.execute(
+                'DELETE FROM verification_job WHERE person_id = %(p)s',
+                dict(p=p['id']),
+            )

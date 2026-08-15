@@ -2573,6 +2573,12 @@ def post_verification_selfie(req: t.PostVerificationSelfie, s: t.SessionInfo):
             # detected up front.
             tx.execute(Q_UPDATE_VERIFICATION_JOB, params_bad)
 
+class _MultiSelfieHashRace(Exception):
+    """Internal control-flow signal only (see post_verification_multi_selfie).
+    Raised inside the closing `api_tx()` block so its __exit__ rolls back
+    every hash latched so far in that block -- never escapes the function."""
+
+
 def post_verification_multi_selfie(
     req: t.PostVerificationMultiSelfie,
     s: t.SessionInfo,
@@ -2587,6 +2593,24 @@ def post_verification_multi_selfie(
     (same anti-replay as Bronze). If any frame is a reuse the whole
     burst is failed before the job is inserted, so the user sees the
     same V_REUSED_SELFIE error they'd get on Bronze.
+
+    F18: this is the LIVE Silver capture path (the mobile app's
+    use-silver-verification hook posts here; single-frame Bronze is the
+    dormant sibling). It used to latch every frame's hash (and, on the
+    happy path, insert/advance the job) BEFORE uploading any frame to
+    the object store, so an upload failure left hashes permanently
+    latched with nothing behind them -- a retry with the exact same
+    captures spuriously hit V_REUSED_SELFIE forever. Reordered to:
+      1. read-only reuse check across all three frames (no write)
+      2. upload all three frames
+      3. only once every upload has succeeded, latch all three hashes
+         + insert/advance the job, in one tx
+    Step 3 is all-or-nothing: if any frame's hash was latched by a
+    concurrent request in the gap between step 1 and step 3, every
+    latch attempted in that tx is rolled back (via _MultiSelfieHashRace)
+    and the job is marked failed in a separate tx -- same race-guard
+    shape as post_verification_selfie's ON CONFLICT DO NOTHING RETURNING
+    pattern, just applied per-burst instead of per-frame.
     """
     if len(req.frames) != 3:
         return 'frames must contain exactly 3 entries', 400
@@ -2595,46 +2619,35 @@ def post_verification_multi_selfie(
     proof_uuid = photo_uuids[0]
     burst_uuids = photo_uuids[1:]
 
+    params_bad = dict(
+        person_id=s.person_id,
+        status='failure',
+        message=V_REUSED_SELFIE,
+        expected_previous_status=None,
+    )
+
+    # Step 1: read-only reuse check. Any frame already latched fails the
+    # whole burst, exactly as before -- but nothing is written here, so
+    # no upload is even attempted for a doomed submission.
     with api_tx() as tx:
-        # Anti-replay: every frame must clear the dedupe table. If any
-        # one fails, mark the job 'failure' so the user retries with
-        # fresh captures (same UX as Bronze).
-        for frame in req.frames:
-            row = tx.execute(
-                Q_INSERT_VERIFICATION_PHOTO_HASH,
+        reused = any(
+            tx.execute(
+                Q_CHECK_VERIFICATION_PHOTO_HASH,
                 dict(photo_hash=frame.md5_hash),
             ).fetchall()
-            if not row:
-                tx.execute(Q_UPDATE_VERIFICATION_JOB, dict(
-                    person_id=s.person_id,
-                    status='failure',
-                    message=V_REUSED_SELFIE,
-                    expected_previous_status=None,
-                ))
-                return '', 200
-
-        # Replace any prior verification_job for this person, then
-        # insert the silver burst. Reusing the existing INSERT and
-        # then UPDATEing silver_burst_uuids in a follow-up statement
-        # keeps Q_INSERT_VERIFICATION_JOB unchanged.
-        tx.execute(Q_DELETE_VERIFICATION_JOB, dict(person_id=s.person_id))
-        tx.execute(Q_INSERT_VERIFICATION_JOB, dict(
-            person_id=s.person_id,
-            photo_uuid=proof_uuid,
-        ))
-        tx.execute(
-            """
-            UPDATE verification_job
-               SET silver_burst_uuids = %(burst_uuids)s::TEXT[]
-             WHERE person_id = %(person_id)s
-            """,
-            dict(person_id=s.person_id, burst_uuids=burst_uuids),
+            for frame in req.frames
         )
 
-    # Upload all three frames to the bucket. Failure here is rare but
-    # non-fatal to the row (cron will fail the job naturally when the
-    # classifier can't fetch the image). 500 keeps the user's UI in
-    # the "uploading-photo" state so they can retry.
+    if reused:
+        with api_tx() as tx:
+            tx.execute(Q_UPDATE_VERIFICATION_JOB, params_bad)
+        return '', 200
+
+    # Step 2: upload all three frames to the bucket BEFORE any DB write.
+    # A failure here must leave zero verification_photo_hash rows
+    # latched for this burst -- otherwise a retry with the same
+    # captures would hit V_REUSED_SELFIE even though nothing was ever
+    # stored (F18).
     try:
         for uuid_, frame in zip(photo_uuids, req.frames):
             put_image_in_object_store(
@@ -2646,6 +2659,43 @@ def post_verification_multi_selfie(
     except Exception as e:
         print('Multi-selfie upload failed with exception:', e)
         return '', 500
+
+    # Step 3: every upload succeeded -- latch all three hashes and
+    # insert/advance the job in one tx. If any INSERT loses the race
+    # (ON CONFLICT DO NOTHING RETURNING comes back empty), raise to
+    # roll back every latch this tx attempted; the job gets marked
+    # failed in a separate tx afterward.
+    try:
+        with api_tx() as tx:
+            for frame in req.frames:
+                row = tx.execute(
+                    Q_INSERT_VERIFICATION_PHOTO_HASH,
+                    dict(photo_hash=frame.md5_hash),
+                ).fetchall()
+                if not row:
+                    raise _MultiSelfieHashRace()
+
+            # Replace any prior verification_job for this person, then
+            # insert the silver burst. Reusing the existing INSERT and
+            # then UPDATEing silver_burst_uuids in a follow-up statement
+            # keeps Q_INSERT_VERIFICATION_JOB unchanged.
+            tx.execute(Q_DELETE_VERIFICATION_JOB, dict(person_id=s.person_id))
+            tx.execute(Q_INSERT_VERIFICATION_JOB, dict(
+                person_id=s.person_id,
+                photo_uuid=proof_uuid,
+            ))
+            tx.execute(
+                """
+                UPDATE verification_job
+                   SET silver_burst_uuids = %(burst_uuids)s::TEXT[]
+                 WHERE person_id = %(person_id)s
+                """,
+                dict(person_id=s.person_id, burst_uuids=burst_uuids),
+            )
+    except _MultiSelfieHashRace:
+        with api_tx() as tx:
+            tx.execute(Q_UPDATE_VERIFICATION_JOB, params_bad)
+        return '', 200
 
 
 def post_verify(s: t.SessionInfo):
