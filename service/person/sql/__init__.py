@@ -352,6 +352,8 @@ WITH valid_session AS (
         person
     SET
         activated = TRUE,
+        deletion_requested_at = NULL,  -- signing in IS regret; a member
+                                        -- must never be purged mid-use
         sign_in_count = sign_in_count + 1,
         sign_in_time = NOW()
     FROM

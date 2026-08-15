@@ -45,7 +45,8 @@ def test_hard_delete_stages_media_and_purges_referrals(make_person):
             "('ghost-inviter@example.org', %(e)s)", dict(e=email))
         tx.execute(
             "UPDATE person SET activated = FALSE, "
-            "deletion_requested_at = NOW() - INTERVAL '8 days' "
+            "deletion_requested_at = NOW() - INTERVAL '8 days', "
+            "sign_in_time = NOW() - INTERVAL '9 days' "  # before the request
             "WHERE id = %(p)s", dict(p=p['id']))
 
     asyncio.run(hard_delete_expired_once())
@@ -79,3 +80,37 @@ def test_hard_delete_stages_media_and_purges_referrals(make_person):
             tx.execute("DELETE FROM undeleted_audio WHERE uuid = 'del-test-audio-uuid-1'")
             tx.execute("DELETE FROM referral WHERE invitee_email = 'ghost-invitee@example.org' "
                        "OR inviter_email = 'ghost-inviter@example.org'")
+
+
+def test_sign_in_after_delete_cancels_the_purge(make_person):
+    """F13: signing back in during the 7-day grace resurrected visibility
+    but the reaper still hard-deleted on day 7. Sign-in now clears the
+    request (see Q_MAYBE_SIGN_IN), and the reaper independently skips
+    anyone who signed in after requesting deletion, as belt and braces
+    for rows written before this deploy."""
+    regretter = make_person(name='Regret', gender='Man')
+    still_leaving = make_person(name='StillLeaving', gender='Woman')
+    with api_tx() as tx:
+        tx.execute(
+            "UPDATE person SET activated = FALSE, "
+            "deletion_requested_at = NOW() - INTERVAL '8 days', "
+            "sign_in_time = NOW() "  # signed in AFTER requesting deletion
+            "WHERE id = %(p)s", dict(p=regretter['id']))
+        tx.execute(
+            "UPDATE person SET activated = FALSE, "
+            "deletion_requested_at = NOW() - INTERVAL '8 days', "
+            "sign_in_time = NOW() - INTERVAL '9 days' "  # signed in BEFORE
+            "WHERE id = %(p)s", dict(p=still_leaving['id']))
+
+    asyncio.run(hard_delete_expired_once())
+
+    with api_tx() as tx:
+        alive = tx.execute('SELECT 1 FROM person WHERE id = %(p)s',
+                            dict(p=regretter['id'])).fetchone()
+        assert alive, \
+            'reaper deleted a member who signed in after requesting deletion'
+
+        gone = tx.execute('SELECT 1 FROM person WHERE id = %(p)s',
+                           dict(p=still_leaving['id'])).fetchone()
+        assert gone is None, \
+            'reaper must still purge members who never signed in after requesting deletion'

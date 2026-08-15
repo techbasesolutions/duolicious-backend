@@ -65,6 +65,7 @@ async def hard_delete_expired_once():
               FROM person
              WHERE deletion_requested_at IS NOT NULL
                AND deletion_requested_at < NOW() - (%(days)s || ' days')::INTERVAL
+               AND (sign_in_time IS NULL OR sign_in_time < deletion_requested_at)
             """,
             dict(days=GRACE_PERIOD_DAYS),
         )
