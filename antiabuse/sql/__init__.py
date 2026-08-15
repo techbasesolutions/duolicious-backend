@@ -234,7 +234,23 @@ WITH subject_person_id AS (
         (SELECT id FROM object_person_id),
         %(reported)s,
         %(report_reason)s
-    ) ON CONFLICT DO NOTHING
+    )
+    -- Re-passing must RESTART the 7-day suppression window (0036).
+    -- The old ON CONFLICT DO NOTHING left created_at at its original
+    -- value, so once a pass was 7 days old the profile recycled into
+    -- the deck EVERY session and re-passing was a silent no-op - the
+    -- member could never pass them again ("my deck keeps resetting
+    -- inconsistently", 2026-08-11: 96 percent of all passes were in
+    -- this zombie state). Reports stay permanent: reported only ever
+    -- escalates (OR), and a plain re-pass never overwrites a report's
+    -- reason.
+    ON CONFLICT (subject_person_id, object_person_id) DO UPDATE SET
+        created_at = NOW(),
+        reported = skipped.reported OR EXCLUDED.reported,
+        report_reason = CASE
+            WHEN EXCLUDED.reported THEN EXCLUDED.report_reason
+            ELSE skipped.report_reason
+        END
 ), q2 AS (
     DELETE FROM search_cache
     WHERE

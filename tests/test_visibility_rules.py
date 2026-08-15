@@ -203,3 +203,111 @@ def test_views_never_leaks_a_private_profile(make_person):
 
     assert private['uuid'] not in visited_you, 'private profile leaked into Viewed you'
     assert private['uuid'] not in you_visited, 'private profile leaked into You viewed'
+
+
+# --- Rule 5: re-passing restarts the 7-day window (2026-08-11 fix) --------
+#
+# These three tests run the REAL upsert (Q_INSERT_SKIPPED), not the _skip
+# helper above, because the bug they pin lived in that SQL's conflict
+# clause: ON CONFLICT DO NOTHING left created_at at its original value,
+# so an expired pass could never be refreshed - the profile recycled
+# into the deck every session and re-passing was a silent no-op.
+
+from antiabuse.sql import Q_INSERT_SKIPPED
+
+
+def _real_skip(tx, subject_uuid: str, object_uuid: str, reason: str = '') -> None:
+    tx.execute(Q_INSERT_SKIPPED, dict(
+        subject_uuid=subject_uuid,
+        object_uuid=object_uuid,
+        reported=bool(reason),
+        report_reason=reason or '',
+        is_bot_report=False,
+    ))
+    tx.fetchone()
+
+
+def _backdate_pass(tx, subject: int, obj: int, days: int) -> None:
+    tx.execute(
+        """
+        UPDATE skipped SET created_at = NOW() - make_interval(days => %(d)s)
+        WHERE subject_person_id = %(s)s AND object_person_id = %(o)s
+        """,
+        dict(s=subject, o=obj, d=days),
+    )
+
+
+def test_repass_restarts_the_seven_day_window(make_person):
+    searcher = make_person(name='Reuven', gender='Man')
+    prospect = make_person(name='Tova', gender='Woman')
+
+    with api_tx() as tx:
+        def suppressed():
+            return tx.execute(
+                'SELECT is_deck_suppressed(%(a)s, %(b)s) AS s',
+                dict(a=searcher['id'], b=prospect['id']),
+            ).fetchone()['s']
+
+        _real_skip(tx, searcher['uuid'], prospect['uuid'])
+        assert suppressed(), 'fresh pass must suppress'
+
+        _backdate_pass(tx, searcher['id'], prospect['id'], days=8)
+        assert not suppressed(), 'expired pass must recycle the profile'
+
+        # The fix under test: a second pass must RESTART the window.
+        _real_skip(tx, searcher['uuid'], prospect['uuid'])
+        assert suppressed(), \
+            're-pass must restart the 7-day window (was a silent no-op)'
+
+        age = tx.execute(
+            """
+            SELECT NOW() - created_at < INTERVAL '1 minute' AS fresh
+            FROM skipped
+            WHERE subject_person_id = %(s)s AND object_person_id = %(o)s
+            """,
+            dict(s=searcher['id'], o=prospect['id']),
+        ).fetchone()['fresh']
+        assert age, 're-pass must refresh created_at'
+
+
+def test_repass_never_clears_a_report(make_person):
+    reporter = make_person(name='Dov', gender='Man')
+    offender = make_person(name='Zilla', gender='Woman')
+
+    with api_tx() as tx:
+        _real_skip(tx, reporter['uuid'], offender['uuid'], reason='Spam profile')
+        _backdate_pass(tx, reporter['id'], offender['id'], days=30)
+
+        # A later plain pass (e.g. from a stale client) must not
+        # downgrade the report or erase its reason.
+        _real_skip(tx, reporter['uuid'], offender['uuid'])
+
+        row = tx.execute(
+            """
+            SELECT reported, report_reason FROM skipped
+            WHERE subject_person_id = %(s)s AND object_person_id = %(o)s
+            """,
+            dict(s=reporter['id'], o=offender['id']),
+        ).fetchone()
+        assert row['reported'], 're-pass cleared a report'
+        assert row['report_reason'] == 'Spam profile', \
+            're-pass erased the report reason'
+
+
+def test_report_after_pass_escalates(make_person):
+    searcher = make_person(name='Asher', gender='Man')
+    prospect = make_person(name='Bina', gender='Woman')
+
+    with api_tx() as tx:
+        _real_skip(tx, searcher['uuid'], prospect['uuid'])
+        _real_skip(tx, searcher['uuid'], prospect['uuid'], reason='Fake photos')
+
+        row = tx.execute(
+            """
+            SELECT reported, report_reason FROM skipped
+            WHERE subject_person_id = %(s)s AND object_person_id = %(o)s
+            """,
+            dict(s=searcher['id'], o=prospect['id']),
+        ).fetchone()
+        assert row['reported'], 'report after plain pass must escalate'
+        assert row['report_reason'] == 'Fake photos'
