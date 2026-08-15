@@ -395,6 +395,57 @@ def test_webhook_renewal_credits_stipend_on_invoice_payment_succeeded(
     assert _balance(person_uuid['uuid']) == 12  # quart → 12
 
 
+def _event_row(event_id):
+    from database import api_tx
+    with api_tx('read committed') as tx:
+        return tx.execute(
+            'SELECT 1 FROM entitlement_event WHERE event_id = %(eid)s',
+            dict(eid=event_id),
+        ).fetchone()
+
+
+def test_webhook_renewal_sub_retrieve_failure_is_not_acked(
+    client, person_uuid, webhook_env,
+):
+    """F2 fix-round-1: if Subscription.retrieve blows up mid-renewal, the
+    handler must NOT swallow it into a 200 'ignored' response — that would
+    latch nothing (fine) but also permanently ack the delivery to Stripe,
+    so the stipend is lost forever since Stripe never redelivers an
+    acknowledged event. It must surface as a failure so Stripe retries,
+    and the event_id must stay unlatched so the retry is not mistaken for
+    a replay."""
+    sub_id = 'sub_retrieve_will_fail'
+    invoice_id = f'in_test_{uuid4().hex}'
+    event_id = f'evt_inv_fail_{uuid4().hex}'
+    webhook_env.Subscription.retrieve.side_effect = RuntimeError('stripe API down')
+    payload = {
+        'id':     event_id,
+        'object': 'event',
+        'type':   'invoice.payment_succeeded',
+        'data': {
+            'object': {
+                'object':         'invoice',
+                'id':             invoice_id,
+                'billing_reason': 'subscription_cycle',
+                'subscription':   sub_id,
+                'customer':       f'cus_{uuid4().hex}',
+                'metadata':       {'user_id': str(person_uuid['id'])},
+            }
+        },
+    }
+    with pytest.raises(RuntimeError):
+        client.post(
+            '/webhooks/stripe-checkout',
+            data=json.dumps(payload).encode(),
+            headers={'Stripe-Signature': 't=0,v1=fake', 'Content-Type': 'application/json'},
+        )
+    # Nothing latched this event_id — a genuine Stripe retry of the same
+    # delivery must not hit the replay pre-check and get short-circuited.
+    assert _event_row(event_id) is None
+    # No stipend was credited either (effect and latch both absent).
+    assert _balance(person_uuid['uuid']) == 0
+
+
 # ---------------------------------------------------------------------------
 # Phase 8 — cancellation revokes premium, preserves tokens
 # ---------------------------------------------------------------------------

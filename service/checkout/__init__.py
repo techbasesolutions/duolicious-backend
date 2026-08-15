@@ -968,7 +968,14 @@ def post_stripe_checkout_webhook():
                 'invoice.payment_succeeded: could not retrieve sub %s: %s',
                 sub_id, e,
             )
-            return {'ok': True, 'ignored': 'sub_retrieve_failed'}
+            # F2: do NOT swallow this into a 200. The renewal stipend has
+            # not been credited and nothing has latched this event_id yet,
+            # so acknowledging with 200 here would make the loss permanent
+            # (Stripe would never redeliver, and the replay pre-check would
+            # never see this event_id again). Raising 500s the request so
+            # Stripe retries the delivery and the stipend credits once the
+            # Subscription.retrieve call recovers.
+            raise
         sub_md = sub_dict.get('metadata') or {}
         renewal_tier = sub_md.get('tier_key') or ''
         renewal_person_uuid = sub_md.get('person_uuid') or sub_md.get('user_uuid')
