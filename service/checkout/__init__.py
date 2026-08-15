@@ -903,15 +903,19 @@ def post_stripe_checkout_webhook():
 
         # Phase 8 — credit the monthly token stipend on initial subscription.
         # Idempotent per checkout session id; renewal cycles are handled
-        # below in the invoice.payment_succeeded branch. Failures here MUST
-        # NOT 500 the webhook (Stripe would retry forever); we log and 200.
-        # The latch is only committed on the stipend credit's own success
-        # path (inside its tx). If credit() raises, the exception is
-        # caught here and the event is left un-latched so a future genuine
-        # redelivery can retry the stipend (lost-latch, not lost-grant).
-        try:
-            person_uuid = _person_uuid_for_id(person_id)
-            if person_uuid:
+        # below in the invoice.payment_succeeded branch.
+        # F2 ordering contract: same as the renewal branch's
+        # Subscription.retrieve failure above — do NOT swallow this into a
+        # 200. The latch is only committed on the stipend credit's own
+        # success path (inside its tx), so if credit() raises here the
+        # event MUST stay un-latched and the exception MUST propagate,
+        # 500-ing the webhook so Stripe redelivers. The retry re-runs the
+        # stipend credit cleanly (idempotent grant above, and the advisory
+        # lock + ledger check inside _credit_subscription_stipend prevents
+        # a double-credit).
+        person_uuid = _person_uuid_for_id(person_id)
+        if person_uuid:
+            try:
                 _credit_subscription_stipend(
                     person_uuid=person_uuid,
                     tier_key=tier_key or '',
@@ -920,13 +924,14 @@ def post_stripe_checkout_webhook():
                     event_id=event_id, event_type=event_type,
                     app_user_id=app_user_id, payload=event,
                 )
-            else:
-                _latch(event_id, event_type, app_user_id, event)
-        except Exception as e:
-            logger.warning(
-                'subscription stipend credit failed for person_id=%s: %s',
-                person_id, e,
-            )
+            except Exception as e:
+                logger.warning(
+                    'subscription stipend credit failed for person_id=%s: %s',
+                    person_id, e,
+                )
+                raise
+        else:
+            _latch(event_id, event_type, app_user_id, event)
 
         # Branded purchase receipt (transactional, always sends). This
         # branch runs once per subscription (the event_id replay pre-check

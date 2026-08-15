@@ -404,6 +404,60 @@ def _event_row(event_id):
         ).fetchone()
 
 
+def test_webhook_initial_subscription_stipend_failure_is_not_acked(
+    client, person_uuid, webhook_env, monkeypatch,
+):
+    """Mirrors test_webhook_renewal_sub_retrieve_failure_is_not_acked for
+    the INITIAL subscription path: if _credit_subscription_stipend blows
+    up on checkout.session.completed, the handler must not swallow it
+    into a 200 -- that would leave the event un-latched (fine) but also
+    permanently ack the delivery to Stripe, losing the stipend forever
+    since Stripe never redelivers an acknowledged event. The exception
+    must propagate so Stripe retries, and once the failure is lifted the
+    retry (same event_id + session_id, a genuine Stripe redelivery) must
+    credit the stipend exactly once (idempotent grant + advisory-lock
+    dedupe inside _credit_subscription_stipend)."""
+    import service.checkout as co
+
+    webhook_env.Subscription.retrieve.return_value = SimpleNamespace(
+        to_dict_recursive=lambda: {'current_period_end': None, 'metadata': {}},
+    )
+
+    real_credit = co._credit_subscription_stipend
+    call_count = {'n': 0}
+
+    def _flaky(*args, **kwargs):
+        call_count['n'] += 1
+        if call_count['n'] == 1:
+            raise RuntimeError('ledger unreachable')
+        return real_credit(*args, **kwargs)
+
+    monkeypatch.setattr(co, '_credit_subscription_stipend', _flaky)
+
+    event_id = f'evt_sub_fail_{uuid4().hex}'
+    payload = _make_subscription_event(
+        person_uuid['id'], person_uuid['uuid'], 'month', event_id=event_id,
+    )
+    headers = {'Stripe-Signature': 't=0,v1=fake', 'Content-Type': 'application/json'}
+    body = json.dumps(payload).encode()
+
+    with pytest.raises(RuntimeError):
+        client.post('/webhooks/stripe-checkout', data=body, headers=headers)
+
+    # Nothing latched this event_id -- a genuine Stripe retry of the same
+    # delivery must not hit the replay pre-check and get short-circuited.
+    assert _event_row(event_id) is None
+    # No stipend credited either (effect and latch both absent).
+    assert _balance(person_uuid['uuid']) == 0
+
+    # Retry: Stripe redelivers the identical event (same event_id AND
+    # session_id) once the failure is lifted.
+    res = client.post('/webhooks/stripe-checkout', data=body, headers=headers)
+    assert res.status_code == 200
+    assert _balance(person_uuid['uuid']) == 10  # 'month' -> 10, credited exactly once
+    assert call_count['n'] == 2
+
+
 def test_webhook_renewal_sub_retrieve_failure_is_not_acked(
     client, person_uuid, webhook_env,
 ):
