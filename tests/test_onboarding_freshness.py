@@ -331,6 +331,68 @@ def test_selfie_upload_success_latches_hash_and_inserts_job(monkeypatch, make_pe
 
 
 # ---------------------------------------------------------------------------
+# fix-wave -- a known reuse must return BEFORE the object-store upload, not
+# after. The single-selfie path used to compute `reused` up front but still
+# upload before acting on it, orphaning a CDN object per reuse attempt.
+# ---------------------------------------------------------------------------
+
+def test_selfie_reuse_returns_before_upload(monkeypatch, make_person):
+    """Mirrors post_verification_multi_selfie's early-return-on-reuse
+    shape: a hash that's already latched must fail the job and return
+    WITHOUT ever calling put_image_in_object_store."""
+    import service.person as sp
+    from verification.messages import V_REUSED_SELFIE
+
+    p = make_person(name='Selfie Reused', gender='Woman')
+
+    upload_calls = []
+    monkeypatch.setattr(
+        sp, 'put_image_in_object_store',
+        lambda *a, **k: upload_calls.append(1),
+    )
+
+    fake_hash = f'selfie-hash-reused-{uuid4()}'
+    with api_tx() as tx:
+        tx.execute(
+            'INSERT INTO verification_photo_hash (hash) VALUES (%(h)s)',
+            dict(h=fake_hash),
+        )
+        tx.execute(
+            "INSERT INTO verification_job (person_id, status, photo_uuid) "
+            "VALUES (%(p)s, 'uploading-photo', %(u)s)",
+            dict(p=p['id'], u=f'seed-{uuid4()}'),
+        )
+
+    req = SimpleNamespace(base64_file=SimpleNamespace(
+        base64='', image=None, top=0, left=0, md5_hash=fake_hash))
+    session = SimpleNamespace(person_id=p['id'])
+
+    try:
+        result = sp.post_verification_selfie(req, session)
+        assert result == ('', 200)
+        assert upload_calls == [], \
+            'a known reuse must return before any object-store upload'
+
+        with api_tx() as tx:
+            job_row = tx.execute(
+                "SELECT status, message FROM verification_job WHERE person_id = %(p)s",
+                dict(p=p['id']),
+            ).fetchone()
+        assert job_row['status'] == 'failure'
+        assert job_row['message'] == V_REUSED_SELFIE
+    finally:
+        with api_tx() as tx:
+            tx.execute(
+                'DELETE FROM verification_photo_hash WHERE hash = %(h)s',
+                dict(h=fake_hash),
+            )
+            tx.execute(
+                'DELETE FROM verification_job WHERE person_id = %(p)s',
+                dict(p=p['id']),
+            )
+
+
+# ---------------------------------------------------------------------------
 # F18 fix round 1 -- the LIVE Silver capture path is
 # post_verification_multi_selfie (ahavah-web's use-silver-verification hook
 # posts there; single-frame Bronze above is the dormant sibling), so the

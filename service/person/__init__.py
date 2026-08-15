@@ -2550,9 +2550,17 @@ def post_verification_selfie(req: t.PostVerificationSelfie, s: t.SessionInfo):
     #   1. read-only reuse check (no write)
     #   2. upload to the object store
     #   3. only on a successful upload, latch the hash + insert the job
+    # A reuse is detected in step 1, before any upload is attempted --
+    # mirrors post_verification_multi_selfie's early return, so a known
+    # reuse never orphans a CDN object.
     with api_tx() as tx:
         reused = bool(
             tx.execute(Q_CHECK_VERIFICATION_PHOTO_HASH, params_ok).fetchall())
+
+    if reused:
+        with api_tx() as tx:
+            tx.execute(Q_UPDATE_VERIFICATION_JOB, params_bad)
+        return '', 200
 
     try:
         put_image_in_object_store(
@@ -2562,9 +2570,7 @@ def post_verification_selfie(req: t.PostVerificationSelfie, s: t.SessionInfo):
         return '', 500
 
     with api_tx() as tx:
-        if reused:
-            tx.execute(Q_UPDATE_VERIFICATION_JOB, params_bad)
-        elif tx.execute(Q_INSERT_VERIFICATION_PHOTO_HASH, params_ok).fetchall():
+        if tx.execute(Q_INSERT_VERIFICATION_PHOTO_HASH, params_ok).fetchall():
             tx.execute(Q_DELETE_VERIFICATION_JOB, params_ok)
             tx.execute(Q_INSERT_VERIFICATION_JOB, params_ok)
         else:
