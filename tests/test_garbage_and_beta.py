@@ -49,6 +49,17 @@ def test_nsfw_delete_sql_stages_before_hard_delete():
         'the staging insert must tolerate an already-staged uuid (F19, same as F11)'
 
 
+def test_onboardee_cleanup_uses_activity_not_creation():
+    """F16 class (fix-wave): the q5 onboardee-cleanup window (1 week) must
+    read updated_at (activity), not created_at (creation) -- same rule as
+    the 1-hour wizard-wipe window in test_onboarding_freshness.py, applied
+    to the weekly garbage sweep."""
+    from service.cron.garbagerecords.sql import Q_DELETE_GARBAGE_RECORDS
+    assert "updated_at < NOW() - INTERVAL '1 week'" in Q_DELETE_GARBAGE_RECORDS, \
+        'q5 onboardee cleanup must read the activity timestamp (F16 class)'
+    assert "created_at < NOW() - INTERVAL '1 week'" not in Q_DELETE_GARBAGE_RECORDS
+
+
 def test_nsfw_delete_stages_undeleted_photo_and_notifies_admin(make_person, monkeypatch):
     """End-to-end: a photo with nsfw_score > 0.8 gets hard-deleted, its uuid
     lands in undeleted_photo for the CDN cleaner, and exactly one admin

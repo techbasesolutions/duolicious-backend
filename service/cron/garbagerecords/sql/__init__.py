@@ -33,7 +33,7 @@ WITH q1 AS (
     DELETE FROM
         onboardee
     WHERE
-        created_at < NOW() - INTERVAL '1 week'
+        updated_at < NOW() - INTERVAL '1 week'
     RETURNING
         email
 ), q6 AS (
