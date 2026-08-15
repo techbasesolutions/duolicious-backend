@@ -22,9 +22,13 @@ Event mapping (per Task 5.2 Step 3):
   TRANSFER / SUBSCRIPTION_PAUSED / SUBSCRIBER_ALIAS / etc.
       → ledger-only
 
-Replay protection: every event is INSERTed into entitlement_event before
-any DB mutation. ON CONFLICT DO NOTHING gives us idempotency without a
-SELECT pre-check that could race.
+Replay protection (F2): a cheap read-only SELECT pre-checks entitlement_event
+for the event id before any DB mutation runs. The authoritative latch, the
+INSERT ... ON CONFLICT DO NOTHING into entitlement_event, commits LAST,
+after the grant/revoke effect. This way a crash between the effect and the
+latch makes RC retry the delivery and the retry re-applies cleanly (grant
+and revoke are idempotent) instead of the latch permanently masking a paid
+effect that never actually ran.
 """
 
 from __future__ import annotations
@@ -75,6 +79,21 @@ LEDGER_ONLY_TYPES = {
 }
 
 
+def _already_processed(event_id: str) -> bool:
+    """Read-only replay pre-check, cheap and safe to repeat unlimited
+    times. The authoritative latch is record_event(), called LAST after
+    the grant/revoke effect has applied (F2 ordering contract: effects
+    first, latch last, so a crash in between makes RC retry and the retry
+    re-applies cleanly instead of silently losing the effect)."""
+    from database import api_tx
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            'SELECT 1 FROM entitlement_event WHERE event_id = %(eid)s',
+            dict(eid=event_id),
+        ).fetchone()
+    return row is not None
+
+
 def post_revenuecat_webhook():
     """Flask handler. No app-session auth — bearer header is the auth."""
     expected = _expected_auth()
@@ -104,35 +123,64 @@ def post_revenuecat_webhook():
 
     person_id = _coerce_int(app_user_id)
 
-    # 1. Replay-check: insert into ledger first.
-    new = record_event(
+    # 1. Replay pre-check, read-only and safe to repeat. The authoritative
+    #    latch (record_event) commits LAST, after the grant/revoke effect
+    #    below (F2). grant()/revoke() are each idempotent and open their
+    #    own tx, so a crash between the effect and the latch double-applies
+    #    harmlessly on RC's retry instead of eating the effect forever.
+    if _already_processed(event_id):
+        return {'received': True, 'replay': True, 'applied': False}
+
+    if not person_id:
+        logger.warning(f'RC event {event_id} (type {event_type}): missing/invalid app_user_id={app_user_id!r}')
+        # No effect was possible without a person_id, so latch immediately
+        # and keep the malformed event auditable without reprocessing it.
+        record_event(
+            event_id=event_id,
+            event_type=event_type,
+            app_user_id=str(app_user_id),
+            payload=event,
+        )
+        return {'received': True, 'replay': False, 'applied': False, 'reason': 'no_user_id'}
+
+    # 2. Apply, THEN latch.
+    if event_type in GRANT_TYPES:
+        expires = _parse_iso(expires_iso)
+        grant(person_id, entitlement_id, expires_at=expires)
+        record_event(
+            event_id=event_id,
+            event_type=event_type,
+            app_user_id=str(app_user_id),
+            payload=event,
+        )
+        return {'received': True, 'replay': False, 'applied': True, 'action': 'grant'}
+
+    if event_type in REVOKE_TYPES:
+        revoke(person_id, entitlement_id)
+        record_event(
+            event_id=event_id,
+            event_type=event_type,
+            app_user_id=str(app_user_id),
+            payload=event,
+        )
+        return {'received': True, 'replay': False, 'applied': True, 'action': 'revoke'}
+
+    if event_type in LEDGER_ONLY_TYPES:
+        record_event(
+            event_id=event_id,
+            event_type=event_type,
+            app_user_id=str(app_user_id),
+            payload=event,
+        )
+        return {'received': True, 'replay': False, 'applied': True, 'action': 'ledger_only'}
+
+    logger.info(f'RC unhandled event_type={event_type} (event_id={event_id}); ledger-only')
+    record_event(
         event_id=event_id,
         event_type=event_type,
         app_user_id=str(app_user_id),
         payload=event,
     )
-    if not new:
-        # Idempotent ack — RC retried a delivery.
-        return {'received': True, 'replay': True, 'applied': False}
-
-    if not person_id:
-        logger.warning(f'RC event {event_id} (type {event_type}): missing/invalid app_user_id={app_user_id!r}')
-        return {'received': True, 'replay': False, 'applied': False, 'reason': 'no_user_id'}
-
-    # 2. Apply.
-    if event_type in GRANT_TYPES:
-        expires = _parse_iso(expires_iso)
-        grant(person_id, entitlement_id, expires_at=expires)
-        return {'received': True, 'replay': False, 'applied': True, 'action': 'grant'}
-
-    if event_type in REVOKE_TYPES:
-        revoke(person_id, entitlement_id)
-        return {'received': True, 'replay': False, 'applied': True, 'action': 'revoke'}
-
-    if event_type in LEDGER_ONLY_TYPES:
-        return {'received': True, 'replay': False, 'applied': True, 'action': 'ledger_only'}
-
-    logger.info(f'RC unhandled event_type={event_type} (event_id={event_id}); ledger-only')
     return {'received': True, 'replay': False, 'applied': True, 'action': 'unknown_ledger_only'}
 
 

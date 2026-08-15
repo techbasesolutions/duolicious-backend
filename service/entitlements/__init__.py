@@ -176,6 +176,47 @@ def revoke(person_id: int, name: str) -> bool:
 # Replay-protected ledger writes
 # ---------------------------------------------------------------------------
 
+def record_event_tx(
+    tx,
+    event_id: str,
+    event_type: str,
+    app_user_id: str,
+    payload: dict,
+) -> bool:
+    """Same replay latch as record_event, but inside the CALLER's tx so the
+    latch commits or rolls back atomically with the effects it guards.
+
+    Webhook ordering contract (F2): apply paid effects first, latch the
+    replay guard LAST, ideally as the final statement of the same tx as
+    the last effect. If anything upstream raises, the whole tx (including
+    this INSERT) rolls back, so a provider retry does not hit a false
+    replay and lose the paid effect.
+
+    Returns True if newly inserted, False if the event_id was already
+    present (i.e., this is a replay).
+    """
+    if not event_id:
+        # Without an event_id we can't dedupe — better to drop than to
+        # double-apply. Caller logs the malformed event.
+        return False
+
+    row = tx.execute(
+        """
+        INSERT INTO entitlement_event (event_id, event_type, app_user_id, payload)
+        VALUES (%(eid)s, %(etype)s, %(uid)s, %(payload)s::jsonb)
+        ON CONFLICT (event_id) DO NOTHING
+        RETURNING event_id
+        """,
+        dict(
+            eid=event_id,
+            etype=event_type,
+            uid=str(app_user_id),
+            payload=json.dumps(payload),
+        ),
+    ).fetchone()
+    return row is not None
+
+
 def record_event(
     event_id: str,
     event_type: str,
@@ -185,37 +226,14 @@ def record_event(
     """Insert into the append-only ledger. Returns True if newly inserted,
     False if the event_id was already present (i.e., this is a replay).
 
-    Callers must:
-      1. Call this FIRST.
-      2. If it returned False, return 200 to RevenueCat without re-applying
-         the entitlement change.
-      3. If it returned True, proceed to grant/revoke.
-
-    The ON CONFLICT (event_id) DO NOTHING + RETURNING idiom gives us
-    atomic replay-detection without a transaction boundary or a SELECT
-    pre-check that could race.
+    Opens its own tx, so the latch it writes commits independently of any
+    caller effects. Callers that need the latch to commit atomically with
+    an effect they're already running inside a tx should call
+    `record_event_tx(tx, ...)` instead, as the LAST statement in that tx
+    (F2 ordering contract: effects first, latch last).
     """
-    if not event_id:
-        # Without an event_id we can't dedupe — better to drop than to
-        # double-apply. Caller logs the malformed event.
-        return False
-
     with api_tx() as tx:
-        row = tx.execute(
-            """
-            INSERT INTO entitlement_event (event_id, event_type, app_user_id, payload)
-            VALUES (%(eid)s, %(etype)s, %(uid)s, %(payload)s::jsonb)
-            ON CONFLICT (event_id) DO NOTHING
-            RETURNING event_id
-            """,
-            dict(
-                eid=event_id,
-                etype=event_type,
-                uid=str(app_user_id),
-                payload=json.dumps(payload),
-            ),
-        ).fetchone()
-    return row is not None
+        return record_event_tx(tx, event_id, event_type, app_user_id, payload)
 
 
 # ---------------------------------------------------------------------------

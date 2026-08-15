@@ -582,7 +582,10 @@ def _expiry_from_subscription(sub: dict, tier_key: Optional[str]) -> datetime:
 #      different event type with the same `id` payload swapped. The plan
 #      mandates this ledger-level check explicitly.
 
-def _handle_token_purchase(session: dict) -> dict:
+def _handle_token_purchase(
+    session: dict, *, event_id: str, event_type: str,
+    app_user_id: str, payload: dict,
+) -> dict:
     """Credit token_ledger for a completed mode=payment Checkout session.
 
     Reads:
@@ -591,9 +594,14 @@ def _handle_token_purchase(session: dict) -> dict:
       session['metadata']['sku']       — bundle SKU ('single' | ... | 'pro')
       session['amount_total']          — paid amount in cents (for audit)
 
+    F2 ordering contract: the replay latch (record_event_tx) is called
+    LAST on every exit path, inside the same tx as the credit when one is
+    open, so the latch and the paid effect commit or roll back together.
+
     Returns the dict the webhook should respond with (Stripe always 200).
     """
     from database import api_tx
+    from service import entitlements
     from service.tokens import credit
 
     session_id   = session.get('id') or ''
@@ -608,6 +616,7 @@ def _handle_token_purchase(session: dict) -> dict:
             'token-purchase webhook: unknown sku=%r session_id=%r',
             sku, session_id,
         )
+        _latch(event_id, event_type, app_user_id, payload)
         return {'ok': True, 'ignored': 'unknown_sku'}
 
     if not person_uuid or not session_id:
@@ -615,6 +624,7 @@ def _handle_token_purchase(session: dict) -> dict:
             'token-purchase webhook: missing person_uuid or session_id '
             '(person_uuid=%r session_id=%r)', person_uuid, session_id,
         )
+        _latch(event_id, event_type, app_user_id, payload)
         return {'ok': True, 'ignored': 'missing_ref'}
 
     # Ledger-level idempotency — guard against re-crediting if this same
@@ -629,6 +639,7 @@ def _handle_token_purchase(session: dict) -> dict:
             dict(sid=session_id),
         ).fetchone()
         if existing:
+            entitlements.record_event_tx(tx, event_id, event_type, app_user_id, payload)
             return {'ok': True, 'replay': True, 'session_id': session_id}
 
         credit(
@@ -640,6 +651,7 @@ def _handle_token_purchase(session: dict) -> dict:
                 'amount_cents': amount_total,
             },
         )
+        entitlements.record_event_tx(tx, event_id, event_type, app_user_id, payload)
 
     return {'ok': True, 'credited': token_count, 'sku': sku}
 
@@ -650,6 +662,10 @@ def _credit_subscription_stipend(
     tier_key: str,
     idempotency_key_field: str,
     idempotency_key_value: str,
+    event_id: str,
+    event_type: str,
+    app_user_id: str,
+    payload: dict,
     extra_metadata: Optional[dict] = None,
 ) -> dict:
     """Idempotently credit a subscription stipend.
@@ -658,9 +674,14 @@ def _credit_subscription_stipend(
     subscription) or 'stripe_invoice_id' (renewal). We dedupe by checking
     token_ledger for an existing 'subscription_stipend' row carrying the
     same value in that metadata key. Belt-and-suspenders alongside the
-    outer record_event() dedupe.
+    event_id replay pre-check in the outer webhook.
+
+    F2 ordering contract: the replay latch (record_event_tx) is called
+    LAST on every exit path, inside the same tx as the credit when one is
+    open, so the latch and the paid effect commit or roll back together.
     """
     from database import api_tx
+    from service import entitlements
     from service.tokens import credit
 
     stipend = SUBSCRIPTION_TIER_TO_STIPEND.get(tier_key or '')
@@ -669,12 +690,14 @@ def _credit_subscription_stipend(
             'subscription stipend: unknown tier_key=%r (%s=%s)',
             tier_key, idempotency_key_field, idempotency_key_value,
         )
+        _latch(event_id, event_type, app_user_id, payload)
         return {'ok': True, 'ignored': 'unknown_tier'}
     if not person_uuid or not idempotency_key_value:
         logger.warning(
             'subscription stipend: missing person_uuid or %s',
             idempotency_key_field,
         )
+        _latch(event_id, event_type, app_user_id, payload)
         return {'ok': True, 'ignored': 'missing_ref'}
 
     with api_tx() as tx:
@@ -696,6 +719,7 @@ def _credit_subscription_stipend(
             dict(v=idempotency_key_value),
         ).fetchone()
         if existing:
+            entitlements.record_event_tx(tx, event_id, event_type, app_user_id, payload)
             return {'ok': True, 'replay': True, idempotency_key_field: idempotency_key_value}
 
         metadata = {
@@ -709,6 +733,7 @@ def _credit_subscription_stipend(
             reason='subscription_stipend',
             metadata=metadata,
         )
+        entitlements.record_event_tx(tx, event_id, event_type, app_user_id, payload)
     return {'ok': True, 'credited': stipend, 'tier_key': tier_key}
 
 
@@ -733,6 +758,35 @@ def _person_uuid_for_id(person_id: int) -> Optional[str]:
             dict(id=person_id),
         ).fetchone()
     return row['uuid'] if row else None
+
+
+def _latch(event_id: str, event_type: str, app_user_id: str, payload: dict) -> None:
+    """Commit the replay-guard latch in its own tx.
+
+    Called LAST on branches that have no already-open credit tx to piggy-
+    back on (F2 ordering contract: effects first, latch last). Idempotent
+    (ON CONFLICT DO NOTHING inside record_event_tx), so it is harmless to
+    call defensively even where an inner effect already latched the same
+    event_id.
+    """
+    from database import api_tx
+    from service import entitlements
+    with api_tx() as tx:
+        entitlements.record_event_tx(tx, event_id, event_type, app_user_id, payload)
+
+
+def _event_already_processed(event_id: str) -> bool:
+    """Read-only replay pre-check, cheap and safe to repeat unlimited
+    times. The authoritative latch is record_event_tx, committed LAST
+    after all paid effects for this delivery have applied successfully
+    (F2)."""
+    from database import api_tx
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            'SELECT 1 FROM entitlement_event WHERE event_id = %(eid)s',
+            dict(eid=event_id),
+        ).fetchone()
+    return row is not None
 
 
 def post_stripe_checkout_webhook():
@@ -767,29 +821,30 @@ def post_stripe_checkout_webhook():
     event_type = event.get('type') or ''
     obj = ((event.get('data') or {}).get('object') or {})
 
-    # Replay protection — Stripe retries unacknowledged webhooks up to
-    # several times. record_event INSERTs into the append-only ledger
-    # with ON CONFLICT DO NOTHING; if False, this is a replay.
     from service import entitlements
     person_id = _resolve_person_id(obj)
-    if not entitlements.record_event(
-        event_id=event_id,
-        event_type=event_type,
-        app_user_id=str(person_id or 'unknown'),
-        payload=event,
-    ):
-        # Replay — already processed. 200 so Stripe stops retrying.
+    app_user_id = str(person_id or 'unknown')
+
+    # Replay protection (F2): a cheap, read-only pre-check. The
+    # authoritative latch (record_event_tx) is no longer written up front;
+    # it commits LAST, after all paid effects below have applied, ideally
+    # atomically with the final effect. A failure between here and the
+    # latch 500s the request, so Stripe retries and the retry re-applies
+    # cleanly instead of silently eating the paid effect.
+    if not event_id or _event_already_processed(event_id):
         return {'ok': True, 'replay': True}
 
     if not person_id:
         # No mapping yet — could be a customer.subscription.* event for
         # someone whose checkout.session.completed hasn't been processed.
         # Stripe orders events by occurrence so this is rare; logging-only
-        # is the safest response (200 prevents retry storms).
+        # is the safest response (200 prevents retry storms). No effect was
+        # possible without a person_id, so latching immediately is safe.
         logger.warning(
             'stripe-checkout webhook %s (%s): could not resolve person_id',
             event_id, event_type,
         )
+        _latch(event_id, event_type, app_user_id, event)
         return {'ok': True, 'unmatched': True}
 
     md = obj.get('metadata') or {}
@@ -801,7 +856,10 @@ def post_stripe_checkout_webhook():
     # here and return early. Only triggers on checkout.session.completed —
     # subscription.* events have no `mode` field.
     if event_type == 'checkout.session.completed' and obj.get('mode') == 'payment':
-        result = _handle_token_purchase(obj)
+        result = _handle_token_purchase(
+            obj, event_id=event_id, event_type=event_type,
+            app_user_id=app_user_id, payload=event,
+        )
         # Branded receipt — only on a real credit (not a replay/ignored event).
         # Transactional: always sends, never 500s the webhook.
         if result.get('credited'):
@@ -836,12 +894,21 @@ def post_stripe_checkout_webhook():
             except Exception:
                 sub_obj = {}
         expires_at = _expiry_from_subscription(sub_obj, tier_key)
+        # entitlements.grant() opens its own tx and is idempotent (re-grant
+        # only bumps expiry to the later value), so it runs BEFORE the
+        # latch tx below (F2: prefer lost-latch over lost-grant, since a
+        # crash between here and the latch double-applies harmlessly on
+        # retry instead of losing the grant).
         entitlements.grant(person_id, _PREMIUM_ENTITLEMENT, expires_at=expires_at)
 
         # Phase 8 — credit the monthly token stipend on initial subscription.
         # Idempotent per checkout session id; renewal cycles are handled
         # below in the invoice.payment_succeeded branch. Failures here MUST
         # NOT 500 the webhook (Stripe would retry forever); we log and 200.
+        # The latch is only committed on the stipend credit's own success
+        # path (inside its tx). If credit() raises, the exception is
+        # caught here and the event is left un-latched so a future genuine
+        # redelivery can retry the stipend (lost-latch, not lost-grant).
         try:
             person_uuid = _person_uuid_for_id(person_id)
             if person_uuid:
@@ -850,16 +917,20 @@ def post_stripe_checkout_webhook():
                     tier_key=tier_key or '',
                     idempotency_key_field='stripe_session_id',
                     idempotency_key_value=obj.get('id') or '',
+                    event_id=event_id, event_type=event_type,
+                    app_user_id=app_user_id, payload=event,
                 )
+            else:
+                _latch(event_id, event_type, app_user_id, event)
         except Exception as e:
             logger.warning(
                 'subscription stipend credit failed for person_id=%s: %s',
                 person_id, e,
             )
 
-        # Branded purchase receipt (transactional — always sends). This branch
-        # runs once per subscription (record_event dedupes retries above), so
-        # it cannot double-send.
+        # Branded purchase receipt (transactional, always sends). This
+        # branch runs once per subscription (the event_id replay pre-check
+        # dedupes retries above), so it cannot double-send.
         try:
             from emails.purchase import premium_started_email
             from service.notifications import send_transactional
@@ -883,9 +954,11 @@ def post_stripe_checkout_webhook():
         # is billing_reason='subscription_create' and is handled by the
         # checkout.session.completed branch above. Idempotent per invoice id.
         if obj.get('billing_reason') != 'subscription_cycle':
+            _latch(event_id, event_type, app_user_id, event)
             return {'ok': True, 'ignored': 'non_renewal'}
         sub_id = obj.get('subscription')
         if not sub_id:
+            _latch(event_id, event_type, app_user_id, event)
             return {'ok': True, 'ignored': 'no_subscription'}
         try:
             sub = stripe.Subscription.retrieve(sub_id)
@@ -908,6 +981,8 @@ def post_stripe_checkout_webhook():
             idempotency_key_field='stripe_invoice_id',
             idempotency_key_value=obj.get('id') or '',
             extra_metadata={'stripe_subscription_id': sub_id},
+            event_id=event_id, event_type=event_type,
+            app_user_id=app_user_id, payload=event,
         )
 
     if event_type == 'customer.subscription.updated':
@@ -916,13 +991,16 @@ def post_stripe_checkout_webhook():
         if status in ('active', 'trialing'):
             expires_at = _expiry_from_subscription(obj, tier_key)
             entitlements.grant(person_id, _PREMIUM_ENTITLEMENT, expires_at=expires_at)
+            _latch(event_id, event_type, app_user_id, event)
             return {'ok': True, 'kept': True, 'status': status}
         if status in ('canceled', 'unpaid', 'incomplete_expired'):
             entitlements.revoke(person_id, _PREMIUM_ENTITLEMENT)
+            _latch(event_id, event_type, app_user_id, event)
             return {'ok': True, 'revoked': True, 'status': status}
         # past_due / incomplete: keep premium for now; user has a grace
         # window with Stripe before it auto-cancels. expire_stale cron
         # cleans up if subscription_expires_at passes.
+        _latch(event_id, event_type, app_user_id, event)
         return {'ok': True, 'noop': True, 'status': status}
 
     if event_type == 'customer.subscription.deleted':
@@ -940,6 +1018,7 @@ def post_stripe_checkout_webhook():
                 'UPDATE person SET subscription_expires_at = NULL WHERE id = %(id)s',
                 dict(id=person_id),
             )
+            entitlements.record_event_tx(tx, event_id, event_type, app_user_id, event)
         return {'ok': True, 'revoked': True}
 
     if event_type == 'invoice.payment_failed':
@@ -948,9 +1027,11 @@ def post_stripe_checkout_webhook():
         logger.info(
             'stripe-checkout invoice.payment_failed for person_id=%s', person_id,
         )
+        _latch(event_id, event_type, app_user_id, event)
         return {'ok': True, 'logged': True}
 
     # Other event types — accept (200) to suppress retries; nothing to do.
+    _latch(event_id, event_type, app_user_id, event)
     return {'ok': True, 'ignored': event_type}
 
 

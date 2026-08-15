@@ -300,18 +300,25 @@ class TestEventDispatch:
 class TestReplayProtection:
     def test_replay_does_not_re_grant(self, app, monkeypatch, signed_rc_event):
         _patch_env(monkeypatch)
-        # First call: record_event returns True (new). Second: False (replay).
         calls = _patch_entitlements(monkeypatch)
-        # Override record_event with a counter
+        # F2: replay is now detected by a read-only pre-check BEFORE the
+        # effect runs, and the latch (record_event) commits LAST, after
+        # the effect. Simulate persistence with a local "seen" set instead
+        # of relying on record_event's return value for the early-return
+        # decision (that's what the real ledger row does).
         import service.revenuecat_webhook as rcw
 
-        attempt = {'n': 0}
+        seen: set[str] = set()
+
+        def fake_already_processed(event_id):
+            return event_id in seen
 
         def fake_record(event_id, event_type, app_user_id, payload):
-            attempt['n'] += 1
             calls['record'].append((event_id, event_type, app_user_id, payload))
-            return attempt['n'] == 1   # True only on first call
+            seen.add(event_id)
+            return True
 
+        monkeypatch.setattr(rcw, '_already_processed', fake_already_processed)
         monkeypatch.setattr(rcw, 'record_event', fake_record)
 
         payload = signed_rc_event(
