@@ -11,11 +11,11 @@ from __future__ import annotations
 import duotypes as t
 from service.api.decorators import aget
 from database import api_tx
-from service.referrals import get_my_stats
+from service.referrals import get_my_referrals
 
 
 @aget("/referrals/me")
 def get_referrals_me(s: t.SessionInfo):
-    """Returns {code, joined_count, credited_count, pending_token_balance}."""
+    """Full invite-screen contract; see service.referrals.get_my_referrals."""
     with api_tx() as tx:
-        return get_my_stats(tx, s.person_uuid)
+        return get_my_referrals(tx, s.person_uuid)

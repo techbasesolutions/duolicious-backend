@@ -210,3 +210,56 @@ def test_mint_person_code_idempotent_and_resolvable(make_person):
         tx.execute(
             "DELETE FROM referral WHERE invitee_email = 'brand-new-invitee@example.org'"
         )
+
+
+# --- GET /referrals/me contract (invite screen, brief 2026-08-12) ----------
+
+def test_get_my_referrals_contract_and_privacy(make_person):
+    from service.referrals import get_my_referrals
+
+    inviter = make_person(name='Sharon', gender='Woman')
+    joined = make_person(name='Tamar', gender='Woman')
+
+    with api_tx() as tx:
+        inviter_email = _email_of(tx, inviter['id'])
+        joined_email = _email_of(tx, joined['id'])
+        code = mint_person_code(tx, inviter['id'])
+
+        # One credited (onboarded, visible), one pending (no person row).
+        tx.execute(
+            "INSERT INTO referral (inviter_email, invitee_email, status) VALUES "
+            "(%(a)s, %(b)s, 'credited'), (%(a)s, 'never-joined@example.org', 'pending')",
+            dict(a=inviter_email, b=joined_email))
+
+        out = get_my_referrals(tx, inviter['uuid'])
+
+        assert out['code'] == code
+        assert out['link'] == f'https://ahavah.app/i/{code}'
+        assert out['totals'] == {
+            'joined': 2, 'credited': 1,
+            'premium_days_earned': REFERRAL_REWARD_PREMIUM_DAYS,
+            'tokens_earned': REFERRAL_REWARD_TOKENS,
+        }
+        states = {i['state'] for i in out['items']}
+        assert states == {'credited', 'pending'}
+        # Privacy: the onboarded invitee shows a name; the pending one
+        # must be NULL, and no item may ever carry an email address.
+        by_state = {i['state']: i for i in out['items']}
+        assert by_state['credited']['display_name'] == 'Tamar'
+        assert by_state['pending']['display_name'] is None
+        assert 'email' not in by_state['pending']
+        for i in out['items']:
+            assert '@' not in (i['display_name'] or '')
+
+        # Blocked pair: name collapses to NULL even though onboarded.
+        tx.execute(
+            'INSERT INTO skipped (subject_person_id, object_person_id, reported) '
+            'VALUES (%(s)s, %(o)s, TRUE)',
+            dict(s=joined['id'], o=inviter['id']))
+        out2 = get_my_referrals(tx, inviter['uuid'])
+        by_state2 = {i['state']: i for i in out2['items']}
+        assert by_state2['credited']['display_name'] is None, \
+            'blocked pair must not leak the invitee name'
+
+        tx.execute('DELETE FROM referral WHERE inviter_email = %(e)s',
+                   dict(e=inviter_email))

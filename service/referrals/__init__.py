@@ -379,8 +379,15 @@ _Q_MY_STATS = """
         SELECT email, uuid FROM person WHERE uuid = %(uuid)s
     ),
     my_code AS (
-        SELECT referral_code FROM beta_signup
-         WHERE email = (SELECT email FROM me)
+        -- Person codes are canonical since migration 0037; the
+        -- beta_signup fallback covers only pre-0037 rows that never
+        -- minted a person code (should be none after the backfill).
+        SELECT COALESCE(
+            (SELECT referral_code FROM person
+              WHERE uuid = %(uuid)s AND referral_code IS NOT NULL),
+            (SELECT referral_code FROM beta_signup
+              WHERE email = (SELECT email FROM me))
+        ) AS referral_code
     ),
     my_refs AS (
         SELECT
@@ -403,6 +410,34 @@ _Q_MY_STATS = """
 """
 
 
+_Q_MY_REFERRAL_ROWS = """
+    WITH me AS (
+        SELECT id, email FROM person WHERE uuid = %(uuid)s
+    )
+    SELECT
+        r.status,
+        r.created_at,
+        -- Privacy (design brief 2026-08-12): invitee emails are NEVER
+        -- exposed. A display name appears only once the invitee has an
+        -- activated person row and the pair is not blocked; the client
+        -- renders NULL as "A friend".
+        CASE
+            WHEN invitee.id IS NOT NULL
+                 AND invitee.activated
+                 AND NOT is_blocked_pair((SELECT id FROM me), invitee.id)
+            THEN invitee.name
+            ELSE NULL
+        END AS display_name
+    FROM referral r
+    LEFT JOIN person invitee
+      ON invitee.email = r.invitee_email
+    WHERE r.inviter_email = (SELECT email FROM me)
+    ORDER BY r.created_at DESC
+"""
+
+# Reward math for the invite screen's totals. Mirrors the constants the
+# credit path applies (REFERRAL_REWARD_*); computed here so the screen
+# can never drift from what members were actually paid.
 def get_my_stats(tx, person_uuid: str) -> dict:
     """For GET /referrals/me. Returns
         {code, joined_count, credited_count, pending_token_balance}
@@ -413,4 +448,45 @@ def get_my_stats(tx, person_uuid: str) -> dict:
         "joined_count": int((row or {}).get("joined_count") or 0),
         "credited_count": int((row or {}).get("credited_count") or 0),
         "pending_token_balance": int((row or {}).get("pending_token_balance") or 0),
+    }
+
+
+def get_my_referrals(tx, person_uuid: str) -> dict:
+    """Full contract for the /invite screen (design brief 2026-08-12).
+
+    {
+      code: str | None,
+      link: str | None,              # https://ahavah.app/i/<code>
+      items: [{state, created_at, display_name|null}],
+      totals: {
+        joined: int,                 # all referral rows
+        credited: int,               # completed profiles (paid out)
+        premium_days_earned: int,    # credited * 30
+        tokens_earned: int,          # credited * 5
+      },
+      # Legacy keys kept for any pre-existing caller:
+      joined_count, credited_count, pending_token_balance
+    }
+    """
+    stats = get_my_stats(tx, person_uuid)
+    rows = tx.execute(_Q_MY_REFERRAL_ROWS, dict(uuid=person_uuid)).fetchall()
+    credited = stats["credited_count"]
+    code = stats["code"]
+    return {
+        **stats,
+        "link": f"https://ahavah.app/i/{code}" if code else None,
+        "items": [
+            {
+                "state": r["status"],
+                "created_at": r["created_at"].isoformat(),
+                "display_name": r["display_name"],
+            }
+            for r in rows
+        ],
+        "totals": {
+            "joined": stats["joined_count"],
+            "credited": credited,
+            "premium_days_earned": credited * REFERRAL_REWARD_PREMIUM_DAYS,
+            "tokens_earned": credited * REFERRAL_REWARD_TOKENS,
+        },
     }
