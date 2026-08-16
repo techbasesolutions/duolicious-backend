@@ -24,7 +24,7 @@ from service.unsubscribe import make_url as _unsub_url
 
 SIGN_IN_URL = "https://ahavah.app/auth/sign-in"
 SUBJECT = "Ahavah beta is open"
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 PREHEADER = "The Ahavah beta is open. Sign in with your email to get started."
 
 _BODY = f"""

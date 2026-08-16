@@ -24,7 +24,7 @@ from emails.base import (
 
 SUBJECT = "Your place on Ahavah is still yours"
 PREHEADER = "Nothing was deleted. One sign-in brings it all back."
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 
 
 def comeback_html(unsubscribe_url: str) -> str:

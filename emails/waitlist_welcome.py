@@ -29,7 +29,7 @@ from emails.base import (
 from service.unsubscribe import make_url as _unsub_url
 
 SUBJECT = "You're on the Ahavah waitlist"
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 SHARE_URL = "https://ahavah.app"
 PREHEADER = "You're on the list. Ahavah launches Summer 2026. Founding members get six months of Premium free."
 

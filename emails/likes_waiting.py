@@ -23,7 +23,7 @@ from emails.base import (
 )
 
 PREHEADER = "They are waiting to hear back."
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 
 _WORDS = {2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six",
           7: "Seven", 8: "Eight", 9: "Nine"}

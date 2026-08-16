@@ -25,7 +25,7 @@ from service.unsubscribe import make_url as _unsub_url
 
 SIGN_IN_DATE = "June 15, 2026"
 SUBJECT = "You're an Ahavah beta tester"
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 SHARE_URL = "https://ahavah.app"
 PREHEADER = f"You're in. We'll email your sign-in link on {SIGN_IN_DATE}."
 

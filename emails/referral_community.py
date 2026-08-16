@@ -30,7 +30,7 @@ from emails.base import (
 from service.unsubscribe import make_url as _unsub_url
 
 SUBJECT = "Let's build this within our community"
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 PREHEADER = "A niche app like ours grows one community at a time. Here is how to help it take root."
 SITE = "https://ahavah.app"
 

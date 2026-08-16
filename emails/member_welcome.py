@@ -33,7 +33,7 @@ from emails.base import (
 )
 from emails.premium_referral import _referral_block, _fmt_date
 
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 
 SUBJECT = "Welcome to Ahavah. Your Premium is live"
 

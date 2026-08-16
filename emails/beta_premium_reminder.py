@@ -28,7 +28,7 @@ from service.unsubscribe import make_url as _unsub_url
 
 SUBJECT = "Your Premium is live. So are your free tokens."
 PREHEADER = "Six months of Ahavah Premium, on us, plus tokens to spend. Top up free during the beta."
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 SITE = "https://ahavah.app"
 
 

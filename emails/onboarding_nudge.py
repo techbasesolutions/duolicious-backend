@@ -24,7 +24,7 @@ from emails.base import (
 
 SUBJECT = "You're two minutes from joining Ahavah"
 PREHEADER = "Your account is created. Finish your profile to be seen."
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 
 
 def onboarding_nudge_html(name: str | None, unsubscribe_url: str) -> str:

@@ -29,7 +29,7 @@ from emails.base import (
 from service.unsubscribe import make_url as _unsub_url
 
 SUBJECT = "Help us prepare your matches"
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 PREHEADER = "A minute of quick questions so we can line up good matches for you before launch."
 SITE = "https://ahavah.app"
 

@@ -32,7 +32,7 @@ from service.unsubscribe import make_url as _unsub_url
 
 SUBJECT = "One quick thing on your profile"
 PREHEADER = "A couple of minutes now makes you easier to find."
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 SITE = "https://ahavah.app"
 
 # gap key -> (heading, explanation). The explanation says what it COSTS

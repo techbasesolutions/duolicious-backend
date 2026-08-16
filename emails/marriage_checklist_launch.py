@@ -27,7 +27,7 @@ from service.unsubscribe import make_url as _unsub_url
 
 SUBJECT = "The Marriage Checklist is here. Send it to someone."
 PREHEADER = "Work through Scripture, decide what matters to you, and share it. Answers never stored."
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 SITE = "https://ahavah.app"
 
 

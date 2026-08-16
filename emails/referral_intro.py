@@ -22,7 +22,7 @@ from emails.base import (
 from service.unsubscribe import make_url as _unsub_url
 
 SUBJECT = "Your link to bring someone in"
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 PREHEADER = "You earn a Boost for each friend who joins through your link."
 SITE = "https://ahavah.app"
 

@@ -28,7 +28,7 @@ from service.unsubscribe import make_url as _unsub_url
 
 SUBJECT = "We found a chat bug. It is fixed."
 PREHEADER = "If a message of yours would not send, please try it again."
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 SITE = "https://ahavah.app"
 
 

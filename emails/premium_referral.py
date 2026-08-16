@@ -30,7 +30,7 @@ from emails.base import (
     SANS,
 )
 
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 
 SUBJECT_WELCOME = "You have 6 months of Premium, free"
 SUBJECT_REMINDER = "Every friend you bring adds a month of Premium"

@@ -20,7 +20,7 @@ from emails.base import (
     SANS,
 )
 
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 
 
 def subject_for(new_count: int) -> str:

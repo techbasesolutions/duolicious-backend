@@ -24,7 +24,7 @@ from emails.base import (
 from service.unsubscribe import make_url as _unsub_url
 
 SUBJECT = "Ahavah is live. Come on in."
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 PREHEADER = "Your personal link logs you straight in. Help us begin."
 SITE = "https://ahavah.app"
 

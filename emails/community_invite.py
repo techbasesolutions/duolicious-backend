@@ -22,7 +22,7 @@ from emails.base import (
 from service.unsubscribe import make_url as _unsub_url
 
 SUBJECT = "There's a place for you in the Ahavah community"
-FROM_ADDR = f"hello@{EMAIL_DOMAIN}"
+FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 PREHEADER = "More than matchmaking. A community of believers walking the same path. Come say shalom."
 SITE = "https://ahavah.app"
 GROUP_URL = "https://www.facebook.com/share/g/1DHBNAS4Gw/"

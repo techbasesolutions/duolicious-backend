@@ -305,7 +305,7 @@ def _send_otp(email: str, otp: str):
             from_addr=f'noreply-otp@{EMAIL_DOMAIN}',
             # Route confused-user replies to a human address instead of the
             # noreply alias (which has no inbound MX) — audit Email #9.
-            reply_to=f'hello@{EMAIL_DOMAIN}',
+            reply_to=f'support@{EMAIL_DOMAIN}',
         )
 
     try:
