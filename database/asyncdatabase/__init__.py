@@ -81,20 +81,30 @@ class api_tx:
         return self.cur
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # F03 (2026-09-07 review): mirror of the sync wrapper. A commit
+        # failure on a successful body must propagate rather than being
+        # swallowed with the body's (None) exc-tuple. Body exceptions
+        # still take precedence; cursor close and lock release run in
+        # finally so the chat connection lock cannot leak on error.
+        commit_error = None
         try:
             if exc_type is None:
                 await _api_conn.commit()
             else:
                 await _api_conn.rollback()
-        except:
-                traceback.print_exception(exc_type, exc_val, exc_tb)
+        except BaseException as e:
+            print(traceback.format_exc())
+            if exc_type is None:
+                commit_error = e
         finally:
             try:
                 await self.cur.close()
             except:
                 print(traceback.format_exc())
+            _api_conn_lock.release()
 
-        _api_conn_lock.release()
+        if commit_error is not None:
+            raise commit_error
 
 async def _check_api_connection_forever():
     while True:

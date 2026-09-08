@@ -105,20 +105,34 @@ class api_tx:
         return self.cur
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        # F03 (2026-09-07 review): a commit failure on a SUCCESSFUL body
+        # must propagate. The old handler logged the body's exc-tuple
+        # (None on success) and returned normally, so callers ran success
+        # handling on data that never committed. Now the commit exception
+        # is re-raised with its own traceback; a body exception still
+        # takes precedence (we only capture the failure to re-raise when
+        # the body itself succeeded); cursor close and lock release are
+        # guaranteed in finally so the shared connection lock can never
+        # leak on the error path.
+        commit_error = None
         try:
             if exc_type is None:
                 _api_conn.commit()
             else:
                 _api_conn.rollback()
-        except:
-                traceback.print_exception(exc_type, exc_val, exc_tb)
+        except BaseException as e:
+            print(traceback.format_exc())
+            if exc_type is None:
+                commit_error = e
         finally:
             try:
                 self.cur.close()
             except:
                 print(traceback.format_exc())
+            _api_conn_lock.release()
 
-        _api_conn_lock.release()
+        if commit_error is not None:
+            raise commit_error
 
 RowT = TypeVar('RowT')
 
