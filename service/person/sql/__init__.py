@@ -1956,8 +1956,25 @@ WITH photo_ AS (
     -- / feastDays / polygyny / headCovering / tzitzit / calendar /
     -- familyViews / livingPreferences / healthTags / interests /
     -- personalityTraits / relocation / intent). Duolicious doesn't
-    -- model these as columns; we round-trip the JSONB blob unchanged.
-    SELECT ahavah_extra AS j FROM person WHERE id = %(person_id)s
+    -- model these as columns; we round-trip the JSONB blob unchanged,
+    -- EXCEPT we backfill `country` from the person.country column when
+    -- the blob lacks it. `country` is a MINIMUM_COMPLETE_FIELDS entry
+    -- the web client reads only from ahavah_extra (via the JSONB
+    -- spread); onboarding writes the person.country column but not
+    -- ahavah_extra.country, so 19 of 24 members read country=undefined
+    -- on any device without their local draft cache, wrongly failing
+    -- the discover-eligibility gate (2026-09-07). Merging it here
+    -- surfaces the value the backend already has, with no stored-data
+    -- mutation.
+    SELECT
+        CASE
+            WHEN COALESCE(ahavah_extra->>'country', '') = ''
+                 AND country IS NOT NULL AND country <> ''
+            THEN COALESCE(ahavah_extra, '{{}}'::jsonb)
+                 || jsonb_build_object('country', country)
+            ELSE ahavah_extra
+        END AS j
+    FROM person WHERE id = %(person_id)s
 ), gender AS (
     SELECT gender.name AS j
     FROM gender JOIN person ON gender_id = gender.id
