@@ -41,7 +41,9 @@ def has_entitlement(person_id: int, name: str) -> bool:
         return False
     with api_tx('read committed') as tx:
         row = tx.execute(
-            'SELECT %(n)s = ANY(entitlements) AS has FROM person WHERE id = %(id)s',
+            'SELECT %(n)s = ANY(entitlements) AND '
+            '(subscription_expires_at IS NULL OR subscription_expires_at > NOW()) '
+            'AS has FROM person WHERE id = %(id)s',
             dict(id=person_id, n=name),
         ).fetchone()
     return bool(row and row['has'])
@@ -51,10 +53,20 @@ def list_entitlements(person_id: int) -> List[str]:
     if not person_id:
         return []
     with api_tx('read committed') as tx:
-        row = tx.execute(
-            'SELECT entitlements FROM person WHERE id = %(id)s',
-            dict(id=person_id),
-        ).fetchone()
+        return list_entitlements_tx(tx, person_id)
+
+
+def list_entitlements_tx(tx, person_id: int) -> List[str]:
+    """Read-time expiry uses the same shared expiry as reconciliation.
+
+    NULL preserves existing non-expiring grants; expiry is exclusive, with no
+    additional grace period invented by the access gate.
+    """
+    row = tx.execute(
+        "SELECT CASE WHEN subscription_expires_at IS NULL OR subscription_expires_at > NOW() "
+        "THEN entitlements ELSE '{}'::text[] END AS entitlements FROM person WHERE id = %(id)s",
+        dict(id=person_id),
+    ).fetchone()
     return list(row['entitlements']) if row else []
 
 

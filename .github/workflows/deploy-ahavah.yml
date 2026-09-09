@@ -21,10 +21,9 @@ name: Deploy ahavah/main → droplet
 #                     Refresh by ssh-keyscan-ing the droplet and updating
 #                     the secret if/when the droplet's host key rotates.
 #
-# Migrations: any new file in `migrations/*.sql` is applied via
-# `docker exec ... psql -f` BEFORE the api rebuild. All migrations in
-# this repo use `IF NOT EXISTS` patterns so they're safe to re-run on
-# every deploy.
+# Migrations run after image build and before container replacement.
+# The runner checkpoints applied files, rejects checksum changes, and
+# stops deployment on the first SQL error.
 #
 # Rollback: `ssh root@droplet "cd /opt/ahavah-api && git reset --hard
 # <previous-sha> && docker compose -f docker-compose.yml -f docker-compose
@@ -92,16 +91,6 @@ jobs:
             git log --oneline -1
             echo "::endgroup::"
 
-            echo "::group::apply migrations (idempotent)"
-            for f in $(ls migrations/*.sql 2>/dev/null | sort); do
-              echo "applying $f"
-              docker cp "$f" ahavah-api-postgres-1:/tmp/migration.sql
-              docker exec ahavah-api-postgres-1 \
-                psql -U postgres -d duo_api -f /tmp/migration.sql 2>&1 \
-                | tail -3
-            done
-            echo "::endgroup::"
-
             echo "::group::docker build"
             # GIT_SHA busts the Dockerfiles' code-copy layer per commit.
             # The labs COPY --exclude cache key missed ADDED files, which
@@ -111,6 +100,10 @@ jobs:
                            --env-file .env.production \
                            build --build-arg GIT_SHA=$(git rev-parse HEAD) \
                            api chat cron
+            echo "::endgroup::"
+
+            echo "::group::apply migrations"
+            bash scripts/apply-deploy-migrations.sh
             echo "::endgroup::"
 
             echo "::group::recreate api+chat+cron"

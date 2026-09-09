@@ -52,59 +52,33 @@ class api_tx:
         self.cur = None
 
     def __enter__(self):
-        _api_conn_lock.acquire()
-
         global _api_conn
-        if not _api_conn or _api_conn.closed:
-            try:
+        _api_conn_lock.acquire()
+        try:
+            if not _api_conn or _api_conn.closed:
                 _api_conn = psycopg.Connection.connect(
-                    conninfo=_api_conninfo,
-                    row_factory=psycopg.rows.dict_row,
-                )
-            except:
-                _api_conn_lock.release()
-                print(traceback.format_exc())
-                raise
-
-        # Phase W F.2 fix: if the previous transaction on this shared
-        # connection left it in INERROR (= "idle in transaction (aborted)")
-        # state, every subsequent execute() returns "current transaction
-        # is aborted, commands ignored" immediately and the api_tx __exit__
-        # rollback that should clear it can itself fail under statement_timeout.
-        # Proactively rollback before the new cursor opens so we always start
-        # from a clean tx slate.
-        status = _api_conn.info.transaction_status
-        if status in (
-            psycopg.pq.TransactionStatus.INERROR,
-            psycopg.pq.TransactionStatus.INTRANS,
-        ):
-            try:
+                    conninfo=_api_conninfo, row_factory=psycopg.rows.dict_row)
+            if _api_conn.info.transaction_status in (
+                psycopg.pq.TransactionStatus.INERROR,
+                psycopg.pq.TransactionStatus.INTRANS,
+            ):
                 _api_conn.rollback()
-            except:
-                # If rollback itself fails, recycle the connection.
+            self.cur = _api_conn.cursor()
+            if self.isolation_level != _default_transaction_isolation:
+                self.cur.execute(f'SET TRANSACTION ISOLATION LEVEL {self.isolation_level}')
+            return self.cur
+        except BaseException:
+            if _api_conn:
                 try:
                     _api_conn.close()
-                except:
+                except BaseException:
                     pass
-                _api_conn = psycopg.Connection.connect(
-                    conninfo=_api_conninfo,
-                    row_factory=psycopg.rows.dict_row,
-                )
-
-        self.cur = _api_conn.cursor()
-
-        if self.isolation_level != _default_transaction_isolation:
-            try:
-                self.cur.execute(
-                    f'SET TRANSACTION ISOLATION LEVEL {self.isolation_level}'
-                )
-            except:
-                _api_conn_lock.release()
-                print(traceback.format_exc())
-                raise
-        return self.cur
+            _api_conn = None
+            _api_conn_lock.release()
+            raise
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        global _api_conn
         # F03 (2026-09-07 review): a commit failure on a SUCCESSFUL body
         # must propagate. The old handler logged the body's exc-tuple
         # (None on success) and returned normally, so callers ran success
@@ -122,6 +96,11 @@ class api_tx:
                 _api_conn.rollback()
         except BaseException as e:
             print(traceback.format_exc())
+            try:
+                _api_conn.close()
+            except BaseException:
+                pass
+            _api_conn = None
             if exc_type is None:
                 commit_error = e
         finally:

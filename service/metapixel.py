@@ -19,6 +19,7 @@ and one POST per registration does not justify a new dependency.
 from __future__ import annotations
 
 import hashlib
+import os
 import json
 import threading
 import time
@@ -59,6 +60,10 @@ def send_complete_registration(
     client_user_agent: str | None,
 ) -> None:
     """Fire-and-forget. Call AFTER the registration transaction commits."""
+    # Member registration is sensitive. Existing credentials alone are not
+    # authorization to export it; an explicit telemetry policy must enable it.
+    if os.environ.get('AHAVAH_REGISTRATION_TELEMETRY') != 'enabled':
+        return
     if not META_PIXEL_ID or not META_CAPI_ACCESS_TOKEN:
         return
 
@@ -78,7 +83,7 @@ def send_complete_registration(
                 "event_time": int(time.time()),
                 # Deterministic: dedupes against the browser pixel's copy
                 # AND against accidental repeat sends for the same person.
-                "event_id": f"reg-{person_uuid}",
+                "event_id": hashlib.sha256(f"registration:{person_uuid}".encode()).hexdigest(),
                 "action_source": "website",
                 "event_source_url": f"{WEB_BASE_URL}/onboarding/complete",
                 "user_data": user_data,

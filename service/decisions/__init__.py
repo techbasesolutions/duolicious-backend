@@ -142,13 +142,14 @@ SELECT
     CASE WHEN m.user_a_id = %(me_id)s THEN m.user_b_id
          ELSE m.user_a_id END AS peer_id,
     peer.uuid::text AS peer_uuid,
-    EXISTS (SELECT 1 FROM new_like) AS was_new_like
+    EXISTS (SELECT 1 FROM new_like) AS was_new_like,
+    EXISTS (SELECT 1 FROM upserted_match) AS was_new_match
 FROM the_match m
 JOIN person peer
   ON peer.id = CASE WHEN m.user_a_id = %(me_id)s THEN m.user_b_id
                     ELSE m.user_a_id END
 UNION ALL
-SELECT NULL, NULL, NULL, EXISTS (SELECT 1 FROM new_like)
+SELECT NULL, NULL, NULL, EXISTS (SELECT 1 FROM new_like), FALSE
 WHERE NOT EXISTS (SELECT 1 FROM the_match)
 """
 
@@ -442,11 +443,12 @@ def post_decisions(req: t.PostDecision, s: t.SessionInfo):
     # Phase 5: enforce 10/day like quota for free users; premium and
     # active day-pass bypass. Reuse the same api_tx for the quota check
     # and the like-insert so concurrent likes can't slip past the cap.
-    from service.entitlements import list_entitlements
+    from service.entitlements import list_entitlements_tx
+    from service.decisions.locking import lock_like_members
     assert s.person_uuid is not None
-    entitlements = list_entitlements(s.person_id)
-
-    with api_tx() as tx:
+    with api_tx('READ COMMITTED') as tx:
+        lock_like_members(tx, s.person_id, req.profile_uuid)
+        entitlements = list_entitlements_tx(tx, s.person_id)
         blocked = _check_like_quota(
             tx, s.person_id, s.person_uuid, entitlements,
         )
@@ -492,13 +494,9 @@ def post_decisions(req: t.PostDecision, s: t.SessionInfo):
                 print(traceback.format_exc())
         return {"match": None}
 
-    # Mutual match exists. Only push "It's a match" when THIS call is the
-    # one that newly formed the mutual (was_new_like). A repair re-like
-    # (was_new_like False -- my half-row already existed; this call just
-    # let Q_RECORD_LIKE derive + insert the match row from current liked
-    # state) stays silent by design: was_new_like is the only signal this
-    # handler has for "this call is the one that should notify."
-    if was_new_like:
+    # Only the transaction that inserted the match sends its notification.
+    # A duplicate like that merely reads an existing match stays silent.
+    if row and row.get("was_new_match"):
         # Lazy-import notifications + wrapped in try/except so a missing
         # pywebpush dependency, missing VAPID env vars, or any other
         # push-stack issue can never block the match-create response.

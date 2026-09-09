@@ -53,34 +53,33 @@ class api_tx:
         self.cur = None
 
     async def __aenter__(self):
-        await _api_conn_lock.acquire()
-
         global _api_conn
-        if not _api_conn or _api_conn.closed:
-            try:
+        await _api_conn_lock.acquire()
+        try:
+            if not _api_conn or _api_conn.closed:
                 _api_conn = await psycopg.AsyncConnection.connect(
-                    conninfo=_api_conninfo,
-                    row_factory=psycopg.rows.dict_row,
-                )
-            except:
-                _api_conn_lock.release()
-                print(traceback.format_exc())
-                raise
-
-        self.cur = _api_conn.cursor()
-
-        if self.isolation_level != _default_transaction_isolation:
-            try:
-                await self.cur.execute(
-                    f'SET TRANSACTION ISOLATION LEVEL {self.isolation_level}'
-                )
-            except:
-                _api_conn_lock.release()
-                print(traceback.format_exc())
-                raise
-        return self.cur
+                    conninfo=_api_conninfo, row_factory=psycopg.rows.dict_row)
+            if _api_conn.info.transaction_status in (
+                psycopg.pq.TransactionStatus.INERROR,
+                psycopg.pq.TransactionStatus.INTRANS,
+            ):
+                await _api_conn.rollback()
+            self.cur = _api_conn.cursor()
+            if self.isolation_level != _default_transaction_isolation:
+                await self.cur.execute(f'SET TRANSACTION ISOLATION LEVEL {self.isolation_level}')
+            return self.cur
+        except BaseException:
+            if _api_conn:
+                try:
+                    await _api_conn.close()
+                except BaseException:
+                    pass
+            _api_conn = None
+            _api_conn_lock.release()
+            raise
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        global _api_conn
         # F03 (2026-09-07 review): mirror of the sync wrapper. A commit
         # failure on a successful body must propagate rather than being
         # swallowed with the body's (None) exc-tuple. Body exceptions
@@ -94,6 +93,11 @@ class api_tx:
                 await _api_conn.rollback()
         except BaseException as e:
             print(traceback.format_exc())
+            try:
+                await _api_conn.close()
+            except BaseException:
+                pass
+            _api_conn = None
             if exc_type is None:
                 commit_error = e
         finally:

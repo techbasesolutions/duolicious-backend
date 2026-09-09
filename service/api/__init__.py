@@ -1108,7 +1108,7 @@ def post_tokens_super_like(s: t.SessionInfo):
     if not target_id:
         return {'error': 'missing_person_id'}, 400
     try:
-        with api_tx() as tx:
+        with api_tx('READ COMMITTED') as tx:
             return _perform_super_like(tx, s.person_uuid, target_id)
     except _InsufficientTokens:
         return {'error': 'insufficient_tokens'}, 402

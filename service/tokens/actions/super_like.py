@@ -18,6 +18,7 @@ from uuid import UUID
 from typing import Union
 
 from service.tokens import debit
+from service.decisions.locking import lock_like_members
 
 
 COST = 2
@@ -83,6 +84,7 @@ def perform(tx, viewer_uuid: Union[UUID, str], target_uuid: Union[UUID, str]) ->
         raise ValueError("unknown person uuid")
     viewer_id = viewer_row['id']
     target_id = target_row['id']
+    lock_like_members(tx, viewer_id, str(target_uuid))
 
     debit(
         tx, str(viewer_uuid), COST,

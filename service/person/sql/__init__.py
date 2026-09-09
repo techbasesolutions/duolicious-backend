@@ -1905,7 +1905,9 @@ WITH photo_ AS (
     -- 'premium' ∈ entitlements via lib/use-profile.ts isPremium().
     -- Empty array (NOT null) for free users so client code can
     -- treat the field as a guaranteed list.
-    SELECT COALESCE(entitlements, '{{}}'::TEXT[]) AS j
+    SELECT CASE WHEN subscription_expires_at IS NULL OR subscription_expires_at > NOW()
+                THEN COALESCE(entitlements, '{{}}'::TEXT[])
+                ELSE '{{}}'::TEXT[] END AS j
     FROM person WHERE id = %(person_id)s
 ), subscription_expires_at_ AS (
     -- ISO 8601 stamp when the active subscription auto-revokes.
