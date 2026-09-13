@@ -1,13 +1,62 @@
 from __future__ import annotations
 
 import duotypes as t
+from flask import abort, request
+
 from database import api_tx
-from service.admin import require_admin
-from service.api.decorators import aget
+from service.admin import require_admin, record_audit
+from service.api.decorators import aget, apost
 from service.growth.queries import growth_stats
+import emails.send_spotlight_announcement as e1
 
 @aget('/admin/growth/stats')
 def get_admin_growth_stats(s: t.SessionInfo):
     require_admin(s)
     with api_tx('read committed') as tx:
         return growth_stats(tx)
+
+_CAMPAIGNS = {'e1': e1}   # e2 and e3 are registered by Tasks 9 and 10
+
+@aget('/admin/growth/emails')
+def get_admin_growth_emails(s: t.SessionInfo):
+    require_admin(s)
+    out = []
+    with api_tx('read committed') as tx:
+        for key, mod in _CAMPAIGNS.items():
+            last = tx.execute(
+                "SELECT max(sent_at) AS at, (array_agg(campaign_id ORDER BY sent_at DESC))[1] AS cid FROM email_send_log WHERE campaign = %(c)s",
+                dict(c=key)).fetchone()
+            out.append(dict(campaign=key, recipients=len(mod.recipients()),
+                            last_sent_at=last['at'].isoformat() if last and last['at'] else None,
+                            last_campaign_id=last['cid'] if last else None))
+    return dict(campaigns=out)
+
+@apost('/admin/growth/emails/<campaign>/preview')
+def post_admin_growth_email_preview(s: t.SessionInfo, campaign: str):
+    require_admin(s)
+    mod = _CAMPAIGNS.get(campaign) or abort(404)
+    to = (request.get_json(silent=True) or {}).get('to') or abort(400)
+    preview_row = getattr(mod, 'preview_row', None)
+    row = preview_row(to) if preview_row else dict(person_id=0, email=to, name='Preview')
+    subject, html = mod.build_for(row)
+    from smtp import make_aws_smtp
+    make_aws_smtp().send(subject=subject, body=html, to_addr=to, from_addr=mod.FROM_ADDR)
+    return dict(ok=True)
+
+@apost('/admin/growth/emails/<campaign>/send')
+def post_admin_growth_email_send(s: t.SessionInfo, campaign: str):
+    require_admin(s)
+    mod = _CAMPAIGNS.get(campaign) or abort(404)
+    body = request.get_json(silent=True) or {}
+    cid = body.get('campaign_id') or abort(400)
+    dry = bool(body.get('dry_run', True))
+    from service.campaigns.runner import run_campaign
+    from service.unsubscribe import make_url as _unsub_url
+    from service.config import WEB_BASE_URL
+    res = run_campaign(api_tx, campaign, cid, mod.recipients(), mod.build_for, send=not dry,
+                       from_addr=mod.FROM_ADDR,
+                       list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url('notifications', e, WEB_BASE_URL)}>",
+                       post_send=getattr(mod, 'post_send', None))
+    with api_tx() as tx:
+        record_audit(tx, s, 'growth.email.send', metadata=dict(campaign=campaign, campaign_id=cid, dry_run=dry, **res))
+    return res
