@@ -49,29 +49,44 @@ def test_last_action_none_for_untouched(make_person):
     with api_tx('read committed') as tx:
         assert last_action_at(tx, p['id']) is None
 
-def _man_count(stats):
-    return next((r['members'] for r in stats['members_by_gender'] if r['gender'] == 'Man'), 0)
+def _gender_count(stats, gender):
+    return next((r['members'] for r in stats['members_by_gender'] if r['gender'] == gender), 0)
+
 
 def test_totals_and_by_gender_exclude_test_accounts(make_person, monkeypatch):
-    excluded = make_person(name='ExcludedAcct', gender='Man')
+    """The excluded account's OWN rows must vanish from the stats.
+
+    Deliberately not a suite-wide delta across two separate reads: both
+    growth_stats() calls run inside ONE repeatable-read transaction, so they
+    share a single snapshot and nothing another test writes can move the
+    numbers between them. The only difference between the two reads is the
+    exclusion list, so every difference is this fixture's own row. The
+    gender assertion is stronger still: 'Agender' is used by no other test,
+    so the excluded person is the only member of that gender and the row
+    disappears outright.
+    """
+    excluded = make_person(name='ExcludedAcct', gender='Agender')
     other = make_person(name='OtherAcct', gender='Woman')
     with api_tx('read committed') as tx:
-        row = tx.execute("SELECT email FROM person WHERE id = %(id)s", dict(id=excluded['id'])).fetchone()
-    excluded_email = row['email']
-    with api_tx('read committed') as tx:
-        before = growth_stats(tx)
-    monkeypatch.setenv('AHAVAH_TEST_ACCOUNT_EMAILS', excluded_email)
+        excluded_email = tx.execute(
+            "SELECT email FROM person WHERE id = %(id)s", dict(id=excluded['id'])).fetchone()['email']
     with api_tx() as tx:
         _like(tx, excluded['id'], other['id'], 0)
         tx.execute(
             "INSERT INTO ahavah_match (user_a_id, user_b_id) VALUES (LEAST(%(a)s, %(b)s), GREATEST(%(a)s, %(b)s))",
             dict(a=excluded['id'], b=other['id']),
         )
-    with api_tx('read committed') as tx:
+
+    with api_tx() as tx:                      # REPEATABLE READ: one snapshot
+        before = growth_stats(tx)
+        monkeypatch.setenv('AHAVAH_TEST_ACCOUNT_EMAILS', excluded_email)
         after = growth_stats(tx)
-    assert after['likes_total'] == before['likes_total']
-    assert after['matches'] == before['matches']
-    assert _man_count(after) == _man_count(before) - 1
+
+    assert _gender_count(before, 'Agender') == 1
+    assert _gender_count(after, 'Agender') == 0
+    assert before['likes_total'] - after['likes_total'] == 1
+    assert before['matches'] - after['matches'] == 1
+
 
 def test_dormant_cohort_excludes_never_acted(make_person):
     quiet = make_person(name='NeverActed', gender='Man')

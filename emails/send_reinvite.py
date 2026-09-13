@@ -7,7 +7,7 @@ from emails.reinvite import reinvite_html, SUBJECT, FROM_ADDR
 from service.campaigns import make_campaign_link
 from service.campaigns.runner import run_campaign
 from service.config import WEB_BASE_URL
-from service.growth.queries import dormant_cohort, newcomers_since, count_newcomers_since
+from service.growth.queries import count_newcomers_since, count_reinvite_cohort, dormant_cohort, newcomers_since
 from service.unsubscribe import make_url as _unsub_url
 
 UNSUB_SCOPE = 'notifications'
@@ -22,6 +22,13 @@ def recipients() -> list[dict]:
             total = count_newcomers_since(tx, row['person_id'], row['last_action'])
             out.append(dict(**row, newcomers=names, total_new=int(total)))
     return out
+
+def recipient_count() -> int:
+    """How many rows recipients() would return, in one statement instead of
+    two queries per dormant member. Opens its own transaction, so never call
+    it while holding one (the api connection lock is not reentrant)."""
+    with api_tx('read committed') as tx:
+        return count_reinvite_cohort(tx, days=30, resend_days=30)
 
 def build_for(row: dict) -> tuple[str, str]:
     with api_tx() as tx:
@@ -42,6 +49,7 @@ def main() -> None:
     a = ap.parse_args()
     cid = a.campaign_id or f"e3-{uuid.uuid4().hex[:8]}"
     print(run_campaign(api_tx, 'e3', cid, recipients(), build_for, send=a.send, from_addr=FROM_ADDR,
+                       unsub_scope=UNSUB_SCOPE,
                        list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url(UNSUB_SCOPE, e, WEB_BASE_URL)}>",
                        post_send=post_send))
 

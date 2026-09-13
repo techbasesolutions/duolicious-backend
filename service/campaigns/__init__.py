@@ -29,6 +29,38 @@ def can_send(tx, person_id: int, campaign: str, campaign_id: str, *,
         return True
     return tx.execute(_Q_RECENT, dict(pid=person_id, d=cap_days)).fetchone() is None
 
+# Footer unsubscribes are per-scope, and each scope is stamped on a
+# different row (see service.unsubscribe._Q_UNSUB). A campaign must honour
+# its OWN scope's stamp before the next run, otherwise a member who clicked
+# "unsubscribe" in the footer still gets the following week's email.
+_Q_UNSUBSCRIBED = {
+    # `notifications` turns every email_* channel off in one upsert, so the
+    # scope is "unsubscribed" exactly when all five are FALSE. Anything less
+    # is a member who tuned individual toggles, not one who opted out.
+    'notifications': """
+        SELECT 1 FROM notification_preference
+         WHERE person_id = %(pid)s
+           AND NOT email_messages
+           AND NOT email_matches
+           AND NOT email_likes
+           AND NOT email_verification
+           AND NOT email_profile_views
+    """,
+    'community': """
+        SELECT 1 FROM person
+         WHERE id = %(pid)s AND community_unsubscribed_at IS NOT NULL
+    """,
+}
+
+def campaign_unsubscribed(tx, person_id: int, scope: str) -> bool:
+    """True iff this member has unsubscribed from `scope`. Unknown scopes
+    (and the scopes that have no member-facing campaign, e.g. `waitlist`)
+    are never treated as unsubscribed."""
+    q = _Q_UNSUBSCRIBED.get(scope)
+    if q is None or not person_id:
+        return False
+    return tx.execute(q, dict(pid=person_id)).fetchone() is not None
+
 def log_send(tx, person_id: int, campaign: str, campaign_id: str,
              message_id: Optional[str]) -> None:
     tx.execute(
@@ -41,6 +73,12 @@ def log_send(tx, person_id: int, campaign: str, campaign_id: str,
 
 def make_campaign_link(tx, kind: str, target_url: str,
                        subject_person_id: Optional[int] = None) -> str:
+    """Mint a /s/<key> link. `target_url` must stay on our own web app:
+    /s/<key> redirects to whatever is stored here, so accepting a foreign
+    target would turn every campaign email into an open redirect."""
+    base = WEB_BASE_URL.rstrip('/')
+    if not str(target_url).startswith(base):
+        raise ValueError(f"campaign link target must start with {base}")
     key = secrets.token_urlsafe(6)
     tx.execute(
         """

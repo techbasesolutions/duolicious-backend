@@ -24,9 +24,22 @@ def build_for(row: dict) -> tuple[str, str]:
         f"{WEB_BASE_URL}/settings/privacy",
         _unsub_url(UNSUB_SCOPE, row['email'], WEB_BASE_URL))
 
+_Q_RECIPIENT_COUNT = """
+    SELECT count(*) AS n FROM person
+     WHERE activated AND deletion_requested_at IS NULL AND lower(email) <> ALL(%(ex)s)
+"""
+
 def recipients() -> list[dict]:
     with api_tx('read committed') as tx:
         return [dict(r) for r in tx.execute(_Q_RECIPIENTS, dict(ex=_excluded())).fetchall()]
+
+def recipient_count() -> int:
+    """How many rows recipients() would return, without materialising them:
+    the admin dashboard only needs the number. Opens its own transaction, so
+    never call it while holding one (the api connection lock is not
+    reentrant)."""
+    with api_tx('read committed') as tx:
+        return int(tx.execute(_Q_RECIPIENT_COUNT, dict(ex=_excluded())).fetchone()['n'])
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -41,6 +54,7 @@ def main() -> None:
         print(f"preview sent to {a.preview}"); return
     cid = a.campaign_id or f"e1-{uuid.uuid4().hex[:8]}"
     print(run_campaign(api_tx, 'e1', cid, recipients(), build_for, send=a.send, from_addr=FROM_ADDR,
+                       unsub_scope=UNSUB_SCOPE,
                        list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url(UNSUB_SCOPE, e, WEB_BASE_URL)}>"))
 
 if __name__ == '__main__':

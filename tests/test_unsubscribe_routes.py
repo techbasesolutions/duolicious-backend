@@ -133,6 +133,10 @@ def test_community_get_renders_form_without_stamping_then_post_stamps(client, ma
 # ---------------------------------------------------------------------------
 
 def test_claim_get_renders_form_then_post_succeeds_without_a_target_row(client):
+    # M-j: no claim-scoped link is ever emailed to /u/<token> -- claim tokens
+    # are minted for and consumed by service.claim's own route. This test only
+    # pins that /u/ stays well behaved if one is ever pasted there: the 200 is
+    # a deliberate no-op page, not evidence of an unsubscribe having happened.
     token = make_token('claim', 'claim-fixture@example.com')
 
     r = client.get(f'/u/{token}')
@@ -178,7 +182,7 @@ def test_e2_list_unsubscribe_header_uses_community_scope(make_person, monkeypatc
 
     run_campaign(api_tx, 'e2', 'hdr-e2', [dict(person_id=p['id'], email=email, name='E2Header')],
                 lambda row: ('Subj', '<p>hi</p>'), send=True, from_addr='support@ahavah.app',
-                list_unsubscribe=list_unsubscribe)
+                list_unsubscribe=list_unsubscribe, unsub_scope=e2.UNSUB_SCOPE)
 
     assert len(smtp.calls) == 1
     assert '/u/community.' in smtp.calls[0]['list_unsubscribe']
@@ -196,7 +200,7 @@ def test_e1_list_unsubscribe_header_uses_notifications_scope(make_person, monkey
 
     run_campaign(api_tx, 'e1', 'hdr-e1', [dict(person_id=p['id'], email=email, name='E1Header')],
                 lambda row: ('Subj', '<p>hi</p>'), send=True, from_addr='support@ahavah.app',
-                list_unsubscribe=list_unsubscribe)
+                list_unsubscribe=list_unsubscribe, unsub_scope=e1.UNSUB_SCOPE)
 
     assert len(smtp.calls) == 1
     assert '/u/notifications.' in smtp.calls[0]['list_unsubscribe']

@@ -1968,7 +1968,14 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
         # service.spotlight so this PATCH and the Phase B opt-out
         # cancellation hook share one code path. Applied against the same
         # `tx` as q1/q2 below, in the shared retry loop.
-        spotlight_opt_in_value = bool(field_value)
+        #
+        # The field is Optional[bool], so an explicit `null` reaches here as
+        # None. That is a no-op, NOT an opt-out: a client that serialises
+        # every profile field would otherwise silently revoke the consent of
+        # a member who had opted in. Still a recognised field name, so it
+        # must not fall through to the "unhandled field" 500 below.
+        if field_value is not None:
+            spotlight_opt_in_value = bool(field_value)
     elif field_name == 'smoking':
         q1 = """
         UPDATE person SET smoking_id = yes_no_optional.id

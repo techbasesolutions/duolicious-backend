@@ -116,20 +116,23 @@ _Q_DORMANT = f"""
 def dormant_cohort(tx, days: int = 30, resend_days: int = 30) -> list[dict]:
     return [dict(r) for r in tx.execute(_Q_DORMANT, dict(days=days, resend=resend_days, ex=_excluded())).fetchall()]
 
-def _newcomer_predicate_sql() -> str:
+def _newcomer_predicate_sql(person_ref: str = '%(pid)s', since_ref: str = '%(since)s') -> str:
     """The WHERE predicate for 'newcomers a member would want to see': shared
-    by the name-list query and the count query so the two can never drift
-    apart. Binds: %(pid)s, %(ex)s, %(since)s."""
-    return """
-       p.activated AND p.id <> %(pid)s
+    by the name-list query, the count query and the E3 recipient count so the
+    three can never drift apart. Binds: %(ex)s, plus %(pid)s / %(since)s when
+    the default refs are used. `person_ref` / `since_ref` let a caller
+    correlate the predicate to an enclosing row instead (e.g. `d.id` and
+    `d.last_action`) without re-typing it."""
+    return f"""
+       p.activated AND p.id <> {person_ref}
        AND lower(p.email) <> ALL(%(ex)s)
-       AND p.sign_up_time > %(since)s
-       AND p.gender_id IN (SELECT gender_id FROM search_preference_gender WHERE person_id = %(pid)s)
+       AND p.sign_up_time > {since_ref}
+       AND p.gender_id IN (SELECT gender_id FROM search_preference_gender WHERE person_id = {person_ref})
        AND (
-         NOT EXISTS (SELECT 1 FROM search_preference_age a WHERE a.person_id = %(pid)s)
+         NOT EXISTS (SELECT 1 FROM search_preference_age a WHERE a.person_id = {person_ref})
          OR EXISTS (
            SELECT 1 FROM search_preference_age a
-            WHERE a.person_id = %(pid)s
+            WHERE a.person_id = {person_ref}
               AND date_part('year', age(p.date_of_birth)) BETWEEN COALESCE(a.min_age, 18) AND COALESCE(a.max_age, 120)
          )
        )
@@ -152,3 +155,32 @@ def newcomers_since(tx, person_id: int, since: datetime, limit: int = 5) -> list
 
 def count_newcomers_since(tx, person_id: int, since: datetime) -> int:
     return tx.execute(_Q_COUNT_NEWCOMERS, dict(pid=person_id, since=since, ex=_excluded())).fetchone()['n']
+
+# E3's recipient list is "dormant members who have at least one newcomer to
+# show". Counting it by materialising the cohort and running two queries per
+# member is O(cohort) round trips; the admin dashboard only needs the number,
+# so fold the newcomer-existence check into one statement as a correlated
+# EXISTS over the SAME shared predicate the list uses.
+_Q_COUNT_REINVITE_COHORT = f"""
+    WITH act AS (
+      SELECT p.id, p.reinvite_sent_at,
+             {_last_action_sql('p.id')} AS last_action
+        FROM person p
+       WHERE p.activated AND p.deletion_requested_at IS NULL
+         AND lower(p.email) <> ALL(%(ex)s)
+    )
+    SELECT count(*) AS n
+      FROM act d
+     WHERE d.last_action > to_timestamp(0)
+       AND d.last_action < NOW() - make_interval(days => %(days)s)
+       AND (d.reinvite_sent_at IS NULL OR d.reinvite_sent_at < NOW() - make_interval(days => %(resend)s))
+       AND EXISTS (
+         SELECT 1 FROM person p
+          WHERE {_newcomer_predicate_sql('d.id', 'd.last_action')}
+       )
+"""
+
+def count_reinvite_cohort(tx, days: int = 30, resend_days: int = 30) -> int:
+    """How many members `emails.send_reinvite.recipients()` would return."""
+    return int(tx.execute(_Q_COUNT_REINVITE_COHORT,
+                          dict(days=days, resend=resend_days, ex=_excluded())).fetchone()['n'])

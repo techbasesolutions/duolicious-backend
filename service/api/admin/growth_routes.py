@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import duotypes as t
 from flask import abort, request
 
@@ -19,18 +21,31 @@ def get_admin_growth_stats(s: t.SessionInfo):
 
 _CAMPAIGNS = {'e1': e1, 'e2': e2, 'e3': e3}
 
+# Deliberately simple: this only has to reject things that are obviously not
+# an address before we hand one to SMTP. Real validation is the mail server's
+# job, and a preview is admin-only.
+_EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+
+_Q_LAST_SENT = """
+    SELECT campaign, max(sent_at) AS at,
+           (array_agg(campaign_id ORDER BY sent_at DESC))[1] AS cid
+      FROM email_send_log GROUP BY campaign
+"""
+
 @aget('/admin/growth/emails')
 def get_admin_growth_emails(s: t.SessionInfo):
     require_admin(s)
-    out = []
     with api_tx('read committed') as tx:
-        for key, mod in _CAMPAIGNS.items():
-            last = tx.execute(
-                "SELECT max(sent_at) AS at, (array_agg(campaign_id ORDER BY sent_at DESC))[1] AS cid FROM email_send_log WHERE campaign = %(c)s",
-                dict(c=key)).fetchone()
-            out.append(dict(campaign=key, recipients=len(mod.recipients()),
-                            last_sent_at=last['at'].isoformat() if last and last['at'] else None,
-                            last_campaign_id=last['cid'] if last else None))
+        last_sent = {r['campaign']: r for r in tx.execute(_Q_LAST_SENT).fetchall()}
+    # recipient_count() opens its own transaction per campaign, so it must be
+    # called OUTSIDE the block above: the api connection lock is not
+    # reentrant and nesting would deadlock the request.
+    out = []
+    for key, mod in _CAMPAIGNS.items():
+        last = last_sent.get(key)
+        out.append(dict(campaign=key, recipients=mod.recipient_count(),
+                        last_sent_at=last['at'].isoformat() if last and last['at'] else None,
+                        last_campaign_id=last['cid'] if last else None))
     return dict(campaigns=out)
 
 @apost('/admin/growth/emails/<campaign>/preview')
@@ -38,6 +53,8 @@ def post_admin_growth_email_preview(s: t.SessionInfo, campaign: str):
     require_admin(s)
     mod = _CAMPAIGNS.get(campaign) or abort(404)
     to = (request.get_json(silent=True) or {}).get('to') or abort(400)
+    if not isinstance(to, str) or not _EMAIL_RE.match(to):
+        abort(400)
     preview_row = getattr(mod, 'preview_row', None)
     row = preview_row(to) if preview_row else dict(person_id=0, email=to, name='Preview')
     subject, html = mod.build_for(row)
@@ -57,8 +74,14 @@ def post_admin_growth_email_send(s: t.SessionInfo, campaign: str):
     from service.config import WEB_BASE_URL
     res = run_campaign(api_tx, campaign, cid, mod.recipients(), mod.build_for, send=not dry,
                        from_addr=mod.FROM_ADDR,
+                       unsub_scope=mod.UNSUB_SCOPE,
+                       cap_days=getattr(mod, 'CAP_DAYS', 7),
                        list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url(mod.UNSUB_SCOPE, e, WEB_BASE_URL)}>",
                        post_send=getattr(mod, 'post_send', None))
+    # The audit row is written AFTER the run, not inside it, on purpose: a run
+    # spans one transaction per recipient (see service/campaigns/runner.py), so
+    # there is no single transaction the audit could share. `res` already
+    # carries campaign_id and dry_run, so only `campaign` is added here.
     with api_tx() as tx:
-        record_audit(tx, s, 'growth.email.send', metadata=dict(campaign=campaign, campaign_id=cid, dry_run=dry, **res))
+        record_audit(tx, s, 'growth.email.send', metadata=dict(campaign=campaign, **res))
     return res

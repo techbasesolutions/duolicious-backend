@@ -66,3 +66,32 @@ def test_spotlight_opt_in_surfaced_in_profile_info(make_person):
             dict(person_id=p['id'], email='x@example.com'),
         ).fetchone()['j']
     assert info['spotlight_opt_in'] is True
+
+
+def test_explicit_null_spotlight_opt_in_is_a_no_op(make_person):
+    """M-d ruling: an explicit `{"spotlight_opt_in": null}` is a no-op, never
+    an opt-out.
+
+    Two layers hold that. At the edge, PatchProfileInfo's check_exactly_one
+    validator refuses a null field outright (400), so the HTTP route cannot
+    reach the service layer with one. This test covers the second layer: the
+    underlying function, called directly with the field SET to None (built
+    via model_construct to bypass the edge validator), must leave an opted-in
+    member opted in rather than writing bool(None) = False. Without it, any
+    future caller that skips the pydantic layer silently revokes consent.
+    """
+    import duotypes as t
+    from service.person import patch_profile_info
+
+    p = make_person(name='NullPatch')
+    with api_tx() as tx:
+        set_spotlight_opt_in(tx, p['id'], True)
+
+    req = t.PatchProfileInfo.model_construct(
+        _fields_set={'spotlight_opt_in'}, spotlight_opt_in=None)
+    s = t.SessionInfo(email='nullpatch@ahavah-test.invalid', session_token_hash='x',
+                      person_id=p['id'], person_uuid=p['uuid'], signed_in=True,
+                      pending_club_name=None)
+    patch_profile_info(req, s)
+
+    assert _flag(p['id'])['spotlight_opt_in'] is True
