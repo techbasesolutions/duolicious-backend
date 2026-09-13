@@ -32,3 +32,30 @@ def test_runner_sends_once_per_campaign_id(make_person, monkeypatch):
     a = run_campaign(api_tx, 'e1', 'run-1', rows, lambda row: ('S', '<p>x</p>'), send=True, from_addr='support@ahavah.app')
     b = run_campaign(api_tx, 'e1', 'run-1', rows, lambda row: ('S', '<p>x</p>'), send=True, from_addr='support@ahavah.app')
     assert a['sent'] == 1 and b['sent'] == 0 and len(smtp.sent) == 1
+
+class _FailingSmtp:
+    def __init__(self): self.sent = []
+    def send(self, **kw):
+        if len(self.sent) == 1:
+            raise RuntimeError('boom')
+        self.sent.append(kw['to_addr']); return 'mid-' + str(len(self.sent))
+
+def test_runner_stops_and_reports_on_send_failure(make_person, monkeypatch):
+    import service.campaigns.runner as r
+    smtp = _FailingSmtp(); monkeypatch.setattr(r, 'make_aws_smtp', lambda: smtp)
+    p1 = make_person(name='FailFirst')
+    p2 = make_person(name='FailSecond')
+    email1 = f"runner-fail-1-{p1['id']}@ahavah-test.invalid"
+    email2 = f"runner-fail-2-{p2['id']}@ahavah-test.invalid"
+    rows = [dict(person_id=p1['id'], email=email1, name='FailFirst'),
+            dict(person_id=p2['id'], email=email2, name='FailSecond')]
+    res = run_campaign(api_tx, 'e1', 'run-fail', rows, lambda row: ('S', '<p>x</p>'), send=True, from_addr='support@ahavah.app')
+    assert res['sent'] == 1
+    assert res['error'] == 'boom'
+    from emails.base import mask_email
+    assert res['failed_email'] == mask_email(email2)
+    with api_tx('read committed') as tx:
+        n = tx.execute("SELECT count(*) AS n FROM email_send_log WHERE campaign = 'e1' AND campaign_id = 'run-fail'").fetchone()['n']
+        assert n == 1
+        logged = tx.execute("SELECT person_id FROM email_send_log WHERE campaign = 'e1' AND campaign_id = 'run-fail'").fetchone()
+        assert logged['person_id'] == p1['id']

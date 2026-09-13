@@ -8,6 +8,7 @@ from service.admin import require_admin, record_audit
 from service.api.decorators import aget, apost
 from service.growth.queries import growth_stats
 import emails.send_spotlight_announcement as e1
+import emails.send_reinvite as e3
 
 @aget('/admin/growth/stats')
 def get_admin_growth_stats(s: t.SessionInfo):
@@ -15,7 +16,7 @@ def get_admin_growth_stats(s: t.SessionInfo):
     with api_tx('read committed') as tx:
         return growth_stats(tx)
 
-_CAMPAIGNS = {'e1': e1}   # e2 and e3 are registered by Tasks 9 and 10
+_CAMPAIGNS = {'e1': e1, 'e3': e3}   # e2 is registered by Task 10
 
 @aget('/admin/growth/emails')
 def get_admin_growth_emails(s: t.SessionInfo):
