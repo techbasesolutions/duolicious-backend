@@ -123,3 +123,33 @@ this environment.
 
 Owner action, not a read-only check available from this environment. See
 owner decision 1 above.
+
+## Preference tables (Task 6)
+
+Command:
+
+```bash
+MSYS_NO_PATHCONV=1 docker compose -f docker-compose.test.yml exec -T postgres \
+  psql -U postgres -d duo_api -c "SELECT table_name FROM information_schema.tables WHERE table_name IN ('search_preference_age','search_preference_gender');"
+```
+
+Output: both tables present (`search_preference_age`, `search_preference_gender`).
+
+Column check (`\d search_preference_age`, `\d search_preference_gender`):
+
+```
+search_preference_age:    person_id (integer, PK, FK -> person.id), min_age (smallint), max_age (smallint)
+search_preference_gender: person_id (integer, part of PK), gender_id (smallint, part of PK, FK -> gender.id)
+```
+
+Reading: the brief's assumed column names (`person_id`, `gender_id`, `min_age`,
+`max_age`) match the real schema exactly. No adaptation was needed in
+`_Q_NEWCOMERS`; the queries in the brief were implemented verbatim. The
+activity tables the brief names (`liked(liker_id, liked_id, created_at)`,
+`skipped(subject_person_id, object_person_id, created_at)`,
+`messaged(subject_person_id, object_person_id, created_at)`,
+`ahavah_match(match_id, user_a_id, user_b_id, created_at)`,
+`photo(person_id, ...)`) and the relevant `person` columns (`activated`,
+`country`, `date_of_birth`, `deletion_requested_at`, `spotlight_opt_in`,
+`reinvite_sent_at`, `subscription_expires_at`, `gender_id`, `sign_up_time`,
+`email`, `name`) were also checked and match the brief exactly.

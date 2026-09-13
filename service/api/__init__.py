@@ -1205,3 +1205,4 @@ import service.api.admin.map_routes  # noqa: E402,F401
 import service.api.admin.moderation_routes as _admin_mod_routes  # noqa: E402,F401
 import service.api.admin.system_routes  # noqa: E402,F401
 import service.api.admin.audit_routes  # noqa: E402,F401
+import service.api.admin.growth_routes  # noqa: E402,F401
