@@ -21,7 +21,7 @@ import os
 from urllib.parse import quote
 
 
-_SCOPES = ("waitlist", "beta", "notifications", "claim")
+_SCOPES = ("waitlist", "beta", "notifications", "claim", "community")
 
 
 def _secret() -> bytes:
@@ -108,6 +108,15 @@ _Q_UNSUB = {
                email_likes = FALSE, email_verification = FALSE,
                email_profile_views = FALSE, updated_at = NOW()
         RETURNING person_id
+    """,
+    # E2 weekly community email: its own category, separate from
+    # `notifications`, so opting out of the weekly email does not silence
+    # match/like/message mail.
+    "community": """
+        UPDATE person
+           SET community_unsubscribed_at = COALESCE(community_unsubscribed_at, NOW())
+         WHERE lower(email) = %(email)s
+        RETURNING (community_unsubscribed_at = NOW()) AS just_now
     """,
 }
 

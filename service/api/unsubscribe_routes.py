@@ -53,7 +53,7 @@ def _confirmation_html(message: str) -> str:
 </html>"""
 
 
-def _do_unsubscribe(token: str) -> tuple[str, int, dict]:
+def _do_unsubscribe(token: str, *, stamp: bool) -> tuple[str, int, dict]:
     parsed = parse_token(token)
     if not parsed:
         return (_confirmation_html(
@@ -63,13 +63,14 @@ def _do_unsubscribe(token: str) -> tuple[str, int, dict]:
         ), 400, {"Content-Type": "text/html; charset=utf-8"})
 
     scope, email = parsed
-    with api_tx() as tx:
-        ok = stamp_unsubscribed(tx, scope, email)
+    if stamp:
+        with api_tx() as tx:
+            ok = stamp_unsubscribed(tx, scope, email)
 
-    if not ok:
-        # Recipient never had a row (or was deleted) — treat as success so
-        # we don't leak whether the email is in our DB. Same HTML.
-        pass
+        if not ok:
+            # Recipient never had a row (or was deleted) — treat as success so
+            # we don't leak whether the email is in our DB. Same HTML.
+            pass
     return (_confirmation_html(
         f"You've been removed from Ahavah's <strong>{scope}</strong> mail. "
         f"We won't send you any more. Final transactional messages (like a "
@@ -79,7 +80,13 @@ def _do_unsubscribe(token: str) -> tuple[str, int, dict]:
 
 @get('/u/<token>', limiter=unsub_limit)
 def get_unsubscribe(token: str):
-    body, status, headers = _do_unsubscribe(token)
+    # GET only renders the confirmation page -- it never stamps. Mail
+    # scanners (Outlook Safe Links, corporate proxies, link-preview bots)
+    # follow every GET link in an email automatically, so a GET that wrote
+    # to the database would silently unsubscribe people who never clicked
+    # anything. Only a human confirming (POST from this page) or the
+    # RFC 8058 one-click POST stamps the row.
+    body, status, headers = _do_unsubscribe(token, stamp=False)
     from flask import Response
     return Response(body, status=status, headers=headers)
 
@@ -88,6 +95,6 @@ def get_unsubscribe(token: str):
 def post_unsubscribe(token: str):
     # RFC 8058 one-click POST. Gmail/Yahoo's bulk-sender path issues this
     # automatically when the user hits the inbox-level Unsubscribe button.
-    body, status, headers = _do_unsubscribe(token)
+    body, status, headers = _do_unsubscribe(token, stamp=True)
     from flask import Response
     return Response(body, status=status, headers=headers)

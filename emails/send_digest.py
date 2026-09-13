@@ -1,5 +1,8 @@
 """Community digest to every activated member.
 
+Superseded by send_community_weekly on 2026-09-13; kept for one release,
+do not schedule.
+
 Stats come straight from the database at send time: activated member
 count (excluding the admin account), first names of members who joined
 in the last NEW_WINDOW_DAYS days, and the all-time match count. New
