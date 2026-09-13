@@ -15,5 +15,8 @@ def test_recipients_require_a_newcomer(make_person):
     with api_tx() as tx:
         tx.execute("INSERT INTO liked (liker_id, liked_id, created_at) VALUES (%(a)s, %(b)s, NOW() - interval '31 days')", dict(a=stale['id'], b=other['id']))
         tx.execute("INSERT INTO search_preference_gender (person_id, gender_id) SELECT %(p)s, id FROM gender WHERE name = 'Woman' ON CONFLICT DO NOTHING", dict(p=stale['id']))
-    ids = {r['person_id'] for r in recipients()}
+    rows = recipients()
+    ids = {r['person_id'] for r in rows}
     assert stale['id'] in ids            # `other` joined after the stale like (fixture sign_up_time is NOW())
+    row = next(r for r in rows if r['person_id'] == stale['id'])
+    assert row['total_new'] == len(row['newcomers'])

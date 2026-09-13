@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from database import api_tx
-from service.growth.queries import growth_stats, newcomers_since, dormant_cohort, last_action_at
+from service.growth.queries import growth_stats, newcomers_since, count_newcomers_since, dormant_cohort, last_action_at
 
 def _like(tx, liker, liked, days_ago):
     tx.execute("INSERT INTO liked (liker_id, liked_id, created_at) VALUES (%(a)s, %(b)s, NOW() - make_interval(days => %(d)s))",
@@ -101,6 +101,30 @@ def test_newcomers_respect_age_preference(make_person):
         rows = newcomers_since(tx, me['id'], since)
     names = [r['first_name'] for r in rows]
     assert 'InRange' in names and 'OutOfRange' not in names
+
+def test_count_matches_list_population_under_age_preference(make_person):
+    me = make_person(name='CountPrefMe', gender='Man')
+    in_range = make_person(name='InRangeCount', gender='Woman')
+    out_of_range = make_person(name='OutOfRangeCount', gender='Woman')
+    with api_tx() as tx:
+        _prefers(tx, me['id'], 'Woman')
+        tx.execute(
+            "INSERT INTO search_preference_age (person_id, min_age, max_age) VALUES (%(p)s, 25, 35)",
+            dict(p=me['id']),
+        )
+        tx.execute(
+            "UPDATE person SET date_of_birth = (CURRENT_DATE - interval '30 years')::date WHERE id = %(id)s",
+            dict(id=in_range['id']),
+        )
+        tx.execute(
+            "UPDATE person SET date_of_birth = (CURRENT_DATE - interval '45 years')::date WHERE id = %(id)s",
+            dict(id=out_of_range['id']),
+        )
+        since = datetime.now(timezone.utc) - timedelta(days=1)
+        count = count_newcomers_since(tx, me['id'], since)
+        rows = newcomers_since(tx, me['id'], since)
+    assert count == 1
+    assert len(rows) == 1
 
 def test_newcomers_since_boundary(make_person):
     me = make_person(name='SinceBoundaryMe', gender='Man')

@@ -116,10 +116,12 @@ _Q_DORMANT = f"""
 def dormant_cohort(tx, days: int = 30, resend_days: int = 30) -> list[dict]:
     return [dict(r) for r in tx.execute(_Q_DORMANT, dict(days=days, resend=resend_days, ex=_excluded())).fetchall()]
 
-_Q_NEWCOMERS = """
-    SELECT split_part(p.name, ' ', 1) AS first_name, p.country, p.sign_up_time AS joined_at
-      FROM person p
-     WHERE p.activated AND p.id <> %(pid)s
+def _newcomer_predicate_sql() -> str:
+    """The WHERE predicate for 'newcomers a member would want to see': shared
+    by the name-list query and the count query so the two can never drift
+    apart. Binds: %(pid)s, %(ex)s, %(since)s."""
+    return """
+       p.activated AND p.id <> %(pid)s
        AND lower(p.email) <> ALL(%(ex)s)
        AND p.sign_up_time > %(since)s
        AND p.gender_id IN (SELECT gender_id FROM search_preference_gender WHERE person_id = %(pid)s)
@@ -131,9 +133,22 @@ _Q_NEWCOMERS = """
               AND date_part('year', age(p.date_of_birth)) BETWEEN COALESCE(a.min_age, 18) AND COALESCE(a.max_age, 120)
          )
        )
+    """
+
+_Q_NEWCOMERS = f"""
+    SELECT split_part(p.name, ' ', 1) AS first_name, p.country, p.sign_up_time AS joined_at
+      FROM person p
+     WHERE {_newcomer_predicate_sql()}
      ORDER BY p.sign_up_time DESC
      LIMIT %(lim)s
 """
 
+_Q_COUNT_NEWCOMERS = f"""
+    SELECT count(*) AS n FROM person p WHERE {_newcomer_predicate_sql()}
+"""
+
 def newcomers_since(tx, person_id: int, since: datetime, limit: int = 5) -> list[dict]:
     return [dict(r) for r in tx.execute(_Q_NEWCOMERS, dict(pid=person_id, since=since, lim=limit, ex=_excluded())).fetchall()]
+
+def count_newcomers_since(tx, person_id: int, since: datetime) -> int:
+    return tx.execute(_Q_COUNT_NEWCOMERS, dict(pid=person_id, since=since, ex=_excluded())).fetchone()['n']
