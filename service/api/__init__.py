@@ -1188,6 +1188,9 @@ import service.api.referral_click_route  # noqa: E402,F401
 # One-click unsubscribe (2026-06-03) — token-backed /u/<token> for both GET
 # (recipient clicks footer link) and POST (Gmail/Yahoo RFC 8058 one-click).
 import service.api.unsubscribe_routes  # noqa: E402,F401
+# Campaign click links (2026-09-13) — GET /s/<key> counts a click and
+# redirects; used by campaign email CTAs (spec 3.4).
+import service.api.campaign_link_routes  # noqa: E402,F401
 # Sign-up existence probe (2026-06-06) — POST /account-check used by the
 # web's /auth/sign-up to short-circuit returning users into /auth/sign-in.
 import service.api.account_routes  # noqa: E402,F401
