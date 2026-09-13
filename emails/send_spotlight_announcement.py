@@ -10,6 +10,8 @@ from service.growth.queries import _excluded
 from service.spotlight import spotlight_confirm_url
 from service.unsubscribe import make_url as _unsub_url
 
+UNSUB_SCOPE = 'notifications'
+
 _Q_RECIPIENTS = """
     SELECT id AS person_id, email, name FROM person
      WHERE activated AND deletion_requested_at IS NULL AND lower(email) <> ALL(%(ex)s)
@@ -20,7 +22,7 @@ def build_for(row: dict) -> tuple[str, str]:
     return SUBJECT, spotlight_announcement_html(
         spotlight_confirm_url(row['email']),
         f"{WEB_BASE_URL}/settings/privacy",
-        _unsub_url('notifications', row['email'], WEB_BASE_URL))
+        _unsub_url(UNSUB_SCOPE, row['email'], WEB_BASE_URL))
 
 def recipients() -> list[dict]:
     with api_tx('read committed') as tx:
@@ -39,7 +41,7 @@ def main() -> None:
         print(f"preview sent to {a.preview}"); return
     cid = a.campaign_id or f"e1-{uuid.uuid4().hex[:8]}"
     print(run_campaign(api_tx, 'e1', cid, recipients(), build_for, send=a.send, from_addr=FROM_ADDR,
-                       list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url('notifications', e, WEB_BASE_URL)}>"))
+                       list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url(UNSUB_SCOPE, e, WEB_BASE_URL)}>"))
 
 if __name__ == '__main__':
     main()

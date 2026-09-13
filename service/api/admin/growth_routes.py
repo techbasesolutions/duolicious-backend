@@ -57,7 +57,7 @@ def post_admin_growth_email_send(s: t.SessionInfo, campaign: str):
     from service.config import WEB_BASE_URL
     res = run_campaign(api_tx, campaign, cid, mod.recipients(), mod.build_for, send=not dry,
                        from_addr=mod.FROM_ADDR,
-                       list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url('notifications', e, WEB_BASE_URL)}>",
+                       list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url(mod.UNSUB_SCOPE, e, WEB_BASE_URL)}>",
                        post_send=getattr(mod, 'post_send', None))
     with api_tx() as tx:
         record_audit(tx, s, 'growth.email.send', metadata=dict(campaign=campaign, campaign_id=cid, dry_run=dry, **res))

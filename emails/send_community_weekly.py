@@ -10,6 +10,8 @@ from service.config import WEB_BASE_URL
 from service.growth.queries import _excluded
 from service.unsubscribe import make_url as _unsub_url
 
+UNSUB_SCOPE = 'community'
+
 _Q_RECIPIENTS = """
     SELECT id AS person_id, email, name FROM person
      WHERE activated AND deletion_requested_at IS NULL AND community_unsubscribed_at IS NULL
@@ -42,7 +44,7 @@ def build_for(row: dict) -> tuple[str, str]:
     with api_tx() as tx:
         cta = make_campaign_link(tx, 'e2', f"{WEB_BASE_URL}/discover", row['person_id'] or None)
     return SUBJECT, community_weekly_html(_CTX['new_members'], _CTX['total'], _CTX['spotlight'], cta,
-                                          _unsub_url('community', row['email'], WEB_BASE_URL))
+                                          _unsub_url(UNSUB_SCOPE, row['email'], WEB_BASE_URL))
 
 def preview_row(to: str) -> dict:
     return dict(person_id=0, email=to, name='Preview')
@@ -53,7 +55,7 @@ def main() -> None:
     a = ap.parse_args()
     cid = a.campaign_id or f"e2-{uuid.uuid4().hex[:8]}"
     print(run_campaign(api_tx, 'e2', cid, recipients(), build_for, send=a.send, from_addr=FROM_ADDR,
-                       list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url('community', e, WEB_BASE_URL)}>"))
+                       list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url(UNSUB_SCOPE, e, WEB_BASE_URL)}>"))
 
 if __name__ == '__main__':
     main()

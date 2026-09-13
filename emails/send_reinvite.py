@@ -10,6 +10,8 @@ from service.config import WEB_BASE_URL
 from service.growth.queries import dormant_cohort, newcomers_since, count_newcomers_since
 from service.unsubscribe import make_url as _unsub_url
 
+UNSUB_SCOPE = 'notifications'
+
 def recipients() -> list[dict]:
     out = []
     with api_tx('read committed') as tx:
@@ -26,7 +28,7 @@ def build_for(row: dict) -> tuple[str, str]:
         cta = make_campaign_link(tx, 'e3', f"{WEB_BASE_URL}/discover", row['person_id'] or None)
     first = (row.get('name') or 'there').split(' ')[0]
     return SUBJECT, reinvite_html(first, row.get('newcomers', []), row.get('total_new', 0), cta,
-                                  _unsub_url('notifications', row['email'], WEB_BASE_URL))
+                                  _unsub_url(UNSUB_SCOPE, row['email'], WEB_BASE_URL))
 
 def preview_row(to: str) -> dict:
     return dict(person_id=0, email=to, name='Preview', newcomers=[dict(first_name='Rivka', country='GB')], total_new=1)
@@ -40,7 +42,7 @@ def main() -> None:
     a = ap.parse_args()
     cid = a.campaign_id or f"e3-{uuid.uuid4().hex[:8]}"
     print(run_campaign(api_tx, 'e3', cid, recipients(), build_for, send=a.send, from_addr=FROM_ADDR,
-                       list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url('notifications', e, WEB_BASE_URL)}>",
+                       list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url(UNSUB_SCOPE, e, WEB_BASE_URL)}>",
                        post_send=post_send))
 
 if __name__ == '__main__':
