@@ -1548,6 +1548,8 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
 
     base64_audio_file = None
 
+    spotlight_opt_in_value = None
+
     if field_name == 'base64_file':
         base64_file = t.Base64File(**field_value)
 
@@ -1961,6 +1963,12 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
                CASE WHEN %(field_value)s = 'Yes' THEN TRUE ELSE FALSE END)
          WHERE id = %(person_id)s
         """
+    elif field_name == 'spotlight_opt_in':
+        # Community Spotlight consent (spec 3.1). Delegate to
+        # service.spotlight so this PATCH and the Phase B opt-out
+        # cancellation hook share one code path. Applied against the same
+        # `tx` as q1/q2 below, in the shared retry loop.
+        spotlight_opt_in_value = bool(field_value)
     elif field_name == 'smoking':
         q1 = """
         UPDATE person SET smoking_id = yes_no_optional.id
@@ -2151,6 +2159,9 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
             with api_tx() as tx:
                 if q1: tx.execute(q1, params)
                 if q2: tx.execute(q2, params)
+                if spotlight_opt_in_value is not None:
+                    from service.spotlight import set_spotlight_opt_in
+                    set_spotlight_opt_in(tx, s.person_id, spotlight_opt_in_value)
             break
         except psycopg.errors.SerializationFailure:
             if _attempt == 2:

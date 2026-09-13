@@ -711,6 +711,10 @@ class PatchProfileInfo(BaseModel):
     # just persists whatever shape the client sends, merged into the
     # existing ahavah_extra JSONB on the person row.
     ahavah_extra: Optional[Dict[str, Any]] = None
+    # Community Spotlight consent (spec 3.1). Delegates to
+    # service.spotlight.set_spotlight_opt_in via the dedicated branch in
+    # patch_profile_info, which also stamps spotlight_opt_in_at on True.
+    spotlight_opt_in: Optional[bool] = None
     name: Optional[str] = Field(
         default=None,
         min_length=MIN_NAME_LEN,

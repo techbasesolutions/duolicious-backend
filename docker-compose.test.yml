@@ -54,6 +54,11 @@ services:
 
       DUO_CORS_ORIGINS: '*'
 
+      # HMAC key for service.unsubscribe / service.spotlight signed links
+      # (fails closed when unset). Test-only value, never used outside
+      # this compose file.
+      SESSION_TOKEN_SECRET: test-only-session-token-secret-do-not-use-in-prod
+
       DUO_R2_BUCKET_NAME: s3-mock-bucket
       DUO_R2_AUDIO_BUCKET_NAME: s3-mock-audio-bucket
       DUO_R2_ACCT_ID: unused-in-dev-env

@@ -2149,6 +2149,15 @@ SELECT
         'languages_spoken',       (SELECT j FROM languages_spoken_),
         'primary_language',       (SELECT j FROM primary_language_),
         'ahavah_extra',           (SELECT j FROM ahavah_extra),
+        -- Community Spotlight consent (spec 3.1, migration 0039). A new
+        -- top-level pair rather than merging into ahavah_extra: the
+        -- 50-pair cap on this json_build_object has ample headroom (41
+        -- pairs before this addition) and a real boolean column deserves
+        -- its own key, unlike `country` which was merged into
+        -- ahavah_extra specifically to backfill a pre-existing JSONB
+        -- field the frontend already read from there (commit 98a6360).
+        'spotlight_opt_in',
+            (SELECT spotlight_opt_in FROM person WHERE id = %(person_id)s),
         'about',                  (SELECT j FROM about),
         'gender',                 (SELECT j FROM gender),
         'orientation',            (SELECT j FROM orientation),
