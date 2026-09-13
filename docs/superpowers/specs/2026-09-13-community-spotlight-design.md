@@ -1,0 +1,139 @@
+# Ahavah Community Spotlight: design
+
+Date: 2026-09-13. Status: approved direction, two review passes folded in. Owner decisions (2026-09-13): Ahavah's own stack, repurposing admin.ahavah.app; opt-in delivered as an email to every member and grown into a full feature (new members, member of the week, member highlights); the announcement email also carries new members; social posts alongside; dormancy at 30 days; first names allowed.
+
+## 1. Purpose
+
+Turn member growth into visible community life on three channels: the Ahavah Facebook Page and Instagram, the members' inbox, and admin.ahavah.app. Outcomes:
+
+1. New members are welcomed publicly and inside the community.
+2. Members who consent are featured (member of the week, highlights) and share their own card, which is the main reach channel.
+3. Members who have gone quiet are re-invited with the specific reason to return: new profiles that match what they said they were looking for.
+4. Every send and post, and its clicks and resulting sign-ups, is visible in one Growth tab.
+
+Success within 30 days of launch: at least half of active members opted in, one spotlight post per week published with no step beyond approval, all three emails sending from the admin app with no shell access, clicks and sign-ups attributed per post and per email.
+
+## 2. Constraints that shape the design
+
+- Meta removed the Groups API on 22 April 2024. Automation can publish to the Page (`1100237303180442`) and Instagram business account (Graph id `17841447302854202`) only. Group posting stays a manual share of the Page post; the Growth tab gives a "copy caption and open post" action for it.
+- Members grant Ahavah no licence to republish their photos today, and the privacy page says nothing about members appearing publicly. Both the terms and the privacy page get a Spotlight section before launch. A member's photo and name appear on social only after that member opts in and approves the specific card. Inside members-only email, first names of new members are already sent by the digest, so names are allowed there.
+- The proven engine is the President dashboard's publishing queue (`barbados-president/server/publishing.js`, migration `0013_publishing_queue.sql`, per-minute cron, `tests/dashboard.test.mjs`). It ports in spirit: server-side scheduling, idempotent request keys, atomic claim, lost confirmations parked for review and never auto-retried, tokens only in Bearer headers.
+- Ahavah's data lives in Postgres on the droplet behind `ahavah-api`; the admin app is Next.js on Vercel and talks only to the API. Vercel cannot run Chrome; the API container has no browser. Card rendering uses `next/og` (satori) in the admin app with embedded fonts.
+- Email links are followed by mail scanners before the member opens the mail. No link may change state on GET. Every action link lands on a page with a button that submits a POST. The existing unsubscribe link was audited in Phase A: it stamped on GET (fixed to POST with a form) and its emailed address `ahavah.app/u/<token>` returned 404 because the web app had no route (fixed with a forwarder to the API).
+- The upstream dormancy cron deactivates members idle 30 to 50 days by `last_online_time`, which background activity refreshes. Real dormancy is measured by actions instead (last like, pass or message).
+- Copy rules: no em dashes, sentence case, canonical email shell with Ultra title images. Emails and captions are English only in this version; localisation is a later decision.
+
+## 3. Feature shape
+
+Member-facing name: **Spotlight**. Admin-facing name: **Growth** tab.
+
+### 3.1 Consent, approval and preferences
+
+- New columns on `person`: `spotlight_opt_in boolean not null default false`, `spotlight_opt_in_at timestamptz`, `spotlight_last_featured_at timestamptz`, `reinvite_sent_at timestamptz`.
+- Opt in or out through a switch in `/settings/privacy` ("Feature me in Spotlight"), through the announcement email (signed link to a confirmation page with a POST button, 30-day expiry, idempotent), or through the admin drawer (audited). Opt-out cancels queued rows for that member in the same transaction and deletes their rendered cards from storage.
+- Per-card approval: before any card with a member's photo is scheduled, the member receives "your Spotlight card is ready" with a preview and two POST actions, approve or skip, and a photo picker among their own photos. Nothing with a photo publishes without that approval. Approval expires after 7 days and the row is cancelled.
+- Opt-in text states exactly what is shared: first name, age, country, one photo they choose, on the Ahavah Page and Instagram and in the members' weekly email, and that they approve each card.
+
+### 3.2 Eligibility
+
+A member can be featured only if all hold: opted in, card approved, photo-verified (Bronze or higher), 18 or older (verified at onboarding, checked again here), no open report against them, no moderation action, no pending deletion, not featured in the last 30 days, and the chosen photo still exists at claim time.
+
+### 3.3 Spotlight kinds
+
+| Kind | Audience | Source | Photo and name | Cadence |
+| --- | --- | --- | --- | --- |
+| New member welcome | Page, Instagram, weekly email | Member finished onboarding, opted in, approved | Yes | Created when the member approves, batched daily |
+| New members roundup | Page, Instagram, weekly email | Members who joined in the last 7 days | Social: collage of opted-in and approved newcomers with first names; others as a count by country. Email: first names for all | Weekly, Monday |
+| Member of the week | Page, Instagram, weekly email | Admin confirms a pick; default suggestion is the eligible member least recently featured, alternating gender week to week | Yes | Weekly |
+| Member highlight | Page, Instagram | Admin composes for an eligible member | Yes | Ad hoc |
+
+Card content: photo, first name, age, country, one line of caption. No bio, intent, assembly, or location finer than country.
+
+### 3.4 Growth loop and measurement
+
+- When a member's card is published, they receive "your Spotlight is live" with the post link and a share button. Member sharing to their own feeds is the primary reach channel; the Page is secondary.
+- Every social caption and every email CTA carries a short campaign link `/s/<key>` that counts clicks and stamps a `spotlight_ref` on any sign-up that follows within 7 days, reusing the referral click pattern. The Growth tab shows clicks and sign-ups per post and per email.
+- Posting times default to the audiences the ad data showed (West Africa, the Caribbean, Latin America): 12:00 and 18:00 UTC, adjustable per row.
+
+### 3.5 Emails (canonical shell)
+
+| Email | Who | When | Body |
+| --- | --- | --- | --- |
+| E1 Spotlight announcement | Every activated member not on the suppression list and not unsubscribed from the notifications scope, once | Launch, sent from the Growth tab | What Spotlight is, what is shared, opt-in button to the confirmation page, link to the settings switch, a line that nothing changes for those who do not opt in |
+| E2 Weekly community email | Every activated, unsuppressed member not opted out of the community category | Weekly, Monday, admin-triggered with preview; cron after two clean weeks | Member of the week, new members this week by first name and country, community size, one CTA into Discover. Replaces the digest module |
+| E3 Re-invite | Activated members not unsubscribed from the notifications scope, with no like, pass or message in 30 days, not sent this email in 30 days, with at least one new member since their last action who matches the member's own filters (age, country, intent), falling back to gender only when the filtered set is empty | Admin-triggered with preview; optional weekly cron | "N new members joined since you were here", up to five first names with countries, one CTA into Discover |
+| E4 Card ready | Opted-in member with a candidate card | On candidate creation | Preview, photo picker, approve or skip (POST) |
+| E5 Card live | Featured member | On publish | Post link, share button |
+
+Rules across all campaign emails: a central `email_send_log` (person, campaign, sent_at, message id) enforces at most one campaign email per member per 7 days (the weekly email uses a 6-day window so a weekly cadence never skips itself), exempting E4 and E5 which the member triggered; the runner also skips any member unsubscribed from the campaign's scope, and gives the System tab the send visibility it has lacked. Each send carries a campaign id checked server-side so a double click cannot send twice. The weekly email is its own unsubscribe category so leaving it does not silence match notifications. Titles get new Ultra image pairs through the design brief. E3 runs inside the 30-day window before the upstream deactivation cron could act.
+
+### 3.6 Publishing engine (port of the President worker)
+
+- Table `publishing_queue` in `duo_api` (migration 0039): id, request_key, kind, subject_person_id (nullable), platform (`facebook` or `instagram`), caption, image_url, image_key, scheduled_for, status (`scheduled`, `processing`, `published`, `failed`, `review`, `awaiting_member`, `cancelled`), lease_until, attempts, external_post_id, error, created_by, created_at, updated_at. Unique on (request_key, platform).
+- Claim: SQL function `claim_spotlight_posts(limit)` using `for update skip locked`.
+- Worker: Vercel cron in `ahavah-admin`, `/api/growth/publish-due`, every minute, Bearer `CRON_SECRET`, gated by `AHAVAH_SOCIAL_SCHEDULER_ENABLED=true`. It asks the API to claim rows, re-checks eligibility, publishes through Graph (Page `/photos` with `url` and `message`; Instagram `/media`, poll, `/media_publish`), then reports `published`, `failed` or `review`. Env in Vercel: `AHAVAH_META_PAGE_TOKEN`, `AHAVAH_FB_PAGE_ID`, `AHAVAH_IG_USER_ID`, `META_GRAPH_VERSION`. If the API is unreachable the tick exits cleanly and the next tick retries.
+- Admin-gated API endpoints: list queue, create, claim, complete, cancel, purge, plus a health endpoint proxying `debug_token` so the Growth tab warns 14 days before the token expires.
+- Review mode is the default. A per-kind auto flag lets welcomes and roundups skip admin review once trusted; member approval is never skipped.
+- Kill switch: `AHAVAH_SOCIAL_SCHEDULER_ENABLED=false` stops the worker and the daily tick; the purge endpoint cancels every non-published row. Both are one action in the Growth tab.
+- Removal: on opt-out or deletion, Page posts are deleted through the API and the stored card is removed. Instagram media cannot be deleted through the API; the Growth tab lists it as a manual task until an admin marks it done. Rendered cards are deleted from storage 90 days after publish.
+
+### 3.7 Card rendering
+
+- One Claude Design template, square 1080x1080 only, with three variants: photo card, roundup collage, member of the week. Brand tokens, Ultra display, Plus Jakarta Sans. Fonts embedded with coverage for Hebrew and Latin with diacritics; a render test uses real member names.
+- Rendered in `ahavah-admin` with `next/og` `ImageResponse` from a JSX transcription of the template. Route `/api/growth/render` (admin session or cron bearer) returns PNG.
+- PNGs go to the existing DigitalOcean Spaces bucket under `spotlight/<request_key>-<platform>.png`; the public URL is stored on the row. Keys are unique per render so CDN caching cannot serve a stale card.
+- A card is rendered only for an eligible member, enforced in the API candidate query and again in the render route. Cards render at member approval; the worker re-checks the photo at claim and cancels if it is gone.
+
+### 3.8 Growth tab (admin.ahavah.app)
+
+1. Stats: members by gender, joined 7 and 30 days, acted in 14 days, stale 30 days, never acted, matches, likes 7 days, messages 7 and 30 days, opted in, approved cards waiting. One endpoint `/admin/growth/stats`, excluding `admin@ahavah.app` and a configured test-account list, is the single source the emails also read.
+2. Spotlight queue: thumbnail, kind, member, platform, scheduled time, status, clicks and sign-ups; actions approve, post now, reschedule, cancel, copy caption and open post (for the manual group share); token health chip; manual-task list for Instagram removals.
+3. Member of the week: suggested member with reason, alternatives from the eligible pool, caption editor, schedule.
+4. Emails: five rows with recipient count, last sent, preview, dry run, send, campaign id shown. Sends are audited in `admin_audit_log`.
+5. Controls: scheduler on or off, purge queue, per-kind auto flags.
+
+Desktop primary, read-only on mobile, consistent with the admin spec of 2026-06-06.
+
+## 4. Data flow
+
+1. Member opts in (settings, confirmation page, or admin) -> API sets columns. If they joined in the last 14 days and have a photo, a candidate card is created and E4 is sent.
+2. Member approves on the E4 page -> row moves from `awaiting_member` to `review` with the rendered image (the approval page calls the admin render route through the API).
+3. A daily Vercel cron in the admin app, `/api/growth/tick`, asks the API for candidates: approved welcomes, the Monday roundup (rendering only approved newcomers with photos), and expired approvals to cancel. Member of the week is created when the admin confirms a pick and the member approves.
+4. Admin approves -> `scheduled` -> the per-minute worker claims, re-checks eligibility and the photo, publishes, records external ids -> E5 to the member.
+5. Weekly email reads the stats endpoint and the published spotlight of the week, sends through the canonical shell, logs each send.
+6. Re-invite reads the dormancy cohort, applies each member's filters, sends, stamps `reinvite_sent_at`, logs each send.
+
+## 5. Error handling
+
+- Graph errors: transient -> `failed` with error text, retried next tick up to 3 attempts; lost confirmation after a 2xx -> `review`, never retried. Token invalid -> all rows `review`, health chip red, alert email to the admin copy address through SES (the same path the member notes use).
+- Render failure -> row stays in its current state with the error; nothing publishes without an image.
+- Opt-out or deletion races: cancellation runs in the opt-out transaction; the worker re-checks eligibility before publishing.
+- Email sends are idempotent per member per campaign through `email_send_log`; a crash mid-send resumes without double sends.
+
+## 6. Testing
+
+- API (pytest, disposable stack): migration applies under ON_ERROR_STOP; opt-in endpoints; signed links reject expiry and replay and never act on GET; candidate and eligibility queries never return ineligible members (seeded cases for each exclusion); dormancy cohort with filter fallback (seeded edge cases: acted exactly 30 days ago, resent within 30 days, no filtered newcomers); frequency cap and campaign idempotency; email templates locked like `test_member_note.py`.
+- Admin (node:test): port of the President publishing tests with mocked fetch: idempotency, Instagram poll, lost confirmation to review, opt-out cancellation, dry run makes no Graph call, API unreachable exits cleanly.
+- Render: `ImageResponse` output compared at 1080 against the Claude Design frames for all three variants, plus a run with real member names including non-Latin scripts.
+- Browser: Playwright against the local admin build at 1440 and 390 with fixture API responses; one read-only real-session check on admin.ahavah.app.
+- Live: Graph dry run with `?dry=1`, then one real post approved by the owner and the featured member.
+
+## 7. Out of scope
+
+Facebook group automation (not possible), automatic caption writing by an LLM, comments or DM handling, Instagram stories and reels, ads, member-supplied quotes, localisation, any change to Discover ranking.
+
+## 8. Pre-flight (must clear before W3 onward)
+
+1. Meta app and permissions: confirm the app behind the Chapman token can be granted the Ahavah Page and Instagram account with `pages_manage_posts` and `instagram_content_publish`, or register and review a new app. Blocking for the posting side.
+2. Vercel plan on the ahavah-admin project supports a per-minute cron.
+3. Grant the admin role to the owner's own account (audited).
+4. List and reconcile any email waves still scheduled on the droplet so no member receives the digest and the weekly email in the same week.
+5. Terms and privacy page sections for Spotlight drafted and published with the announcement.
+
+## 9. Rollout
+
+1. W0: nudge removal, migrations, send log, stats endpoint (nothing member-visible).
+2. Design round-trip: card template, five email title images, Growth tab screens, confirmation and approval pages.
+3. Growth tab stats and emails panel; opt-in surfaces; E1 on owner go.
+4. Queue, worker, render, E4 and E5; posting in review mode.
+5. First member of the week and weekly email; auto mode for welcomes and roundups after two clean weeks.

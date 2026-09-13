@@ -195,3 +195,11 @@ tests, layered on the webhook replay-safety suite that already exists).
 Commit, push, deploy, install dependencies, run migrations, change infra,
 mint sessions against prod, or mutate any production data. W0 baseline runs
 are read-only against the disposable test stack.
+
+## Status as of 2026-09-13 (housekeeping pass)
+
+- W0 baseline + W1/F03: shipped `25ee959` (both DB wrappers propagate commit failures; 3 tests).
+- W8/P01: shipped in ahavah-web `ffd19c5` (landing hero), `1863f74` + `5acc600` + `fc5dbb4` + `a8c263f` (next-action card). Real-account prod check exposed a client read-mapping gap: `country` only readable from `ahavah_extra`; fixed server-side in `98a6360` (`Q_GET_PROFILE_INFO` merges the column). `intent` has no server recovery (one-to-many from `looking_for`); currently harmless.
+- W2 to W6 plus N1 to N3: delivered 2026-09-09 in `2361e35` (api), ahavah-web `5615407`, ahavah-admin `0f25e31`. Authoritative record: `docs/2026-09-09-review-remediation.md`. Migration ledger `ahavah_schema_migration` is live on prod and level with the repo (38/38).
+- Still open: W7 (bearer-in-localStorage to cookie plus WebSocket ticket plus CSP tightening); P02 to P05 briefs; the owner decisions in the section above (map default, cache retention, telemetry policy, expiry semantics, admin roles); intent recovery UX.
+- Verification limits: browser checks were fixture-based plus the owner account on prod; member cohort verified by read-only DB queries, not by capturing members' private surfaces.
