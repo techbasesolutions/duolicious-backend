@@ -1191,6 +1191,9 @@ import service.api.unsubscribe_routes  # noqa: E402,F401
 # Community Spotlight consent confirm link (2026-09-13) — signed
 # unauthenticated GET/POST /spotlight/confirm/<token> (spec 3.1).
 import service.api.spotlight_routes  # noqa: E402,F401
+# Community Spotlight card approval (2026-09-13) — signed unauthenticated
+# GET/POST /spotlight/card/<token>; E4/E5 (spec 3.1, 3.4, 3.5).
+import service.api.spotlight_card_routes  # noqa: E402,F401
 # Campaign click links (2026-09-13) — GET /s/<key> counts a click and
 # redirects; used by campaign email CTAs (spec 3.4).
 import service.api.campaign_link_routes  # noqa: E402,F401
