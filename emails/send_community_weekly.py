@@ -43,12 +43,35 @@ _Q_RECIPIENT_COUNT = f"""
        AND NOT ({unsubscribed_predicate_sql(UNSUB_SCOPE, 'p.id')})
        AND NOT ({suppressed_predicate_sql('p.email')})
 """
+# The most recently published member_of_week facebook row, within the last 7
+# days. Facebook only (not instagram): the two platform rows share the same
+# subject and caption, and the curated post the email links out to is the
+# facebook one (post_url below).
+_Q_SPOTLIGHT = """
+    SELECT split_part(p.name, ' ', 1) AS first_name,
+           date_part('year', age(p.date_of_birth))::int AS age,
+           p.country,
+           q.image_url,
+           q.external_post_id
+      FROM publishing_queue q
+      JOIN person p ON p.id = q.subject_person_id
+     WHERE q.kind = 'member_of_week' AND q.platform = 'facebook' AND q.status = 'published'
+       AND q.updated_at > NOW() - interval '7 days'
+     ORDER BY q.updated_at DESC
+     LIMIT 1
+"""
+
+def _spotlight_from_row(row) -> dict:
+    return dict(first_name=row['first_name'], age=row['age'], country=row['country'],
+                image_url=row['image_url'],
+                post_url=f"https://www.facebook.com/{row['external_post_id']}")
 
 def _week_context() -> dict:
     with api_tx('read committed') as tx:
+        spotlight_row = tx.execute(_Q_SPOTLIGHT).fetchone()
         return dict(new_members=[dict(r) for r in tx.execute(_Q_NEW, dict(ex=_excluded())).fetchall()],
                     total=int(tx.execute(_Q_TOTAL, dict(ex=_excluded())).fetchone()['n']),
-                    spotlight=None)   # Phase B fills this from the published queue
+                    spotlight=_spotlight_from_row(spotlight_row) if spotlight_row else None)
 
 def recipients() -> list[dict]:
     """Each row carries the week context this run renders. It is computed

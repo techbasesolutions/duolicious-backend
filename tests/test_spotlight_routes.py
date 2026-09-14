@@ -14,7 +14,7 @@ import pytest
 
 from database import api_tx
 from service.spotlight import set_spotlight_opt_in
-from service.spotlight.queue import create_candidate, attach_image, set_status, set_setting
+from service.spotlight.queue import create_candidate, attach_image, set_status, set_setting, set_member_approval
 
 
 def _session_for(p, signed_in: bool = True) -> str:
@@ -320,3 +320,27 @@ def test_suggest_orders_never_featured_first(client, make_person):
     s = client.get('/admin/growth/spotlight/suggest', headers={'Authorization': f'Bearer {tok}'}).get_json()
     ids = [x['person_id'] for x in s]
     assert a['id'] in ids and (b['id'] not in ids or ids.index(a['id']) < ids.index(b['id']))
+
+
+def test_roundup_route_stores_and_serves_tile_payload(client, make_person):
+    """POST /spotlight/roundup (Task 11) computes and stores the tile
+    snapshot as `payload` on both platform rows; GET /queue merges it back
+    into `tiles`/`count`/`countries` on the roundup rows only -- a welcome
+    row from the same request run must not carry those keys."""
+    a = _make_eligible(make_person, name='RoundupTile', gender='Woman')
+    with api_tx() as tx:
+        rk_w = create_candidate(tx, kind='welcome', subject_person_id=a['id'], caption='c', created_by='t')
+        photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=a['id'])).fetchone()['u']
+        set_member_approval(tx, rk_w, photo)
+    H = {'X-Growth-Cron': 'test-cron-secret'}
+    r = client.post('/admin/growth/spotlight/roundup', json={}, headers=H)
+    assert r.status_code == 200
+    rk = r.get_json()['request_key']
+    rows = client.get('/admin/growth/queue', headers=H).get_json()
+    roundup_rows = [x for x in rows if x['request_key'] == rk]
+    assert len(roundup_rows) == 2
+    for row in roundup_rows:
+        assert 'tiles' in row and 'count' in row and 'countries' in row
+        assert any(t['person_id'] == a['id'] for t in row['tiles'])
+    welcome_row = next(x for x in rows if x['request_key'] == rk_w)
+    assert 'tiles' not in welcome_row and 'count' not in welcome_row and 'countries' not in welcome_row

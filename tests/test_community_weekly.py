@@ -1,4 +1,6 @@
+from database import api_tx
 from emails.community_weekly import community_weekly_html, SUBJECT
+from emails.send_community_weekly import _week_context
 
 def test_weekly_without_spotlight_lists_newcomers():
     html = community_weekly_html([dict(first_name='Rivka', country='GB'), dict(first_name='Dan', country='US')], 27, None,
@@ -85,3 +87,48 @@ def test_invalid_spotlight_post_url_also_falls_back(capsys):
     assert 'Member of the week' not in html
     assert '27 members' in html
     assert 'spotlight' in capsys.readouterr().out.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 11: _week_context() fills `spotlight` from the most recent published
+# member_of_week facebook row within the last 7 days. The test db persists
+# between runs, so the success case stamps updated_at strictly ahead of
+# real time (NOW() + 1 hour) to guarantee it outranks any leftover row from
+# an earlier run of this same test without depending on run order.
+# ---------------------------------------------------------------------------
+
+def test_week_context_spotlight_from_published_member_of_week(make_person):
+    p = make_person(name='Sarah Cohen')
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET date_of_birth = '1995-01-01', country = 'US' WHERE id = %(id)s",
+                   dict(id=p['id']))
+        tx.execute(
+            """INSERT INTO publishing_queue
+                   (request_key, kind, subject_person_id, platform, caption, status,
+                    image_url, external_post_id, updated_at)
+               VALUES (%(rk)s, 'member_of_week', %(pid)s, 'facebook', 'c', 'published',
+                       'https://cdn/x.png', '9', NOW() + interval '1 hour')""",
+            dict(rk=f'wk-fresh-{p["id"]}', pid=p['id']))
+    spotlight = _week_context()['spotlight']
+    assert spotlight is not None
+    assert spotlight['first_name'] == 'Sarah'
+    assert spotlight['country'] == 'US'
+    assert spotlight['image_url'] == 'https://cdn/x.png'
+    assert spotlight['post_url'] == 'https://www.facebook.com/9'
+
+
+def test_week_context_spotlight_none_when_row_older_than_7_days(make_person):
+    p = make_person(name='StaleSpot')
+    with api_tx() as tx:
+        tx.execute(
+            """INSERT INTO publishing_queue
+                   (request_key, kind, subject_person_id, platform, caption, status,
+                    image_url, external_post_id, updated_at)
+               VALUES (%(rk)s, 'member_of_week', %(pid)s, 'facebook', 'c', 'published',
+                       'https://cdn/stale.png', '1', NOW() - interval '8 days')""",
+            dict(rk=f'wk-stale-{p["id"]}', pid=p['id']))
+    spotlight = _week_context()['spotlight']
+    # Not necessarily None outright (a fresher row from the test above may
+    # still be within its own 7-day window), but this member's stale row
+    # must never be the one surfaced.
+    assert spotlight is None or spotlight['post_url'] != 'https://www.facebook.com/1'

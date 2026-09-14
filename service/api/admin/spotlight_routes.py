@@ -24,6 +24,7 @@ sends all happen strictly outside the handler's own transaction.
 from __future__ import annotations
 
 import base64
+import json
 import uuid as uuid_mod
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -42,11 +43,10 @@ from service.spotlight.eligibility import eligibility, primary_photo_uuid, photo
 from service.spotlight.queue import (create_candidate, expire_member_approvals, attach_image,
                                      set_status, settings, set_setting, stamp_featured,
                                      reap_expired_leases, PLATFORMS)
+from service.spotlight.roundup import roundup_snapshot
 from service.spotlight.storage import _bucket, delete_images
 
 _PNG_SIG = b'\x89PNG\r\n\x1a\n'
-
-_ROUNDUP_CAPTION = 'New this week on Ahavah.'
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +217,7 @@ _Q_ROWS = """
            q.error,
            q.member_approved_at,
            q.subject_person_id,
+           q.payload,
            split_part(p.name, ' ', 1) AS first_name,
            date_part('year', age(p.date_of_birth))::int AS age,
            COALESCE(p.country, p.location_short_friendly) AS country,
@@ -315,7 +316,7 @@ def _queue_row(r) -> dict:
             country=r['country'],
             photo_url=photo_url(r['photo_uuid']) if r['photo_uuid'] else None,
         )
-    return dict(
+    row = dict(
         id=r['id'],
         request_key=r['request_key'],
         kind=r['kind'],
@@ -332,6 +333,14 @@ def _queue_row(r) -> dict:
         clicks=r['clicks'],
         signups=r['signups'],
     )
+    # Only kind 'roundup' rows carry a payload snapshot (stamped at creation
+    # by post_growth_spotlight_roundup); every other kind leaves these keys
+    # out entirely rather than shipping them as null.
+    if r['kind'] == 'roundup' and r['payload']:
+        row['tiles'] = r['payload'].get('tiles', [])
+        row['count'] = r['payload'].get('count')
+        row['countries'] = r['payload'].get('countries')
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -536,9 +545,15 @@ def post_growth_spotlight_welcome():
 def post_growth_spotlight_roundup():
     s = _gate()
     with api_tx() as tx:
+        snapshot = roundup_snapshot(tx)
+        caption = _roundup_caption(snapshot['count'], snapshot['countries'])
         rk = create_candidate(tx, kind='roundup', subject_person_id=None,
-                              caption=_ROUNDUP_CAPTION, created_by=_actor(s))
-        _audit(tx, s, 'growth.queue.roundup', request_key=rk)
+                              caption=caption, created_by=_actor(s))
+        tx.execute(
+            "UPDATE publishing_queue SET payload = %(p)s::jsonb WHERE request_key = %(rk)s",
+            dict(p=json.dumps(snapshot), rk=rk))
+        _audit(tx, s, 'growth.queue.roundup', request_key=rk,
+               tiles=len(snapshot['tiles']), count=snapshot['count'])
     return dict(request_key=rk)
 
 
@@ -814,6 +829,12 @@ def get_growth_token_health(s: t.SessionInfo):
 # ---------------------------------------------------------------------------
 # Default captions (sentence case, no em dashes)
 # ---------------------------------------------------------------------------
+
+def _roundup_caption(count: int, countries: int) -> str:
+    if count > 0:
+        return f'New this week on Ahavah. {count} joined from {countries} countries.'
+    return 'New this week on Ahavah.'
+
 
 def _welcome_caption(first_name: str, country: Optional[str]) -> str:
     if country:
