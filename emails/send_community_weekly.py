@@ -64,6 +64,7 @@ _Q_SPOTLIGHT = """
      WHERE q.kind = 'member_of_week' AND q.platform = 'facebook' AND q.status = 'published'
        AND q.updated_at > NOW() - interval '7 days'
        AND p.spotlight_opt_in
+       AND p.activated AND p.deletion_requested_at IS NULL
        AND q.external_post_id IS NOT NULL
        AND NOT EXISTS (SELECT 1 FROM spotlight_removal_task t WHERE t.queue_id = q.id)
      ORDER BY q.updated_at DESC

@@ -128,9 +128,12 @@ def test_cancel_for_member_creates_removal_tasks(make_person):
 
 
 def test_cancel_for_member_deletes_stored_images(make_person, monkeypatch):
-    import service.spotlight.queue as q
+    # The actual deletion now happens inside withdraw_member
+    # (service/spotlight/withdrawal.py), which cancel_for_member wraps
+    # (Wave 1 F03) -- patch delete_images where it is actually called.
+    import service.spotlight.withdrawal as w
     deleted = []
-    monkeypatch.setattr(q, 'delete_images', lambda keys: deleted.extend(keys) or len(keys))
+    monkeypatch.setattr(w, 'delete_images', lambda keys: deleted.extend(keys) or len(keys))
     p = _make_eligible(make_person)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')

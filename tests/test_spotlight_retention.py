@@ -46,3 +46,16 @@ def test_delete_images_batches_at_the_api_limit(monkeypatch):
     monkeypatch.setattr(st, '_bucket', lambda: _B())
     assert st.delete_images([f'k{i}' for i in range(2500)]) == 2500
     assert batches == [1000, 1000, 500]
+
+
+def test_delete_images_is_a_noop_when_unconfigured(monkeypatch):
+    """A withdrawal, cancellation or retention sweep must never hang (or even
+    dial out) against an object store that has blank credentials/bucket (an
+    environment not yet given real Spaces/R2 settings) or an endpoint that
+    simply is not running (a test container without its mock). `_bucket` is
+    made to raise if it is ever called, to prove the no-op skips the network
+    entirely rather than merely tolerating a failure from it."""
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, '_configured', lambda: False)
+    monkeypatch.setattr(st, '_bucket', lambda: (_ for _ in ()).throw(AssertionError('_bucket must not be called')))
+    assert st.delete_images(['a', 'b']) == 0

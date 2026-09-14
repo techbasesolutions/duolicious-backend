@@ -32,6 +32,7 @@ from database import api_tx
 from duohash import sha512
 from antiabuse.antispam.signupemail import normalize_email
 from service.person.sql import Q_INSERT_DUO_SESSION
+from service.spotlight.withdrawal import withdraw_member
 
 
 # ----- helpers -------------------------------------------------------------
@@ -234,6 +235,13 @@ def patch_roles(req: t.PatchRoles, s: t.SessionInfo, uuid: str):
 def post_deactivate_admin(req: t.PostLifecycle, s: t.SessionInfo, uuid: str):
     require_admin(s)
     with api_tx() as tx:
+        person_row = tx.execute(_Q_PERSON_BY_UUID, dict(uuid=uuid)).fetchone()
+        if person_row is None:
+            abort(404)
+        # Wave 1 F03: withdraw Spotlight before the deactivation below takes
+        # effect, in the same transaction -- a deactivated member must not
+        # stay queued or published.
+        withdraw_member(tx, int(person_row['id']), 'admin_delete')
         row = tx.execute(_Q_SOFT_DELETE, dict(uuid=uuid)).fetchone()
         if row is None:
             abort(404)
@@ -275,6 +283,10 @@ def delete_person(req: t.DeletePerson, s: t.SessionInfo, uuid: str):
             # can't cascade-wipe the wrong row. FK cascade handles photos,
             # likes, messages, sessions, etc.
             abort(400)
+        # Wave 1 F03: withdraw Spotlight before the hard-delete below removes
+        # the row -- the removal task's own person_id/request_key columns
+        # are what survives to tell the admin worker who it was for.
+        withdraw_member(tx, int(row['id']), 'admin_delete')
         del_row = tx.execute(_Q_HARD_DELETE, dict(uuid=uuid)).fetchone()
         record_audit(
             tx, s, 'hard_delete',

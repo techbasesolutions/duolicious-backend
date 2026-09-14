@@ -14,7 +14,9 @@ cancel-deletion endpoint can land later.
 """
 
 from database.asyncdatabase import api_tx
+from database import api_tx as _sync_api_tx
 from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY
+from service.spotlight.withdrawal import withdraw_member
 import asyncio
 import os
 import random
@@ -31,6 +33,37 @@ GRACE_PERIOD_DAYS = int(os.environ.get(
 ))
 
 print(f'Hello from cron module: {__name__}')
+
+_Q_EXPIRED = """
+    SELECT id, uuid::TEXT AS uuid, email
+      FROM person
+     WHERE deletion_requested_at IS NOT NULL
+       AND deletion_requested_at < NOW() - (%(days)s || ' days')::INTERVAL
+       AND (sign_in_time IS NULL OR sign_in_time < deletion_requested_at)
+"""
+
+
+def _withdraw_all(person_ids: list) -> None:
+    """Withdraws Spotlight for every person about to be hard-deleted, on a
+    single sync transaction/connection (not the caller's async one).
+
+    Deliberately called from `hard_delete_expired_once` BEFORE that
+    function's own (async) transaction opens, rather than from inside it:
+    this database defaults to REPEATABLE READ, so an async transaction that
+    was already open when this sync transaction commits a write against the
+    same `person` row (the consent-epoch bump every withdrawal makes) would
+    hit a write-write conflict the moment it later tried to DELETE that row
+    itself (Postgres refuses to serialize it, regardless of statement
+    order) -- retrying would not help, since the same overlap would recur
+    every attempt. Keeping the two transactions from ever being open at the
+    same time avoids the conflict entirely. Otherwise follows the same
+    threaded-sync-from-async-cron pattern
+    `service.cron.spotlightretention.retention_sweep` already uses."""
+    if not person_ids:
+        return
+    with _sync_api_tx() as tx:
+        for person_id in person_ids:
+            withdraw_member(tx, person_id, 'hard_delete')
 
 
 async def hard_delete_expired_once():
@@ -57,18 +90,24 @@ async def hard_delete_expired_once():
     so any member can be an inviter, and `invitee_email` never had one.
     Neither direction cascades off `person` anymore, so both are purged
     here by email.
+
+    Wave 1 F03: Spotlight is withdrawn for every candidate row in its own
+    pass, BEFORE the transaction below (the one that actually hard-deletes)
+    even opens -- see `_withdraw_all`'s docstring for why the two must not
+    overlap in time.
     """
     async with api_tx() as tx:
-        expired_cur = await tx.execute(
-            """
-            SELECT id, uuid::TEXT AS uuid, email
-              FROM person
-             WHERE deletion_requested_at IS NOT NULL
-               AND deletion_requested_at < NOW() - (%(days)s || ' days')::INTERVAL
-               AND (sign_in_time IS NULL OR sign_in_time < deletion_requested_at)
-            """,
-            dict(days=GRACE_PERIOD_DAYS),
-        )
+        candidates = await (await tx.execute(_Q_EXPIRED, dict(days=GRACE_PERIOD_DAYS))).fetchall()
+
+    if candidates:
+        await asyncio.to_thread(_withdraw_all, [r['id'] for r in candidates])
+
+    async with api_tx() as tx:
+        # Re-selected rather than trusting the candidates list above: the
+        # withdrawal pass takes a moment, and re-querying means this
+        # transaction only ever acts on rows that are STILL expired right
+        # now (e.g. one could in principle have been un-deleted meanwhile).
+        expired_cur = await tx.execute(_Q_EXPIRED, dict(days=GRACE_PERIOD_DAYS))
         rows = await expired_cur.fetchall()
 
         if rows:

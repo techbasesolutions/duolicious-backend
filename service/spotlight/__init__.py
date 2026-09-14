@@ -81,8 +81,8 @@ def set_spotlight_opt_in(tx, person_id: int, value: bool) -> None:
         """,
         dict(v=value, id=person_id))
     if not value:
-        from service.spotlight.queue import cancel_for_member
-        cancel_for_member(tx, person_id, 'opt_out')
+        from service.spotlight.withdrawal import withdraw_member
+        withdraw_member(tx, person_id, 'opt_out')
 
 
 def set_spotlight_opt_in_by_email(tx, email: str, value: bool) -> bool:

@@ -7,7 +7,6 @@ from service.config import WEB_BASE_URL
 from service.spotlight.eligibility import eligibility, primary_photo_uuid
 from service.spotlight.revisions import create_revision
 from service.spotlight.roundup import roundup_snapshot
-from service.spotlight.storage import delete_images
 
 KINDS = ('welcome', 'roundup', 'member_of_week', 'highlight')
 PLATFORMS = ('facebook', 'instagram')
@@ -103,102 +102,17 @@ def set_status(tx, queue_id: str, status: str, *, external_post_id: Optional[str
         dict(st=status, ext=external_post_id, err=error, id=queue_id))
 
 
-# Containment against the stored snapshot: a tile object carries first_name
-# and photo_url as well, so `@>` with just the person_id matches the whole
-# tile without having to reproduce the rest of it.
-_TILE_MATCH = """
-    kind = 'roundup'
-      AND payload->'tiles' @> jsonb_build_array(jsonb_build_object('person_id', %(pid)s))
-"""
-
-_Q_TILE_IMAGE_KEYS = f"""
-    SELECT image_key FROM publishing_queue
-     WHERE {_TILE_MATCH}
-       AND image_key IS NOT NULL
-       AND status NOT IN ('published', 'cancelled')
-"""
-
-_Q_CANCEL_TILE_ROWS = f"""
-    UPDATE publishing_queue SET status = 'cancelled', error = %(reason)s, updated_at = NOW()
-     WHERE {_TILE_MATCH}
-       AND status NOT IN ('published', 'cancelled')
-"""
-
-_Q_PUBLISHED_SUBJECT_ROWS = """
-    SELECT id, platform, external_post_id FROM publishing_queue
-     WHERE subject_person_id = %(pid)s AND status = 'published'
-"""
-
-_Q_PUBLISHED_TILE_ROWS = f"""
-    SELECT id, platform, external_post_id FROM publishing_queue
-     WHERE {_TILE_MATCH}
-       AND status = 'published'
-"""
-
-
-def _file_removal_tasks(tx, rows) -> int:
-    """One open task per published platform row. A Facebook post can be
-    deleted through the Graph API; Instagram has no delete endpoint for
-    published media, so that one is flagged for a human instead.
-
-    Those two reason strings are the contract the admin worker and the
-    removals list read, so a task filed for a roundup tile uses exactly the
-    same pair as one filed for a card's subject. Nothing downstream has to
-    know why the task exists in order to action it.
-
-    Guarded with NOT EXISTS on an already-open task for the same queue_id:
-    a roundup's tile snapshot names up to four members, so several of them
-    opting out one after another all match the same published queue rows in
-    `_Q_PUBLISHED_TILE_ROWS`, and without this guard each opt-out would file
-    its own duplicate task for the same post."""
-    n = 0
-    for r in rows:
-        cur = tx.execute(
-            """INSERT INTO spotlight_removal_task (queue_id, platform, external_post_id, reason)
-               SELECT %(q)s, %(pl)s, %(ext)s, %(reason)s
-                WHERE NOT EXISTS (SELECT 1 FROM spotlight_removal_task t
-                                   WHERE t.queue_id = %(q)s AND t.done_at IS NULL)""",
-            dict(q=r['id'], pl=r['platform'], ext=r['external_post_id'],
-                 reason='delete_via_api' if r['platform'] == 'facebook' else 'manual_instagram'))
-        n += cur.rowcount
-    return n
-
-
 def cancel_for_member(tx, person_id: int, reason: str) -> int:
-    _file_removal_tasks(tx, tx.execute(_Q_PUBLISHED_SUBJECT_ROWS, dict(pid=person_id)).fetchall())
-    # A published roundup that tiles this member shows their photo exactly as a
-    # published card of their own does, so it earns the same removal task. The
-    # row's status is deliberately left at 'published': that is still the truth
-    # until the platform post is actually gone, and the task is what records
-    # that it has to go.
-    _file_removal_tasks(tx, tx.execute(_Q_PUBLISHED_TILE_ROWS, dict(pid=person_id)).fetchall())
-    # Published rows keep their card until the retention sweep or a removal
-    # task marks the platform post done -- only non-published rows' images
-    # are deleted here, since those never got (and now never will get) a
-    # public post to point at.
-    keys = [r['image_key'] for r in tx.execute(
-        """SELECT image_key FROM publishing_queue
-            WHERE subject_person_id = %(pid)s AND image_key IS NOT NULL
-              AND status NOT IN ('published')""",
-        dict(pid=person_id)).fetchall()]
-    # rowcount is read straight away: `tx.execute` hands back the connection's
-    # one cursor, so the next statement would overwrite it.
-    cancelled = tx.execute(
-        """UPDATE publishing_queue SET status = 'cancelled', error = %(reason)s, updated_at = NOW()
-            WHERE subject_person_id = %(pid)s AND status NOT IN ('published', 'cancelled')""",
-        dict(pid=person_id, reason=reason)).rowcount
-    # A roundup row carries no subject_person_id at all, so the sweep above
-    # cannot see it -- but its stored tile snapshot names (and shows the photo
-    # of) up to four members. Withdrawn consent has to reach those rows too,
-    # or a member who opted out is still published inside someone else's card.
-    # Published roundups keep their status here, the same way published subject
-    # rows do: they were handled at the top, by a removal task.
-    tile_keys = [r['image_key'] for r in tx.execute(_Q_TILE_IMAGE_KEYS, dict(pid=person_id)).fetchall()]
-    tiled = tx.execute(_Q_CANCEL_TILE_ROWS, dict(pid=person_id, reason=f'tile_member_{reason}')).rowcount
-    # Storage is best-effort and outside the transaction's success/failure:
-    # a Spaces error here must never roll back the cancellations above.
-    delete_images(keys + tile_keys)
-    return cancelled + tiled
+    """Thin wrapper kept for existing callers. The real logic -- filing
+    removal tasks for published rows, leaving mid-publish rows alone,
+    re-issuing roundups that can drop the member, cancelling the rest,
+    bumping the consent epoch and invalidating nonces -- now lives in
+    `withdraw_member` (service/spotlight/withdrawal.py, Wave 1 F03), the
+    single exit point every lifecycle event goes through. Imported lazily
+    to avoid a module-load cycle (withdrawal.py sits below queue.py in the
+    same package)."""
+    from service.spotlight.withdrawal import withdraw_member
+    return withdraw_member(tx, person_id, reason)['cancelled']
 
 
 def reap_expired_leases(tx) -> int:

@@ -1153,6 +1153,8 @@ def delete_or_ban_account(
     Q_ADMIN_BAN — admins act on policy violations and shouldn't have a
     grace window.
     """
+    from service.spotlight.withdrawal import withdraw_member
+
     with api_tx() as tx:
         tx.execute('SET LOCAL statement_timeout = 30_000')  # 30 seconds
 
@@ -1161,6 +1163,12 @@ def delete_or_ban_account(
                 Q_ADMIN_BAN,
                 params=dict(token=admin_ban_token)
             ).fetchall()
+            # Wave 1 F03: every departing member's Spotlight footprint has to
+            # be withdrawn BEFORE the hard-delete below removes the person
+            # row -- the removal task's own person_id/request_key columns
+            # are the only surviving record of who it is for.
+            for r in rows:
+                withdraw_member(tx, r['person_id'], 'ban')
             # Admin path: immediate hard-delete, no grace.
             tx.executemany(Q_DELETE_ACCOUNT, params_seq=rows)
         elif s:
@@ -1183,6 +1191,10 @@ def delete_or_ban_account(
                 dict(person_id=s.person_id),
             )
             _email_row = cur.fetchone()
+            # Wave 1 F03: withdraw Spotlight right after the soft-delete, in
+            # the same transaction -- the 7-day grace window would otherwise
+            # leave a card queued or published for a member who is gone.
+            withdraw_member(tx, int(s.person_id), 'account_deletion')
             # Wipe every duo_session for this person so a token stolen
             # before the delete can no longer authenticate during the
             # 7-day grace window (audit Auth #2). User re-authenticates
