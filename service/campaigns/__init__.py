@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import secrets
 from typing import Optional
+from urllib.parse import urlparse
 
 from service.config import WEB_BASE_URL
 
@@ -34,9 +35,8 @@ def can_send(tx, person_id: int, campaign: str, campaign_id: str, *,
 # its OWN scope's stamp before the next run, otherwise a member who clicked
 # "unsubscribe" in the footer still gets the following week's email.
 _Q_UNSUBSCRIBED = {
-    # `notifications` turns every email_* channel off in one upsert, so the
-    # scope is "unsubscribed" exactly when all five are FALSE. Anything less
-    # is a member who tuned individual toggles, not one who opted out.
+    # Treated as unsubscribed when every email channel is off, whether via
+    # the footer link or the settings toggles; errs toward not emailing.
     'notifications': """
         SELECT 1 FROM notification_preference
          WHERE person_id = %(pid)s
@@ -61,6 +61,36 @@ def campaign_unsubscribed(tx, person_id: int, scope: str) -> bool:
         return False
     return tx.execute(q, dict(pid=person_id)).fetchone() is not None
 
+def unsubscribed_predicate_sql(scope: str, person_ref: str) -> str:
+    """SQL boolean fragment equivalent to `campaign_unsubscribed(tx, <the
+    person `person_ref` names>, scope)`, for splicing directly into a
+    recipient / recipient_count query's own WHERE clause -- so the admin
+    dashboard's number and the runner's actual per-row behaviour can never
+    drift apart. Built from the SAME `_Q_UNSUBSCRIBED[scope]` text
+    `campaign_unsubscribed` uses, with `%(pid)s` replaced by `person_ref`.
+
+    `person_ref` must be a raw SQL fragment naming the person id -- e.g. a
+    qualified column reference like `p.id` -- NOT a bind parameter. It is
+    spliced as text into the query, so it must resolve inside that query's
+    own scope (this matters for the `community` scope, whose predicate is
+    itself `FROM person`: pass a qualified reference such as `p.id`, never
+    a bare `id`, or it will correlate to the wrong table instance)."""
+    q = _Q_UNSUBSCRIBED.get(scope)
+    if q is None:
+        return "FALSE"
+    return f"EXISTS ({q.replace('%(pid)s', person_ref)})"
+
+def suppressed_predicate_sql(email_ref: str) -> str:
+    """SQL boolean fragment: true iff the email at `email_ref` (a raw SQL
+    fragment, e.g. a qualified column reference -- NOT a bind parameter)
+    matches one of emails.base's suppressed-domain patterns.
+
+    The caller's query must carry a `sup` bind set to
+    `emails.base.suppressed_sql_pattern()`. The pattern is passed as a bind
+    rather than spliced into the query text so the '%' each LIKE pattern
+    contains never collides with psycopg's own %-style query formatting."""
+    return f"lower({email_ref}) LIKE ANY(%(sup)s)"
+
 def log_send(tx, person_id: int, campaign: str, campaign_id: str,
              message_id: Optional[str]) -> None:
     tx.execute(
@@ -75,10 +105,17 @@ def make_campaign_link(tx, kind: str, target_url: str,
                        subject_person_id: Optional[int] = None) -> str:
     """Mint a /s/<key> link. `target_url` must stay on our own web app:
     /s/<key> redirects to whatever is stored here, so accepting a foreign
-    target would turn every campaign email into an open redirect."""
-    base = WEB_BASE_URL.rstrip('/')
-    if not str(target_url).startswith(base):
-        raise ValueError(f"campaign link target must start with {base}")
+    target would turn every campaign email into an open redirect.
+
+    Compared by scheme + netloc (urlparse), not a bare `startswith`: a bare
+    prefix match would let `https://ahavah.app.evil.example/x` through
+    whenever WEB_BASE_URL is `https://ahavah.app`, since the string
+    literally starts with that prefix even though the host is a different,
+    attacker-controlled domain."""
+    base = urlparse(WEB_BASE_URL)
+    target = urlparse(str(target_url))
+    if (target.scheme, target.netloc) != (base.scheme, base.netloc):
+        raise ValueError(f"campaign link target must start with {WEB_BASE_URL.rstrip('/')}")
     key = secrets.token_urlsafe(6)
     tx.execute(
         """

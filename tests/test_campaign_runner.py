@@ -1,7 +1,19 @@
 from database import api_tx
+import emails.send_community_weekly as e2
 from service.campaigns import log_send
 from service.campaigns.runner import run_campaign
 from service.unsubscribe import stamp_unsubscribed
+
+
+# ---------------------------------------------------------------------------
+# Final review, item 4: the weekly email's own cap window is 6 days -- the
+# admin send endpoint reads it via getattr(mod, 'CAP_DAYS', 7)
+# (service/api/admin/growth_routes.py), so a regression here would silently
+# fall back to the default 7-day cap.
+# ---------------------------------------------------------------------------
+
+def test_send_community_weekly_cap_days_is_six():
+    assert e2.CAP_DAYS == 6
 
 class _Smtp:
     def __init__(self): self.sent = []

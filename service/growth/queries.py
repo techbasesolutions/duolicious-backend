@@ -4,6 +4,9 @@ import os
 from datetime import datetime
 from typing import Optional
 
+from emails.base import suppressed_sql_pattern
+from service.campaigns import suppressed_predicate_sql, unsubscribed_predicate_sql
+
 EXCLUDED_EMAILS = ('admin@ahavah.app',)
 
 def _excluded() -> list[str]:
@@ -97,6 +100,11 @@ def growth_stats(tx) -> dict:
     totals = tx.execute(_Q_TOTALS, dict(ex=ex)).fetchone()
     return {'members_by_gender': [dict(r) for r in by_gender], **dict(totals)}
 
+# E3 (send_reinvite) is a `notifications`-scope campaign, so a dormant
+# member must also clear the same suppression + scope-unsubscribe filters
+# run_campaign() applies per-row (service/campaigns/runner.py) -- otherwise
+# the admin index number (recipient_count) and the actual send list
+# (dormant_cohort/recipients) would count members the runner will skip.
 _Q_DORMANT = f"""
     WITH act AS (
       SELECT p.id, p.email, p.name, p.reinvite_sent_at,
@@ -104,6 +112,8 @@ _Q_DORMANT = f"""
         FROM person p
        WHERE p.activated AND p.deletion_requested_at IS NULL
          AND lower(p.email) <> ALL(%(ex)s)
+         AND NOT ({unsubscribed_predicate_sql('notifications', 'p.id')})
+         AND NOT ({suppressed_predicate_sql('p.email')})
     )
     SELECT id AS person_id, email, name, last_action
       FROM act
@@ -114,7 +124,8 @@ _Q_DORMANT = f"""
 """
 
 def dormant_cohort(tx, days: int = 30, resend_days: int = 30) -> list[dict]:
-    return [dict(r) for r in tx.execute(_Q_DORMANT, dict(days=days, resend=resend_days, ex=_excluded())).fetchall()]
+    return [dict(r) for r in tx.execute(
+        _Q_DORMANT, dict(days=days, resend=resend_days, ex=_excluded(), sup=suppressed_sql_pattern())).fetchall()]
 
 def _newcomer_predicate_sql(person_ref: str = '%(pid)s', since_ref: str = '%(since)s') -> str:
     """The WHERE predicate for 'newcomers a member would want to see': shared
@@ -168,6 +179,8 @@ _Q_COUNT_REINVITE_COHORT = f"""
         FROM person p
        WHERE p.activated AND p.deletion_requested_at IS NULL
          AND lower(p.email) <> ALL(%(ex)s)
+         AND NOT ({unsubscribed_predicate_sql('notifications', 'p.id')})
+         AND NOT ({suppressed_predicate_sql('p.email')})
     )
     SELECT count(*) AS n
       FROM act d
@@ -183,4 +196,4 @@ _Q_COUNT_REINVITE_COHORT = f"""
 def count_reinvite_cohort(tx, days: int = 30, resend_days: int = 30) -> int:
     """How many members `emails.send_reinvite.recipients()` would return."""
     return int(tx.execute(_Q_COUNT_REINVITE_COHORT,
-                          dict(days=days, resend=resend_days, ex=_excluded())).fetchone()['n'])
+                          dict(days=days, resend=resend_days, ex=_excluded(), sup=suppressed_sql_pattern())).fetchone()['n'])

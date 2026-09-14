@@ -42,10 +42,46 @@ def test_spotlight_fields_are_escaped_including_the_alt_attribute():
 
 
 def test_spotlight_rejects_a_non_https_image_or_post_url():
+    """_spotlight_block/_esc_https still validate strictly -- the field-level
+    check under test here is unchanged. See the tests below for what
+    community_weekly_html() itself does with that ValueError."""
+    from emails.community_weekly import _spotlight_block
     import pytest
     base = dict(first_name='Sarah', age=29, country='US',
                 image_url='https://x/y.png', post_url='https://fb/p')
     with pytest.raises(ValueError):
-        community_weekly_html([], 1, dict(base, image_url='javascript:alert(1)'), 'https://a', 'https://u')
+        _spotlight_block(dict(base, image_url='javascript:alert(1)'))
     with pytest.raises(ValueError):
-        community_weekly_html([], 1, dict(base, post_url='http://fb/p'), 'https://a', 'https://u')
+        _spotlight_block(dict(base, post_url='http://fb/p'))
+
+
+# ---------------------------------------------------------------------------
+# Final review, item 5: _esc_https raising used to propagate straight out of
+# community_weekly_html(), and this function is called once per recipient
+# inside the campaign runner's send loop (service/campaigns/runner.py) -- an
+# uncaught exception there aborts the run at that recipient, so one bad
+# curated spotlight URL must not stop the whole weekly send. The validation
+# itself must still hold (see test above); only the failure mode changes:
+# fall back to the newcomers-only variant and log a warning.
+# ---------------------------------------------------------------------------
+
+def test_invalid_spotlight_url_falls_back_to_newcomers_only_instead_of_raising(capsys):
+    bad_spotlight = dict(first_name='Sarah', age=29, country='US',
+                         image_url='javascript:alert(1)', post_url='https://fb/p')
+    html = community_weekly_html([dict(first_name='Rivka', country='GB')], 27, bad_spotlight,
+                                 'https://ahavah.app/s/k', 'https://ahavah.app/u/x')
+    assert 'Member of the week' not in html
+    assert 'Sarah' not in html
+    assert 'Rivka' in html and '27 members' in html
+
+    out = capsys.readouterr().out
+    assert 'spotlight' in out.lower()
+
+
+def test_invalid_spotlight_post_url_also_falls_back(capsys):
+    bad_spotlight = dict(first_name='Sarah', age=29, country='US',
+                         image_url='https://x/y.png', post_url='http://fb/p')
+    html = community_weekly_html([], 27, bad_spotlight, 'https://ahavah.app/s/k', 'https://ahavah.app/u/x')
+    assert 'Member of the week' not in html
+    assert '27 members' in html
+    assert 'spotlight' in capsys.readouterr().out.lower()

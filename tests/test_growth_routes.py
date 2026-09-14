@@ -204,9 +204,95 @@ def test_emails_index_lists_three_campaigns_with_integer_counts(client, admin):
 def test_recipient_count_agrees_with_the_recipient_list(make_person):
     make_person(name='CountSeedA', gender='Man')
     make_person(name='CountSeedB', gender='Woman')
-    assert e1.recipient_count() == len(e1.recipients())
+    for mod in (e1, e2, e3):
+        assert mod.recipient_count() == len(mod.recipients())
 
 
 def test_every_campaign_module_exposes_a_recipient_count():
     for mod in (e1, e2, e3):
         assert isinstance(mod.recipient_count(), int)
+
+
+# ---------------------------------------------------------------------------
+# Final review, item 3: recipient_count() (the admin index number) must
+# apply the same suppression + scope-unsubscribe filters run_campaign()
+# applies per-row, so a member who has unsubscribed from a campaign's own
+# scope no longer inflates the count.
+# ---------------------------------------------------------------------------
+
+def test_notifications_unsubscribe_reduces_e1_recipient_count(make_person):
+    from service.unsubscribe import stamp_unsubscribed
+    p = make_person(name='UnsubCountE1')
+    email = _sendable_email(p['id'], 'unsub-count-e1')
+    before = e1.recipient_count()
+    with api_tx() as tx:
+        assert stamp_unsubscribed(tx, 'notifications', email)
+    assert e1.recipient_count() == before - 1
+    assert e1.recipient_count() == len(e1.recipients())
+
+
+def test_community_unsubscribe_reduces_e2_recipient_count(make_person):
+    from service.unsubscribe import stamp_unsubscribed
+    p = make_person(name='UnsubCountE2')
+    email = _sendable_email(p['id'], 'unsub-count-e2')
+    before = e2.recipient_count()
+    with api_tx() as tx:
+        assert stamp_unsubscribed(tx, 'community', email)
+    assert e2.recipient_count() == before - 1
+    assert e2.recipient_count() == len(e2.recipients())
+
+
+def test_suppressed_domain_reduces_e1_recipient_count(make_person):
+    """A suppressed-domain address (emails.base's default list includes
+    techbaseltd.com) must not count towards the admin index number, since
+    run_campaign() would skip it as `skipped_suppressed` at send time."""
+    p = make_person(name='SuppressedCountE1')
+    email = _sendable_email(p['id'], 'presuppress-e1')  # start on an unsuppressed domain
+    before = e1.recipient_count()
+    assert before == len(e1.recipients())
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET email = %(e)s, normalized_email = %(e)s WHERE id = %(i)s",
+                   dict(e=f"suppressed-{p['id']}@techbaseltd.com", i=p['id']))
+    assert e1.recipient_count() == before - 1
+    assert e1.recipient_count() == len(e1.recipients())
+
+
+# ---------------------------------------------------------------------------
+# Final review, item 4: the weekly email's cap window is 6 days, not the
+# default 7 -- asserted directly on the module constant the admin send
+# endpoint reads via getattr(mod, 'CAP_DAYS', 7).
+# ---------------------------------------------------------------------------
+
+def test_e2_dry_run_send_endpoint_respects_the_six_day_cap(client, admin, make_person, monkeypatch):
+    """Through the real admin send endpoint (not run_campaign() directly):
+    a member mailed 6.5 days ago is due again under the 6-day weekly cap,
+    one mailed 5 days ago is not."""
+    from service.campaigns import log_send
+
+    due = make_person(name='WeeklyDueEndpoint')
+    early = make_person(name='WeeklyEarlyEndpoint')
+    due_email = _sendable_email(due['id'], 'weekly-due-ep')
+    early_email = _sendable_email(early['id'], 'weekly-early-ep')
+
+    def _log_days_ago(person_id: int, campaign_id: str, days: float) -> None:
+        with api_tx() as tx:
+            log_send(tx, person_id, 'e2', campaign_id, 'mid')
+            tx.execute(
+                "UPDATE email_send_log SET sent_at = NOW() - make_interval(secs => %(s)s) "
+                "WHERE person_id = %(i)s AND campaign_id = %(c)s",
+                dict(s=days * 86400, i=person_id, c=campaign_id))
+
+    _log_days_ago(due['id'], 'e2-ep-last-week', 6.5)
+    _log_days_ago(early['id'], 'e2-ep-midweek', 5)
+
+    rows = [dict(e2.preview_row(due_email), person_id=due['id'], name='WeeklyDueEndpoint'),
+            dict(e2.preview_row(early_email), person_id=early['id'], name='WeeklyEarlyEndpoint')]
+    monkeypatch.setattr(e2, 'recipients', lambda: rows)
+
+    r = client.post('/admin/growth/emails/e2/send', headers=admin['headers'],
+                    json=dict(campaign_id=f'e2-cap-ep-{uuid.uuid4().hex[:8]}', dry_run=True))
+
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body['sent'] == 1
+    assert body['skipped_cap'] == 1

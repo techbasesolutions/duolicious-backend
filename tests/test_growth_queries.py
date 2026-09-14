@@ -10,6 +10,17 @@ def _prefers(tx, pid, gender_name):
     tx.execute("INSERT INTO search_preference_gender (person_id, gender_id) SELECT %(p)s, id FROM gender WHERE name = %(g)s ON CONFLICT DO NOTHING",
                dict(p=pid, g=gender_name))
 
+def _sendable(tx, person_id: int) -> str:
+    """make_person hands out an @example.com address, which is on
+    emails.base's default suppressed-domain list -- and dormant_cohort()
+    now excludes suppressed addresses (final review item 3), so a person
+    this test expects to see IN the cohort needs a reserved-but-unsuppressed
+    domain instead."""
+    email = f'dormant-{person_id}@ahavah-test.invalid'
+    tx.execute("UPDATE person SET email = %(e)s, normalized_email = %(e)s WHERE id = %(i)s",
+              dict(e=email, i=person_id))
+    return email
+
 def test_stats_shape_and_exclusions(make_person):
     make_person(name='A', gender='Man'); make_person(name='B', gender='Woman')
     with api_tx('read committed') as tx:
@@ -24,6 +35,7 @@ def test_dormant_cohort_edges(make_person):
     resent = make_person(name='Resent', gender='Man')
     other = make_person(name='Other', gender='Woman')
     with api_tx() as tx:
+        _sendable(tx, stale['id'])
         _like(tx, active['id'], other['id'], 3)
         _like(tx, stale['id'], other['id'], 31)
         _like(tx, resent['id'], other['id'], 40)

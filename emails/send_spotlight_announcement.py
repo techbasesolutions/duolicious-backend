@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse, uuid
 from database import api_tx
+from emails.base import suppressed_sql_pattern
 from emails.spotlight_announcement import spotlight_announcement_html, SUBJECT, FROM_ADDR
+from service.campaigns import suppressed_predicate_sql, unsubscribed_predicate_sql
 from service.campaigns.runner import run_campaign
 from service.config import WEB_BASE_URL
 from service.growth.queries import _excluded
@@ -12,10 +14,16 @@ from service.unsubscribe import make_url as _unsub_url
 
 UNSUB_SCOPE = 'notifications'
 
-_Q_RECIPIENTS = """
-    SELECT id AS person_id, email, name FROM person
-     WHERE activated AND deletion_requested_at IS NULL AND lower(email) <> ALL(%(ex)s)
-     ORDER BY id
+# The same suppression + scope-unsubscribe filters run_campaign() applies
+# per-row (see service/campaigns/runner.py) are baked into these queries too,
+# so recipient_count() (the admin index number) and recipients() (what a run
+# actually sends) can never drift from what a real send would do.
+_Q_RECIPIENTS = f"""
+    SELECT p.id AS person_id, p.email, p.name FROM person p
+     WHERE p.activated AND p.deletion_requested_at IS NULL AND lower(p.email) <> ALL(%(ex)s)
+       AND NOT ({unsubscribed_predicate_sql(UNSUB_SCOPE, 'p.id')})
+       AND NOT ({suppressed_predicate_sql('p.email')})
+     ORDER BY p.id
 """
 
 def build_for(row: dict) -> tuple[str, str]:
@@ -24,14 +32,16 @@ def build_for(row: dict) -> tuple[str, str]:
         f"{WEB_BASE_URL}/settings/privacy",
         _unsub_url(UNSUB_SCOPE, row['email'], WEB_BASE_URL))
 
-_Q_RECIPIENT_COUNT = """
-    SELECT count(*) AS n FROM person
-     WHERE activated AND deletion_requested_at IS NULL AND lower(email) <> ALL(%(ex)s)
+_Q_RECIPIENT_COUNT = f"""
+    SELECT count(*) AS n FROM person p
+     WHERE p.activated AND p.deletion_requested_at IS NULL AND lower(p.email) <> ALL(%(ex)s)
+       AND NOT ({unsubscribed_predicate_sql(UNSUB_SCOPE, 'p.id')})
+       AND NOT ({suppressed_predicate_sql('p.email')})
 """
 
 def recipients() -> list[dict]:
     with api_tx('read committed') as tx:
-        return [dict(r) for r in tx.execute(_Q_RECIPIENTS, dict(ex=_excluded())).fetchall()]
+        return [dict(r) for r in tx.execute(_Q_RECIPIENTS, dict(ex=_excluded(), sup=suppressed_sql_pattern())).fetchall()]
 
 def recipient_count() -> int:
     """How many rows recipients() would return, without materialising them:
@@ -39,7 +49,7 @@ def recipient_count() -> int:
     never call it while holding one (the api connection lock is not
     reentrant)."""
     with api_tx('read committed') as tx:
-        return int(tx.execute(_Q_RECIPIENT_COUNT, dict(ex=_excluded())).fetchone()['n'])
+        return int(tx.execute(_Q_RECIPIENT_COUNT, dict(ex=_excluded(), sup=suppressed_sql_pattern())).fetchone()['n'])
 
 def main() -> None:
     ap = argparse.ArgumentParser()

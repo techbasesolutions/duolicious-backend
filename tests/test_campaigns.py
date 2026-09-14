@@ -65,3 +65,19 @@ def test_campaign_link_rejects_off_site_target(make_person):
             make_campaign_link(tx, 'e1', 'https://evil.example.com/phish', p['id'])
         with pytest.raises(ValueError):
             make_campaign_link(tx, 'e1', '/discover', p['id'])
+
+
+# ---------------------------------------------------------------------------
+# Final review: a bare `startswith(WEB_BASE_URL)` host guard is bypassed by a
+# subdomain suffix attack -- 'https://ahavah.app.evil.example/x' literally
+# starts with 'https://ahavah.app'. The guard must compare scheme + netloc.
+# ---------------------------------------------------------------------------
+
+def test_campaign_link_rejects_a_lookalike_subdomain_target(make_person):
+    p = make_person(name='Lookalike')
+    with api_tx() as tx:
+        with pytest.raises(ValueError):
+            make_campaign_link(tx, 'e1', 'https://ahavah.app.evil.example/x', p['id'])
+        # the existing, legitimate on-site target must still be accepted
+        url = make_campaign_link(tx, 'e1', f'{WEB_BASE_URL}/discover', p['id'])
+        assert url.startswith(f"{WEB_BASE_URL.rstrip('/')}/s/")

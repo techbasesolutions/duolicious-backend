@@ -46,13 +46,34 @@ def _newcomers_block(rows: list[dict]) -> str:
     items = "".join(f'<li style="margin:0 0 6px;">{_esc(r["first_name"])}' + (f' <span style="color:{MUTED};">in {_esc(r["country"])}</span>' if r.get('country') else '') + '</li>' for r in rows)
     return f'<p class="e-text" style="margin:0 0 8px;font-family:{SANS};font-size:13px;letter-spacing:0.08em;text-transform:uppercase;color:{MUTED};font-weight:700;">New this week</p><ul style="margin:0 0 20px;padding-left:20px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">{items}</ul>'
 
+def _safe_spotlight_block(spotlight: Optional[dict]) -> str:
+    """Render the spotlight card, or fall back to no spotlight at all if its
+    fields fail validation (e.g. a curated URL that is not https).
+
+    _spotlight_block/_esc_https deliberately still raise on a bad URL -- the
+    validation itself must stay -- but community_weekly_html() is called once
+    per recipient inside service/campaigns/runner.py's send loop, and an
+    uncaught exception there aborts the run at that recipient (see
+    run_campaign: a build() failure returns early with every remaining
+    recipient unsent). One bad curated post must not do that to the whole
+    weekly send, so render the newcomers-only variant instead and log a
+    warning for whoever curates the next one to see."""
+    if not spotlight:
+        return ''
+    try:
+        return _spotlight_block(spotlight)
+    except ValueError as e:
+        print(f"community_weekly: dropping invalid spotlight ({e})")
+        return ''
+
+
 def community_weekly_html(new_members: list[dict], total_members: int, spotlight: Optional[dict], cta_url: str, unsubscribe_url: str) -> str:
     body = f"""
 {chip("Community")}
 
 {title_image("title-community.png", "title-community-wht.png", "This week on Ahavah.", 460)}
 
-{_spotlight_block(spotlight) if spotlight else ''}
+{_safe_spotlight_block(spotlight)}
 
 {_newcomers_block(new_members)}
 

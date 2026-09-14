@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import argparse, uuid
 from database import api_tx
+from emails.base import suppressed_sql_pattern
 from emails.community_weekly import community_weekly_html, SUBJECT, FROM_ADDR
-from service.campaigns import make_campaign_link
+from service.campaigns import make_campaign_link, suppressed_predicate_sql, unsubscribed_predicate_sql
 from service.campaigns.runner import run_campaign
 from service.config import WEB_BASE_URL
 from service.growth.queries import _excluded
@@ -17,10 +18,17 @@ UNSUB_SCOPE = 'community'
 # window and skip the whole list. 6 days leaves the slack.
 CAP_DAYS = 6
 
-_Q_RECIPIENTS = """
-    SELECT id AS person_id, email, name FROM person
-     WHERE activated AND deletion_requested_at IS NULL AND community_unsubscribed_at IS NULL
-       AND lower(email) <> ALL(%(ex)s) ORDER BY id
+# Same suppression + scope-unsubscribe filters run_campaign() applies
+# per-row (service/campaigns/runner.py), baked in here too so
+# recipient_count() (the admin index number) never overstates what a real
+# run would send.
+_Q_RECIPIENTS = f"""
+    SELECT p.id AS person_id, p.email, p.name FROM person p
+     WHERE p.activated AND p.deletion_requested_at IS NULL
+       AND lower(p.email) <> ALL(%(ex)s)
+       AND NOT ({unsubscribed_predicate_sql(UNSUB_SCOPE, 'p.id')})
+       AND NOT ({suppressed_predicate_sql('p.email')})
+     ORDER BY p.id
 """
 _Q_NEW = """
     SELECT split_part(name, ' ', 1) AS first_name, country FROM person
@@ -28,10 +36,12 @@ _Q_NEW = """
      ORDER BY sign_up_time DESC
 """
 _Q_TOTAL = "SELECT count(*) AS n FROM person WHERE activated AND lower(email) <> ALL(%(ex)s)"
-_Q_RECIPIENT_COUNT = """
-    SELECT count(*) AS n FROM person
-     WHERE activated AND deletion_requested_at IS NULL AND community_unsubscribed_at IS NULL
-       AND lower(email) <> ALL(%(ex)s)
+_Q_RECIPIENT_COUNT = f"""
+    SELECT count(*) AS n FROM person p
+     WHERE p.activated AND p.deletion_requested_at IS NULL
+       AND lower(p.email) <> ALL(%(ex)s)
+       AND NOT ({unsubscribed_predicate_sql(UNSUB_SCOPE, 'p.id')})
+       AND NOT ({suppressed_predicate_sql('p.email')})
 """
 
 def _week_context() -> dict:
@@ -48,14 +58,14 @@ def recipients() -> list[dict]:
     week."""
     week = _week_context()
     with api_tx('read committed') as tx:
-        return [dict(r, week=week) for r in tx.execute(_Q_RECIPIENTS, dict(ex=_excluded())).fetchall()]
+        return [dict(r, week=week) for r in tx.execute(_Q_RECIPIENTS, dict(ex=_excluded(), sup=suppressed_sql_pattern())).fetchall()]
 
 def recipient_count() -> int:
     """How many rows recipients() would return, without materialising them or
     computing the week context. Opens its own transaction, so never call it
     while holding one (the api connection lock is not reentrant)."""
     with api_tx('read committed') as tx:
-        return int(tx.execute(_Q_RECIPIENT_COUNT, dict(ex=_excluded())).fetchone()['n'])
+        return int(tx.execute(_Q_RECIPIENT_COUNT, dict(ex=_excluded(), sup=suppressed_sql_pattern())).fetchone()['n'])
 
 def build_for(row: dict) -> tuple[str, str]:
     week = row['week']
