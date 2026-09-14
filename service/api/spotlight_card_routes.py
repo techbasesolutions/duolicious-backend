@@ -57,6 +57,7 @@ def _card_json(row: dict, token: str) -> dict:
         kind=row['kind'],
         caption=row['caption'],
         photos=row['photos'],
+        photo_uuid=row['photo_uuid'],
         revision=row['revision'],
         preview_available=row['preview_available'],
         image_url=row['image_url'],
@@ -98,7 +99,7 @@ def post_spotlight_card(token: str):
             try:
                 result = approve_card(tx, rk, row['subject_person_id'], photo_uuid)
             except ValueError as e:
-                abort(409, str(e))
+                return dict(error=str(e)), 409
             return dict(ok=True, result=result)
 
         # skip: cancel every row of this request that is still awaiting the

@@ -16,7 +16,7 @@ TRANSITIONS = {
     'scheduled': {'cancelled', 'processing'},
     'processing': {'published', 'failed', 'review'},
     'failed': {'scheduled', 'cancelled'},
-    'awaiting_member': {'awaiting_render', 'cancelled'},
+    'awaiting_member': {'awaiting_render', 'cancelled', 'review'},
     'awaiting_render': {'review', 'cancelled'},
 }
 MAX_ATTEMPTS = 3

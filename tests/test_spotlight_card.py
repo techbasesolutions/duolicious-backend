@@ -44,43 +44,50 @@ def test_get_is_read_only_and_post_approves(client, make_person):
     p = _make_eligible(make_person)
     with api_tx() as tx:
         set_setting(tx, 'approvals_enabled', 'true')
-        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
-        photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
-        attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
-    tok = make_card_token(rk, _email(p['id']))
-    r = client.get(f'/spotlight/card/{tok}')
-    body = r.get_json()
-    assert r.status_code == 200 and body['status'] == 'awaiting_member' and body['photos'][0]['uuid'] == photo
-    assert body['revision'] == 1 and body['preview_available'] is True and body['image_url'] == 'https://cdn/k.png'
-    with api_tx('read committed') as tx:
-        assert {x['status'] for x in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'awaiting_member'}
-    r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
-    assert r.status_code == 200 and r.get_json()['result'] == 'approved'
-    with api_tx('read committed') as tx:
-        assert {x['status'] for x in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'review'}
-    assert client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo}).get_json()['result'] == 'already'
-    assert client.get(f'/spotlight/card/{tok}').get_json()['status'] == 'approved'
-    with api_tx() as tx:
-        set_setting(tx, 'approvals_enabled', 'false')
+    try:
+        with api_tx() as tx:
+            rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+            photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
+            attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
+        tok = make_card_token(rk, _email(p['id']))
+        r = client.get(f'/spotlight/card/{tok}')
+        body = r.get_json()
+        assert r.status_code == 200 and body['status'] == 'awaiting_member' and body['photos'][0]['uuid'] == photo
+        assert body['revision'] == 1 and body['preview_available'] is True and body['image_url'] == 'https://cdn/k.png'
+        assert body['photo_uuid'] == photo
+        with api_tx('read committed') as tx:
+            assert {x['status'] for x in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'awaiting_member'}
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
+        assert r.status_code == 200 and r.get_json()['result'] == 'approved'
+        with api_tx('read committed') as tx:
+            assert {x['status'] for x in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'review'}
+        assert client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo}).get_json()['result'] == 'already'
+        assert client.get(f'/spotlight/card/{tok}').get_json()['status'] == 'approved'
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')
 
 
 def test_post_approve_is_gated_on_settings_and_render(client, make_person):
     """Route-level coverage of the two new 409s: approvals off (the owner
     decision in force for this wave), and approvals on but nothing rendered
-    yet."""
+    yet. Both return a JSON {"error": "<reason>"} body -- never a plain-text
+    abort -- per Task 2 fix round 1."""
     p = _make_eligible(make_person)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
     tok = make_card_token(rk, _email(p['id']))
     r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
-    assert r.status_code == 409
+    assert r.status_code == 409 and r.get_json() == {'error': 'approvals_disabled'}
     with api_tx() as tx:
         set_setting(tx, 'approvals_enabled', 'true')
-    r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
-    assert r.status_code == 409  # preview_unavailable: not rendered yet
-    with api_tx() as tx:
-        set_setting(tx, 'approvals_enabled', 'false')
+    try:
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
+        assert r.status_code == 409 and r.get_json() == {'error': 'preview_unavailable'}
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')
 
 
 def test_post_skip_cancels_and_wrong_email_is_403(client, make_person):

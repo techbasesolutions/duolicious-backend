@@ -59,13 +59,17 @@ def test_member_approval_then_render_then_review(make_person):
     p = _make_eligible(make_person)
     with api_tx() as tx:
         set_setting(tx, 'approvals_enabled', 'true')
-        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
-        photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
-        attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/x.png')
-        assert {r['status'] for r in _rows(tx, rk)} == {'awaiting_member'}
-        assert approve_card(tx, rk, p['id'], photo) == 'approved'
-        assert {r['status'] for r in _rows(tx, rk)} == {'review'}
-        set_setting(tx, 'approvals_enabled', 'false')
+    try:
+        with api_tx() as tx:
+            rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+            photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
+            attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/x.png')
+            assert {r['status'] for r in _rows(tx, rk)} == {'awaiting_member'}
+            assert approve_card(tx, rk, p['id'], photo) == 'approved'
+            assert {r['status'] for r in _rows(tx, rk)} == {'review'}
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')
 
 
 def test_approve_card_rejects_foreign_photo(make_person):
@@ -73,12 +77,16 @@ def test_approve_card_rejects_foreign_photo(make_person):
     other = _make_eligible(make_person, name='Other')
     with api_tx() as tx:
         set_setting(tx, 'approvals_enabled', 'true')
-        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
-        attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
-        foreign = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=other['id'])).fetchone()['u']
-        with pytest.raises(ValueError, match='photo_not_owned'):
-            approve_card(tx, rk, p['id'], foreign)
-        set_setting(tx, 'approvals_enabled', 'false')
+    try:
+        with api_tx() as tx:
+            rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+            attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
+            foreign = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=other['id'])).fetchone()['u']
+            with pytest.raises(ValueError, match='photo_not_owned'):
+                approve_card(tx, rk, p['id'], foreign)
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')
 
 
 def test_expire_member_approvals(make_person):

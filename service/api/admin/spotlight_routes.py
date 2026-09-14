@@ -524,11 +524,21 @@ def post_growth_queue_image(request_key: str):
 
     with api_tx('read committed') as tx:
         known = tx.execute(
-            """SELECT status FROM publishing_queue
+            """SELECT status, current_revision_id FROM publishing_queue
                 WHERE request_key = %(rk)s AND platform = %(pl)s""",
             dict(rk=request_key, pl=platform)).fetchone()
     if not known:
         abort(404)
+    # Fix round 1 (Task 2 review): both checks below run BEFORE the upload,
+    # so a rejected call never reaches the object store and never writes a
+    # row's image columns.
+    if known['current_revision_id'] is None:
+        return dict(error='no_revision'), 409
+    with api_tx('read committed') as tx:
+        rev = tx.execute("SELECT asset_hash FROM spotlight_revision WHERE id = %(id)s",
+                         dict(id=known['current_revision_id'])).fetchone()
+    if rev and rev['asset_hash'] is not None:
+        return dict(error='already_rendered'), 409
     # A row that is already scheduled, leased, published or cancelled must
     # not have its artwork swapped underneath it.
     if known['status'] not in ('awaiting_member', 'awaiting_render', 'review'):
@@ -560,14 +570,23 @@ def post_growth_queue_image(request_key: str):
             if rows and all(r['image_url'] for r in rows):
                 # One render per revision (Task 2): the platform image that
                 # completes the set stamps the revision's asset_hash/image
-                # columns once. A retry that lands here again (revision
-                # already rendered) is a no-op, not an error -- each row's
-                # OWN image_key/url is still restored below regardless.
-                rev_id = rows[0]['current_revision_id']
-                try:
-                    attach_render(tx, rev_id, hashlib.sha256(data).hexdigest(), key, url)
-                except ValueError:
-                    pass
+                # columns, once. Pinned to the facebook row's own upload when
+                # one exists, so the member's preview never depends on which
+                # platform happened to finish uploading last -- this call may
+                # be for instagram, completing a set whose facebook image was
+                # uploaded by an earlier, separate call, so facebook's raw
+                # bytes are not in hand here; asset_hash is a one-shot dedup
+                # marker, not a content hash of pixel bytes, so hashing the
+                # pinned row's own storage key keeps it deterministic and
+                # available regardless of upload order. Each row's own
+                # image_key/image_url was already stamped by the per-platform
+                # UPDATE above (this call's own row) or by an earlier call
+                # (the other platform's row), so nothing further needs
+                # restoring here.
+                pinned = next((r for r in rows if r['platform'] == 'facebook'), rows[0])
+                rev_id = pinned['current_revision_id']
+                asset_hash = hashlib.sha256(pinned['image_key'].encode()).hexdigest()
+                attach_render(tx, rev_id, asset_hash, pinned['image_key'], pinned['image_url'])
                 # A roundup (no subject) row is ready to schedule as soon as
                 # it is rendered. A subject row stays `awaiting_member` even
                 # once rendered -- approve_card is what moves it on to
@@ -576,11 +595,6 @@ def post_growth_queue_image(request_key: str):
                     """UPDATE publishing_queue SET status = 'review', updated_at = NOW()
                         WHERE request_key = %(rk)s AND status = 'awaiting_render'""",
                     dict(rk=request_key))
-                for r in rows:
-                    tx.execute(
-                        """UPDATE publishing_queue SET image_key = %(k)s, image_url = %(u)s
-                            WHERE request_key = %(rk)s AND platform = %(pl)s""",
-                        dict(k=r['image_key'], u=r['image_url'], rk=request_key, pl=r['platform']))
             _audit(tx, s, 'growth.queue.image', request_key=request_key, platform=platform)
     if moved:
         return dict(error='bad_status'), 409
@@ -830,11 +844,12 @@ def post_growth_queue_caption(s: t.SessionInfo, qid: str):
         # campaign link and creates a new revision rather than editing the
         # current one, so a caption change never silently alters content a
         # member already consented to. It raises in_flight for a
-        # scheduled/processing row, the same set create_revision refuses.
+        # scheduled/processing row and terminal for a published/cancelled
+        # one -- either is a real conflict, reported as JSON, not aborted.
         try:
             edit_caption(tx, row['request_key'], caption, _actor(s))
         except ValueError as e:
-            abort(409, str(e))
+            return dict(error=str(e)), 409
         stored = tx.execute(
             "SELECT caption FROM publishing_queue WHERE id = %(id)s",
             dict(id=queue_id)).fetchone()['caption']

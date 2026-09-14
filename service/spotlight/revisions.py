@@ -25,6 +25,9 @@ from typing import Optional
 from service.config import WEB_BASE_URL
 
 IN_FLIGHT = ('scheduled', 'processing')
+# A published or cancelled request is done: its content is either already
+# out in the world or dead, and neither state may be quietly rewritten.
+TERMINAL = ('published', 'cancelled')
 
 
 def _statuses(tx, request_key: str) -> set:
@@ -36,8 +39,11 @@ def _statuses(tx, request_key: str) -> set:
 def create_revision(tx, request_key: str, *, caption: str, photo_uuid: Optional[str],
                      participants: list, channels: list, layout_version: str = 'v1',
                      created_by: str) -> int:
-    if _statuses(tx, request_key) & set(IN_FLIGHT):
+    statuses = _statuses(tx, request_key)
+    if statuses & set(IN_FLIGHT):
         raise ValueError('in_flight')
+    if statuses & set(TERMINAL):
+        raise ValueError('terminal')
     next_rev = tx.execute(
         "SELECT COALESCE(MAX(revision), 0) + 1 AS n FROM spotlight_revision WHERE request_key = %(rk)s",
         dict(rk=request_key)).fetchone()['n']
@@ -73,7 +79,9 @@ def current_revision(tx, request_key: str) -> Optional[dict]:
 def attach_render(tx, revision_id: int, asset_hash: str, image_key: str, image_url: str) -> None:
     row = tx.execute("SELECT asset_hash FROM spotlight_revision WHERE id = %(id)s",
                      dict(id=revision_id)).fetchone()
-    if row and row['asset_hash'] is not None:
+    if not row:
+        raise ValueError('not_found')
+    if row['asset_hash'] is not None:
         raise ValueError('already_rendered')
     tx.execute(
         """UPDATE spotlight_revision SET asset_hash = %(h)s, image_key = %(k)s, image_url = %(u)s
@@ -142,7 +150,7 @@ def edit_caption(tx, request_key: str, caption: str, created_by: str) -> int:
 
 def approve_card(tx, request_key: str, person_id: int, photo_uuid: Optional[str], *,
                   nonce: Optional[str] = None) -> str:
-    from service.spotlight.queue import settings as _settings  # lazy: see module docstring
+    from service.spotlight.queue import settings as _settings, set_status  # lazy: see module docstring
     if _settings(tx).get('approvals_enabled') != 'true':
         raise ValueError('approvals_disabled')
     subject = tx.execute(
@@ -177,8 +185,11 @@ def approve_card(tx, request_key: str, person_id: int, photo_uuid: Optional[str]
     if not inserted:
         return 'already'
     if consent_complete(tx, rev['id']):
-        tx.execute(
-            """UPDATE publishing_queue SET status = 'review', updated_at = NOW()
-                WHERE request_key = %(rk)s AND status = 'awaiting_member'""",
-            dict(rk=request_key))
+        # Through the transition table (TRANSITIONS['awaiting_member'] now
+        # allows 'review'), not a raw UPDATE, so this stays subject to the
+        # same rules every other status change is.
+        for row in tx.execute(
+                "SELECT id FROM publishing_queue WHERE request_key = %(rk)s AND status = 'awaiting_member'",
+                dict(rk=request_key)).fetchall():
+            set_status(tx, row['id'], 'review')
     return 'approved'

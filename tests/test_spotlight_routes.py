@@ -209,6 +209,80 @@ def test_image_upload_refuses_a_published_row(client, monkeypatch):
     assert row['image_key'] == 'original.png'
 
 
+def test_image_upload_refuses_a_second_render_of_the_same_revision(client, monkeypatch):
+    """Fix round 1: once a revision is rendered, a second upload for it is
+    refused outright -- no upload attempted, no row or revision column
+    touched -- rather than silently re-rendering (which used to be a no-op
+    swallowed by a blanket except ValueError: pass)."""
+    import base64
+    calls = []
+    import service.api.admin.spotlight_routes as sr
+    monkeypatch.setattr(sr, '_put_png', lambda key, data: calls.append(key))
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+    png = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'0' * 100).decode()
+    H = {'X-Growth-Cron': 'test-cron-secret'}
+    assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'facebook', 'png_base64': png}, headers=H).status_code == 200
+    assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'instagram', 'png_base64': png}, headers=H).status_code == 200
+    with api_tx('read committed') as tx:
+        rev_before = current_revision(tx, rk)
+        rows_before = tx.execute(
+            "SELECT platform, image_key, image_url FROM publishing_queue WHERE request_key = %(rk)s ORDER BY platform",
+            dict(rk=rk)).fetchall()
+    assert rev_before['asset_hash'] is not None
+    calls.clear()
+    r = client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'facebook', 'png_base64': png}, headers=H)
+    assert r.status_code == 409 and r.get_json() == {'error': 'already_rendered'}
+    assert calls == []  # no upload was even attempted
+    with api_tx('read committed') as tx:
+        rev_after = current_revision(tx, rk)
+        rows_after = tx.execute(
+            "SELECT platform, image_key, image_url FROM publishing_queue WHERE request_key = %(rk)s ORDER BY platform",
+            dict(rk=rk)).fetchall()
+    assert rev_after['asset_hash'] == rev_before['asset_hash']
+    assert rev_after['image_key'] == rev_before['image_key'] and rev_after['image_url'] == rev_before['image_url']
+    assert rows_after == rows_before
+
+
+def test_image_upload_pins_render_to_facebook_regardless_of_upload_order(client, monkeypatch):
+    """Fix round 1: the revision's image_key/image_url/asset_hash always
+    reflect the facebook row's own upload when one exists, even when
+    instagram is uploaded first and completes the set."""
+    import base64
+    import service.api.admin.spotlight_routes as sr
+    monkeypatch.setattr(sr, '_put_png', lambda key, data: None)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+    png = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'0' * 100).decode()
+    H = {'X-Growth-Cron': 'test-cron-secret'}
+    # instagram first, facebook second (completes the set).
+    assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'instagram', 'png_base64': png}, headers=H).status_code == 200
+    assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'facebook', 'png_base64': png}, headers=H).status_code == 200
+    with api_tx('read committed') as tx:
+        rev = current_revision(tx, rk)
+    assert rev['image_key'] == f'spotlight/{rk}-facebook.png'
+    assert rev['image_url'].endswith(f'/spotlight/{rk}-facebook.png')
+
+
+def test_image_upload_refuses_when_no_revision_is_assigned(client, monkeypatch):
+    """Fix round 1: a row whose current_revision_id is NULL is refused before
+    any upload -- this should not happen for a request created through
+    create_candidate, but the route must fail closed rather than upload
+    against nothing."""
+    import base64
+    calls = []
+    import service.api.admin.spotlight_routes as sr
+    monkeypatch.setattr(sr, '_put_png', lambda key, data: calls.append(key))
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        tx.execute("UPDATE publishing_queue SET current_revision_id = NULL WHERE request_key = %(rk)s", dict(rk=rk))
+    png = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'0' * 100).decode()
+    r = client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'facebook', 'png_base64': png},
+                    headers={'X-Growth-Cron': 'test-cron-secret'})
+    assert r.status_code == 409 and r.get_json() == {'error': 'no_revision'}
+    assert calls == []
+
+
 def test_admin_approve_default_slot_and_purge(client, make_person):
     admin = _make_admin(make_person); tok = _session_for(admin)
     A = {'Authorization': f'Bearer {tok}'}
@@ -570,7 +644,37 @@ def test_caption_route_refuses_a_scheduled_row(client, make_person):
         for r in tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall():
             set_status(tx, r['id'], 'scheduled')
     r = client.post(f'/admin/growth/queue/{qid}/caption', json={'caption': 'x'}, headers=A)
-    assert r.status_code == 409
+    assert r.status_code == 409 and r.get_json() == {'error': 'in_flight'}
+
+
+def _terminal_caption_refused(client, make_person, terminal_status):
+    """Fix round 1: a published or cancelled request is done, and its
+    caption (and the revision it points at) must not be quietly rewritten
+    underneath it."""
+    admin = _make_admin(make_person); tok = _session_for(admin)
+    A = {'Authorization': f'Bearer {tok}'}
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        qid = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1", dict(rk=rk)).fetchone()['id']
+        tx.execute("UPDATE publishing_queue SET status = %(st)s WHERE request_key = %(rk)s",
+                   dict(st=terminal_status, rk=rk))
+        before = tx.execute("SELECT caption, current_revision_id FROM publishing_queue WHERE id = %(id)s",
+                            dict(id=qid)).fetchone()
+    r = client.post(f'/admin/growth/queue/{qid}/caption', json={'caption': 'a whole new caption'}, headers=A)
+    assert r.status_code == 409 and r.get_json() == {'error': 'terminal'}
+    with api_tx('read committed') as tx:
+        after = tx.execute("SELECT caption, current_revision_id FROM publishing_queue WHERE id = %(id)s",
+                           dict(id=qid)).fetchone()
+    assert after['caption'] == before['caption']
+    assert after['current_revision_id'] == before['current_revision_id']
+
+
+def test_caption_route_refuses_a_published_row(client, make_person):
+    _terminal_caption_refused(client, make_person, 'published')
+
+
+def test_caption_route_refuses_a_cancelled_row(client, make_person):
+    _terminal_caption_refused(client, make_person, 'cancelled')
 
 
 def test_growth_limit_exempts_cron_header_not_bare_ip(monkeypatch):
