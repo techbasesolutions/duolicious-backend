@@ -236,3 +236,35 @@ def test_opt_out_files_removal_tasks_for_a_published_roundup(make_person):
         ('facebook', 'post-facebook', 'delete_via_api'),
         ('instagram', 'post-instagram', 'manual_instagram'),
     ]
+
+
+def test_opt_out_does_not_duplicate_removal_tasks_across_tile_members(make_person):
+    """Two members tiled in the same published roundup can each opt out on
+    their own. Both match the same two published queue rows (one per
+    platform) in `_Q_PUBLISHED_TILE_ROWS`, so the second opt-out must not
+    file a second removal task for a post the first opt-out already filed
+    one for."""
+    p1 = _make_eligible(make_person, name='TileOne')
+    p2 = _make_eligible(make_person, name='TileTwo')
+    payload = json.dumps(dict(
+        tiles=[dict(person_id=p1['id'], first_name='TileOne', photo_url='https://cdn/t1.jpg'),
+               dict(person_id=p2['id'], first_name='TileTwo', photo_url='https://cdn/t2.jpg')],
+        count=2, countries=1))
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        tx.execute("""UPDATE publishing_queue
+                         SET payload = %(pl)s::jsonb, status = 'published',
+                             external_post_id = 'post-' || platform
+                       WHERE request_key = %(rk)s""",
+                   dict(pl=payload, rk=rk))
+        set_spotlight_opt_in(tx, p1['id'], False)
+        set_spotlight_opt_in(tx, p2['id'], False)
+        tasks = tx.execute("""SELECT t.platform, t.queue_id::text AS queue_id, t.done_at
+                                FROM spotlight_removal_task t
+                                JOIN publishing_queue q ON q.id = t.queue_id
+                               WHERE q.request_key = %(rk)s
+                               ORDER BY t.platform""", dict(rk=rk)).fetchall()
+    # One open task per platform row -- not one per opt-out.
+    assert [t['platform'] for t in tasks] == ['facebook', 'instagram']
+    assert len({t['queue_id'] for t in tasks}) == 2
+    assert all(t['done_at'] is None for t in tasks)

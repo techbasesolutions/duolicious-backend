@@ -37,9 +37,8 @@ from database import api_tx
 from duohash import sha512
 from service.admin import record_audit, require_admin
 from service.api.cron_auth import is_cron_request, require_admin_or_cron
-from service.api.decorators import aget, apost, get, post, Q_GET_SESSION
-from service.api.unsubscribe_routes import unsub_limit
-from service.config import USER_IMAGES_BASE_URL
+from service.api.decorators import aget, apost, get, post, limiter, Q_GET_SESSION, _is_private_ip
+from service.config import USER_IMAGES_BASE_URL, WEB_BASE_URL
 from service.spotlight.eligibility import eligibility, primary_photo_uuid, photo_url
 from service.spotlight.queue import (create_candidate, expire_member_approvals, attach_image,
                                      set_status, settings, set_setting, stamp_featured,
@@ -48,6 +47,29 @@ from service.spotlight.roundup import roundup_snapshot
 from service.spotlight.storage import _bucket, delete_images
 
 _PNG_SIG = b'\x89PNG\r\n\x1a\n'
+
+
+def _growth_limit_exempt() -> bool:
+    """Exempt the cron worker outright, on top of the existing private-IP
+    exemption every shared limit already gets.
+
+    This surface used to ride on unsubscribe's `unsub_limit` (20 per minute,
+    scope `unsubscribe`), which is fine for one-off recipient clicks but wrong
+    here: the admin worker's per-minute claim poll and its once-a-day tick
+    call from the same Vercel egress IP, so the poll alone can exhaust a
+    shared 20/minute bucket and the tick 503s. A valid cron header now clears
+    the bucket entirely instead of spending from it."""
+    return is_cron_request() or _is_private_ip()
+
+
+# Dedicated bucket (scope `growth`) so this surface no longer competes with
+# unsubscribe's recipient-click traffic; 120/minute is headroom for a human
+# admin driving the queue UI, since cron itself is fully exempt above.
+growth_limit = limiter.shared_limit(
+    "120 per minute",
+    scope="growth",
+    exempt_when=_growth_limit_exempt,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -119,9 +141,12 @@ def _audit(tx, s, action, **metadata):
     """Human mutations write an audit row inside the mutation's transaction.
     Cron has no actor to attribute, so it logs a line instead.
 
-    Keyed on the session alone, never on `is_cron_request()`: an admin who
-    happens to send the cron header as well is still a human actor and must
-    still leave an audit trail."""
+    `s` is None whenever `_gate()` saw a valid cron header: that check runs
+    FIRST and short-circuits before any bearer is resolved, so a request that
+    carries both a valid cron header and an admin's bearer is still treated as
+    the cron actor here. Human audit rows come only from the admin-only
+    routes registered with `aget`/`apost`, which always resolve a real
+    session and never consult the cron header at all."""
     if s is not None:
         record_audit(tx, s, action, metadata=metadata)
     else:
@@ -356,7 +381,7 @@ def _queue_row(r) -> dict:
 # Admin-or-cron endpoints (unauthenticated decorators; see DECORATOR NOTE)
 # ---------------------------------------------------------------------------
 
-@get('/admin/growth/queue', limiter=unsub_limit)
+@get('/admin/growth/queue', limiter=growth_limit)
 def get_growth_queue():
     _gate()
     status = request.args.get('status') or None
@@ -366,7 +391,7 @@ def get_growth_queue():
     return jsonify([_queue_row(r) for r in rows])
 
 
-@post('/admin/growth/queue/claim', limiter=unsub_limit)
+@post('/admin/growth/queue/claim', limiter=growth_limit)
 def post_growth_queue_claim():
     s = _gate()
     body = _body()
@@ -399,7 +424,7 @@ def post_growth_queue_claim():
     return jsonify(claimed)
 
 
-@post('/admin/growth/queue/<qid>/complete', limiter=unsub_limit)
+@post('/admin/growth/queue/<qid>/complete', limiter=growth_limit)
 def post_growth_queue_complete(qid: str):
     s = _gate()
     body = _body()
@@ -431,7 +456,7 @@ def post_growth_queue_complete(qid: str):
     return dict(ok=True, status=status)
 
 
-@get('/admin/growth/queue/<qid>/eligible', limiter=unsub_limit)
+@get('/admin/growth/queue/<qid>/eligible', limiter=growth_limit)
 def get_growth_queue_eligible(qid: str):
     _gate()
     queue_id = _qid(qid)
@@ -461,7 +486,7 @@ def get_growth_queue_eligible(qid: str):
     return dict(ok=ok, reason=reason)
 
 
-@post('/admin/growth/queue/<request_key>/image', limiter=unsub_limit)
+@post('/admin/growth/queue/<request_key>/image', limiter=growth_limit)
 def post_growth_queue_image(request_key: str):
     s = _gate()
     body = _body()
@@ -530,7 +555,7 @@ def post_growth_queue_image(request_key: str):
     return dict(image_url=url)
 
 
-@get('/admin/growth/candidates', limiter=unsub_limit)
+@get('/admin/growth/candidates', limiter=growth_limit)
 def get_growth_candidates():
     _gate()
     with api_tx('read committed') as tx:
@@ -546,7 +571,7 @@ def get_growth_candidates():
     return dict(welcomes=welcomes, roundup_due=roundup_due)
 
 
-@post('/admin/growth/spotlight/welcome', limiter=unsub_limit)
+@post('/admin/growth/spotlight/welcome', limiter=growth_limit)
 def post_growth_spotlight_welcome():
     s = _gate()
     person_id = _body().get('person_id')
@@ -577,7 +602,7 @@ def post_growth_spotlight_welcome():
     return dict(request_key=rk)
 
 
-@post('/admin/growth/spotlight/roundup', limiter=unsub_limit)
+@post('/admin/growth/spotlight/roundup', limiter=growth_limit)
 def post_growth_spotlight_roundup():
     s = _gate()
     with api_tx() as tx:
@@ -593,7 +618,7 @@ def post_growth_spotlight_roundup():
     return dict(request_key=rk)
 
 
-@post('/admin/growth/queue/expire-approvals', limiter=unsub_limit)
+@post('/admin/growth/queue/expire-approvals', limiter=growth_limit)
 def post_growth_queue_expire_approvals():
     s = _gate()
     with api_tx() as tx:
@@ -602,14 +627,14 @@ def post_growth_queue_expire_approvals():
     return dict(cancelled=n)
 
 
-@get('/admin/growth/settings', limiter=unsub_limit)
+@get('/admin/growth/settings', limiter=growth_limit)
 def get_growth_settings():
     _gate()
     with api_tx('read committed') as tx:
         return settings(tx)
 
 
-@get('/admin/growth/removals', limiter=unsub_limit)
+@get('/admin/growth/removals', limiter=growth_limit)
 def get_growth_removals():
     _gate()
     pending = request.args.get('pending') in ('1', 'true', 'yes')
@@ -618,7 +643,7 @@ def get_growth_removals():
     return jsonify([_row(r) for r in rows])
 
 
-@post('/admin/growth/removals/<int:removal_id>/done', limiter=unsub_limit)
+@post('/admin/growth/removals/<int:removal_id>/done', limiter=growth_limit)
 def post_growth_removal_done(removal_id: int):
     s = _gate()
     with api_tx() as tx:
@@ -643,7 +668,7 @@ def post_growth_removal_done(removal_id: int):
     return dict(ok=True, updated=updated)
 
 
-@post('/admin/growth/token-health', limiter=unsub_limit)
+@post('/admin/growth/token-health', limiter=growth_limit)
 def post_growth_token_health():
     s = _gate()
     body = _body()
@@ -762,15 +787,33 @@ def post_growth_queue_caption(s: t.SessionInfo, qid: str):
     caption = _body().get('caption')
     if not isinstance(caption, str) or not caption.strip():
         abort(400)
+    caption_text: str = caption
     with api_tx() as tx:
+        row = tx.execute(
+            "SELECT request_key FROM publishing_queue WHERE id = %(id)s",
+            dict(id=queue_id)).fetchone()
+        if not row:
+            abort(409)
+        # The link is looked up, never re-minted: `create_candidate` mints
+        # exactly one campaign link per request key (kind 'post:<request_key>',
+        # shared by both platform rows) and `_Q_ROWS` counts clicks and
+        # sign-ups against that one key, so a second `make_campaign_link` call
+        # here would split the count across two links for the same post.
+        link = tx.execute(
+            "SELECT key FROM campaign_link WHERE kind = %(k)s LIMIT 1",
+            dict(k=f"post:{row['request_key']}")).fetchone()
+        if link:
+            url = f"{WEB_BASE_URL.rstrip('/')}/s/{link['key']}"
+            if url not in caption_text:
+                caption_text = f"{caption_text.rstrip()} {url}"
         cur = tx.execute(
             """UPDATE publishing_queue SET caption = %(c)s, updated_at = NOW()
                 WHERE id = %(id)s AND status NOT IN ('published', 'cancelled')""",
-            dict(c=caption, id=queue_id))
+            dict(c=caption_text, id=queue_id))
         if not cur.rowcount:
             abort(409)
         _audit(tx, s, 'growth.queue.caption', queue_id=str(queue_id))
-    return dict(ok=True, caption=caption)
+    return dict(ok=True, caption=caption_text)
 
 
 @apost('/admin/growth/queue/purge')

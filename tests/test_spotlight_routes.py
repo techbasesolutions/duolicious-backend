@@ -454,3 +454,63 @@ def test_queue_row_counts_one_signup_per_person(client, make_person):
     mine = [r for r in rows if r['request_key'] == rk]
     assert len(mine) == 2
     assert all(r['clicks'] == 2 and r['signups'] == 1 for r in mine)
+
+
+def test_caption_edit_keeps_exactly_one_campaign_link(client, make_person):
+    """Editing the caption must not drop the row's own /s/<key> link: the
+    same link is what `_Q_ROWS` counts clicks and sign-ups against, so a
+    caption saved without it silently loses the post's CTA."""
+    from service.config import WEB_BASE_URL
+
+    admin = _make_admin(make_person); tok = _session_for(admin)
+    A = {'Authorization': f'Bearer {tok}'}
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='New this week', created_by='t')
+        qid = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1", dict(rk=rk)).fetchone()['id']
+        key = tx.execute("SELECT key FROM campaign_link WHERE kind = %(k)s", dict(k=f'post:{rk}')).fetchone()['key']
+    link = f"{WEB_BASE_URL.rstrip('/')}/s/{key}"
+
+    r = client.post(f'/admin/growth/queue/{qid}/caption',
+                     json={'caption': 'Brand new caption text with no link at all'}, headers=A)
+    assert r.status_code == 200
+    body = r.get_json()['caption']
+    assert body.count(link) == 1
+    assert body.endswith(link)
+    with api_tx('read committed') as tx:
+        stored = tx.execute("SELECT caption FROM publishing_queue WHERE id = %(id)s", dict(id=qid)).fetchone()['caption']
+    assert stored == body
+
+    # Re-editing a caption that already ends with the link must not duplicate it.
+    r2 = client.post(f'/admin/growth/queue/{qid}/caption', json={'caption': body}, headers=A)
+    assert r2.status_code == 200
+    assert r2.get_json()['caption'].count(link) == 1
+
+
+def test_growth_limit_exempts_cron_header_not_bare_ip(monkeypatch):
+    """I: the /admin/growth/* admin-or-cron routes used to share unsubscribe's
+    20/minute bucket, so the admin worker's per-minute claim poll could exhaust
+    it before the once-a-day tick ran from the same egress IP. They now carry
+    their own `growth_limit` whose `exempt_when` clears the bucket for a valid
+    cron header outright (on top of the pre-existing private-IP exemption).
+
+    The suite runs with IP-based rate limiting disabled (`test/input/
+    disable-ip-rate-limit`), so `_is_private_ip` already returns True for
+    every request here regardless of this fix -- looping real requests would
+    pass whether or not the cron exemption exists. `_is_private_ip` is
+    monkeypatched to False so the assertion actually isolates the cron-header
+    behaviour, exercised through Flask's own request context rather than a
+    live HTTP call."""
+    import service.api.admin.spotlight_routes as sr
+    import service.api.decorators as dec
+
+    monkeypatch.setattr(sr, '_is_private_ip', lambda: False)
+    app = dec.app
+
+    with app.test_request_context('/admin/growth/settings', headers={'X-Growth-Cron': 'test-cron-secret'}):
+        assert sr._growth_limit_exempt() is True
+
+    with app.test_request_context('/admin/growth/settings'):
+        assert sr._growth_limit_exempt() is False
+
+    with app.test_request_context('/admin/growth/settings', headers={'X-Growth-Cron': 'wrong'}):
+        assert sr._growth_limit_exempt() is False

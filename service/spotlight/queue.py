@@ -139,21 +139,31 @@ _Q_PUBLISHED_TILE_ROWS = f"""
 
 
 def _file_removal_tasks(tx, rows) -> int:
-    """One task per published platform row. A Facebook post can be deleted
-    through the Graph API; Instagram has no delete endpoint for published
-    media, so that one is flagged for a human instead.
+    """One open task per published platform row. A Facebook post can be
+    deleted through the Graph API; Instagram has no delete endpoint for
+    published media, so that one is flagged for a human instead.
 
     Those two reason strings are the contract the admin worker and the
     removals list read, so a task filed for a roundup tile uses exactly the
     same pair as one filed for a card's subject. Nothing downstream has to
-    know why the task exists in order to action it."""
+    know why the task exists in order to action it.
+
+    Guarded with NOT EXISTS on an already-open task for the same queue_id:
+    a roundup's tile snapshot names up to four members, so several of them
+    opting out one after another all match the same published queue rows in
+    `_Q_PUBLISHED_TILE_ROWS`, and without this guard each opt-out would file
+    its own duplicate task for the same post."""
+    n = 0
     for r in rows:
-        tx.execute(
+        cur = tx.execute(
             """INSERT INTO spotlight_removal_task (queue_id, platform, external_post_id, reason)
-               VALUES (%(q)s, %(pl)s, %(ext)s, %(reason)s)""",
+               SELECT %(q)s, %(pl)s, %(ext)s, %(reason)s
+                WHERE NOT EXISTS (SELECT 1 FROM spotlight_removal_task t
+                                   WHERE t.queue_id = %(q)s AND t.done_at IS NULL)""",
             dict(q=r['id'], pl=r['platform'], ext=r['external_post_id'],
                  reason='delete_via_api' if r['platform'] == 'facebook' else 'manual_instagram'))
-    return len(rows)
+        n += cur.rowcount
+    return n
 
 
 def cancel_for_member(tx, person_id: int, reason: str) -> int:
