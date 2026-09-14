@@ -76,10 +76,11 @@ def test_bad_tokens(client):
 
 
 def test_e4_and_e5_html_are_on_template_and_escaped():
+    em_dash = chr(0x2014)  # built at runtime so the source file carries no literal em dash
     h = card_ready_html('Ri<b>vka', 'member of the week', 'https://ahavah.app/spotlight/card/t', 7, 'https://ahavah.app/u/x')
-    assert 'title-card-ready.png' in h and 'Ri&lt;b&gt;vka' in h and '<b>vka' not in h and '—' not in h and '—' not in S4
+    assert 'title-card-ready.png' in h and 'Ri&lt;b&gt;vka' in h and '<b>vka' not in h and em_dash not in h and em_dash not in S4
     h = card_live_html('Sarah', 'https://cdn/x.png', 'https://www.facebook.com/1', share_url_for('https://www.facebook.com/1'), 'https://ahavah.app/u/x')
-    assert 'https://cdn/x.png' in h and 'sharer.php?u=https%3A%2F%2Fwww.facebook.com%2F1' in h and '—' not in S5
+    assert 'https://cdn/x.png' in h and 'sharer.php?u=https%3A%2F%2Fwww.facebook.com%2F1' in h and em_dash not in S5
     with pytest.raises(ValueError):
         card_live_html('S', 'http://insecure/x.png', 'https://a', 'https://b', 'https://u')
     assert post_url_for('facebook', '123_456') == 'https://www.facebook.com/123_456'
