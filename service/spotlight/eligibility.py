@@ -4,7 +4,7 @@ from typing import Optional
 from service.config import USER_IMAGES_BASE_URL
 
 REASONS = ('not_activated', 'not_opted_in', 'not_verified', 'under_18', 'reported',
-           'pending_deletion', 'featured_recently', 'no_photo')
+           'pending_deletion', 'featured_recently', 'no_photo', 'photo_missing')
 
 _Q = """
     SELECT p.activated,
@@ -19,10 +19,23 @@ _Q = """
 """
 
 
-def eligibility(tx, person_id: int) -> tuple[bool, str]:
+def eligibility(tx, person_id: int, photo_uuid: Optional[str] = None) -> tuple[bool, str]:
     r = tx.execute(_Q, dict(pid=person_id)).fetchone()
     if not r:
         return False, 'not_activated'
+    if photo_uuid is not None:
+        # A specific photo was chosen (the one a rendered card actually
+        # shows), so its own presence, ownership and moderation status is
+        # what matters here -- a different approved photo on the same
+        # person does not save a card whose chosen photo is gone.
+        photo_reason = 'photo_missing'
+        photo_failed = tx.execute(
+            """SELECT 1 FROM photo WHERE uuid::text = %(u)s AND person_id = %(pid)s
+                AND moderation_status = 'approved'""",
+            dict(u=photo_uuid, pid=person_id)).fetchone() is None
+    else:
+        photo_reason = 'no_photo'
+        photo_failed = not r['has_photo']
     checks = [
         ('not_activated', not r['activated']),
         ('not_opted_in', not r['spotlight_opt_in']),
@@ -31,7 +44,7 @@ def eligibility(tx, person_id: int) -> tuple[bool, str]:
         ('reported', r['reported']),
         ('pending_deletion', r['pending_deletion']),
         ('featured_recently', r['featured_recently']),
-        ('no_photo', not r['has_photo']),
+        (photo_reason, photo_failed),
     ]
     for reason, failed in checks:
         if failed:

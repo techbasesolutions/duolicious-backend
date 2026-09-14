@@ -8,7 +8,6 @@ on purpose -- test files in this suite do not import from each other.
 from __future__ import annotations
 
 import hashlib
-import json
 import secrets
 
 import pytest
@@ -16,7 +15,7 @@ import pytest
 from database import api_tx
 from service.spotlight import set_spotlight_opt_in
 from service.spotlight.queue import create_candidate, set_status, set_setting
-from service.spotlight.revisions import current_revision, attach_render
+from service.spotlight.revisions import current_revision, attach_render, create_revision, record_consent
 
 
 def _session_for(p, signed_in: bool = True) -> str:
@@ -397,29 +396,57 @@ def test_cron_header_never_resolves_a_session(client, monkeypatch):
 
 
 def test_roundup_eligible_checks_every_tile_member(client, make_person):
-    """C1: a roundup has no subject, so `eligible` walks the stored tile
-    snapshot instead. One tile member who has since been reported blocks the
-    whole card, because the card cannot be published without their face."""
+    """F02: `eligible` now delegates to `dispatch_check`, so a roundup's
+    participants come from its immutable revision (not the mutable payload
+    snapshot) and the row must be a claimed, leased, processing row -- the
+    dispatch worker's exact view -- not just any queue row by id. One
+    participant who has since been reported blocks the whole card, because
+    the card cannot be published without their face."""
     a = _make_eligible(make_person, name='TileSubject')
     reporter = make_person(name='TileReporter', gender='Man')
     with api_tx() as tx:
+        set_setting(tx, 'publication_enabled', 'true')
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        rid = create_revision(tx, rk, caption='c', photo_uuid=None,
+                              participants=[{'person_id': a['id'], 'photo_uuid': None}],
+                              channels=['facebook', 'instagram'], created_by='t')
+        attach_render(tx, rid, 'h', 'k', 'https://cdn/k.png')
+        record_consent(tx, rid, a['id'], 'participant')
         tx.execute(
-            "UPDATE publishing_queue SET payload = %(pl)s::jsonb WHERE request_key = %(rk)s",
-            dict(pl=json.dumps(dict(
-                tiles=[dict(person_id=a['id'], first_name='TileSubject', photo_url='https://cdn/t.jpg')],
-                count=1, countries=1)), rk=rk))
-        qid = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
-                         dict(rk=rk)).fetchone()['id']
+            "UPDATE publishing_queue SET status = 'scheduled', scheduled_for = NOW() - interval '1 minute' WHERE request_key = %(rk)s",
+            dict(rk=rk))
+        rows = [r for r in tx.execute("SELECT * FROM claim_spotlight_posts(10)").fetchall()
+                if r['request_key'] == rk]
+    qid, tok = rows[0]['id'], rows[0]['lease_token']
     H = {'X-Growth-Cron': 'test-cron-secret'}
-    assert client.get(f'/admin/growth/queue/{qid}/eligible', headers=H).get_json() == {'ok': True, 'reason': ''}
+    assert client.get(f'/admin/growth/queue/{qid}/eligible?lease_token={tok}', headers=H).get_json() == {'ok': True, 'reason': ''}
     with api_tx() as tx:
         tx.execute(
             """INSERT INTO skipped (subject_person_id, object_person_id, reported, report_reason)
                VALUES (%(a)s, %(b)s, TRUE, 'spam')""",
             dict(a=reporter['id'], b=a['id']))
+    assert client.get(f'/admin/growth/queue/{qid}/eligible?lease_token={tok}', headers=H).get_json() == {
+        'ok': False, 'reason': f"participant:{a['id']}:reported"}
+    with api_tx() as tx:
+        set_setting(tx, 'publication_enabled', 'false')
+
+
+def test_eligible_without_lease_token_fails_closed(client, make_person):
+    """F02: a claimed, processing row with no lease_token on the request is
+    refused outright rather than told the row would pass."""
+    p = _make_eligible(make_person, name='NoLease')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
+        tx.execute(
+            "UPDATE publishing_queue SET status = 'scheduled', scheduled_for = NOW() - interval '1 minute' WHERE request_key = %(rk)s",
+            dict(rk=rk))
+        rows = [r for r in tx.execute("SELECT * FROM claim_spotlight_posts(10)").fetchall()
+                if r['request_key'] == rk]
+    qid = rows[0]['id']
+    H = {'X-Growth-Cron': 'test-cron-secret'}
     assert client.get(f'/admin/growth/queue/{qid}/eligible', headers=H).get_json() == {
-        'ok': False, 'reason': f"tile:{a['id']}:reported"}
+        'ok': False, 'reason': 'lease_required'}
 
 
 def test_image_upload_refuses_a_row_that_moved_during_the_upload(client, monkeypatch):

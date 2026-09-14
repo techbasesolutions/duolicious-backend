@@ -40,6 +40,7 @@ from service.admin import record_audit, require_admin
 from service.api.cron_auth import is_cron_request, require_admin_or_cron
 from service.api.decorators import aget, apost, get, post, limiter, Q_GET_SESSION, _is_private_ip
 from service.config import USER_IMAGES_BASE_URL
+from service.spotlight.dispatch import dispatch_check
 from service.spotlight.eligibility import eligibility, primary_photo_uuid, photo_url
 from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      set_status, settings, set_setting, stamp_featured,
@@ -488,31 +489,17 @@ def post_growth_queue_complete(qid: str):
 
 @get('/admin/growth/queue/<qid>/eligible', limiter=growth_limit)
 def get_growth_queue_eligible(qid: str):
+    """The publish worker's final check before it dispatches a row, and the
+    only thing that check is allowed to do (F02 remediation): delegate to
+    `dispatch_check`, which fails closed on every condition rather than only
+    the ones a payload snapshot happens to carry. `lease_token` binds the
+    answer to the specific lease `claim_spotlight_posts` handed the caller;
+    without one the row is refused outright rather than treated as eligible."""
     _gate()
     queue_id = _qid(qid)
+    lease_token = request.args.get('lease_token')
     with api_tx('read committed') as tx:
-        row = tx.execute("SELECT kind, subject_person_id, payload FROM publishing_queue WHERE id = %(id)s",
-                         dict(id=queue_id)).fetchone()
-        if not row:
-            abort(404)
-        if row['kind'] == 'roundup':
-            # A roundup has no subject, but the tile snapshot stored at
-            # creation names (and shows the photo of) up to four members. Days
-            # can pass between that snapshot and the publish, so every tile is
-            # re-checked here: one member who has since opted out, been
-            # reported or asked for deletion blocks the whole card, because
-            # the card cannot be published without their face on it.
-            for tile in (row['payload'] or {}).get('tiles') or []:
-                tile_person_id = tile.get('person_id')
-                if tile_person_id is None:
-                    continue
-                ok, reason = eligibility(tx, tile_person_id)
-                if not ok:
-                    return dict(ok=False, reason=f'tile:{tile_person_id}:{reason}')
-            return dict(ok=True, reason='')
-        if row['subject_person_id'] is None:
-            return dict(ok=True, reason='')
-        ok, reason = eligibility(tx, row['subject_person_id'])
+        ok, reason = dispatch_check(tx, queue_id, lease_token)
     return dict(ok=ok, reason=reason)
 
 
