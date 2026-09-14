@@ -12,6 +12,12 @@ from urllib.parse import urlparse
 
 from service.config import WEB_BASE_URL
 
+# Hosts a campaign link may target when a caller opts into `external_ok`
+# (spec 3.4/3.5, E5): the platforms a Spotlight post can actually live on.
+# Never widen this without also confirming the platform's URL shape can't be
+# abused as an open redirect (see make_campaign_link's docstring).
+ALLOWED_EXTERNAL_HOSTS = ('www.facebook.com', 'www.instagram.com')
+
 _Q_SAME_RUN = """
     SELECT 1 FROM email_send_log
      WHERE person_id = %(pid)s AND campaign = %(c)s AND campaign_id = %(cid)s
@@ -102,19 +108,30 @@ def log_send(tx, person_id: int, campaign: str, campaign_id: str,
         dict(pid=person_id, c=campaign, cid=campaign_id, mid=message_id))
 
 def make_campaign_link(tx, kind: str, target_url: str,
-                       subject_person_id: Optional[int] = None) -> str:
-    """Mint a /s/<key> link. `target_url` must stay on our own web app:
-    /s/<key> redirects to whatever is stored here, so accepting a foreign
-    target would turn every campaign email into an open redirect.
+                       subject_person_id: Optional[int] = None, *,
+                       external_ok: bool = False) -> str:
+    """Mint a /s/<key> link. `target_url` must stay on our own web app by
+    default: /s/<key> redirects to whatever is stored here, so accepting a
+    foreign target would turn every campaign email into an open redirect.
 
     Compared by scheme + netloc (urlparse), not a bare `startswith`: a bare
     prefix match would let `https://ahavah.app.evil.example/x` through
     whenever WEB_BASE_URL is `https://ahavah.app`, since the string
     literally starts with that prefix even though the host is a different,
-    attacker-controlled domain."""
-    base = urlparse(WEB_BASE_URL)
+    attacker-controlled domain.
+
+    `external_ok=True` (E5 only, spec 3.4/3.5: the share CTA must point at
+    the actual Facebook/Instagram post) additionally accepts an `https`
+    target whose netloc is one of `ALLOWED_EXTERNAL_HOSTS`, checked the same
+    scheme+netloc way for the same subdomain-spoofing reason -- never a bare
+    `startswith` or substring match. Every other target still raises
+    `ValueError`, exactly as when `external_ok` is left False."""
     target = urlparse(str(target_url))
-    if (target.scheme, target.netloc) != (base.scheme, base.netloc):
+    base = urlparse(WEB_BASE_URL)
+    on_web_base = (target.scheme, target.netloc) == (base.scheme, base.netloc)
+    on_allowed_external = (external_ok and target.scheme == 'https'
+                           and target.netloc in ALLOWED_EXTERNAL_HOSTS)
+    if not (on_web_base or on_allowed_external):
         raise ValueError(f"campaign link target must start with {WEB_BASE_URL.rstrip('/')}")
     key = secrets.token_urlsafe(6)
     tx.execute(

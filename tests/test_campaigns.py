@@ -81,3 +81,28 @@ def test_campaign_link_rejects_a_lookalike_subdomain_target(make_person):
         # the existing, legitimate on-site target must still be accepted
         url = make_campaign_link(tx, 'e1', f'{WEB_BASE_URL}/discover', p['id'])
         assert url.startswith(f"{WEB_BASE_URL.rstrip('/')}/s/")
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1: E5's share CTA must be able to target the live Facebook/
+# Instagram post, which is off WEB_BASE_URL. `external_ok=True` opens that
+# one exception -- still scheme+netloc pinned, never a bare prefix match, and
+# still False (unchanged behaviour) unless a caller opts in.
+# ---------------------------------------------------------------------------
+
+def test_campaign_link_external_ok_accepts_allowed_host_only_when_opted_in(make_person):
+    p = make_person(name='External')
+    with api_tx() as tx:
+        with pytest.raises(ValueError):
+            make_campaign_link(tx, 'e5', 'https://www.facebook.com/123', p['id'])
+        url = make_campaign_link(tx, 'e5', 'https://www.facebook.com/123', p['id'], external_ok=True)
+        assert url.startswith(f"{WEB_BASE_URL.rstrip('/')}/s/")
+
+
+def test_campaign_link_external_ok_still_rejects_lookalike_and_insecure(make_person):
+    p = make_person(name='ExternalLookalike')
+    with api_tx() as tx:
+        with pytest.raises(ValueError):
+            make_campaign_link(tx, 'e5', 'https://www.facebook.com.evil.example/x', p['id'], external_ok=True)
+        with pytest.raises(ValueError):
+            make_campaign_link(tx, 'e5', 'http://www.facebook.com/x', p['id'], external_ok=True)

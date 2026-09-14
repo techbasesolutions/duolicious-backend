@@ -102,10 +102,17 @@ You're receiving this because you opted in to Community Spotlight.
 def send_card_live(person_id: int, request_key: str, external_post_id: str, platform: str) -> bool:
     """Synchronous send for one platform's publish. `campaign_id` includes
     the platform since facebook and instagram publish (and so E5-fire)
-    independently for the same request_key. The share CTA wraps the post
-    URL in a /s/<key> campaign link (make_campaign_link) so shares
-    attribute clicks back to this post; the plain "see the post" link is
-    left unwrapped."""
+    independently for the same request_key.
+
+    The "Share your card" button's own click is what gets attributed: its
+    href is a /s/<key> campaign link (make_campaign_link) whose target is
+    the Facebook sharer dialog for this post (share_url_for(post_url), a
+    www.facebook.com URL even when the post itself is on Instagram, since
+    Facebook's sharer can open for any link), so clicking it in the email
+    is counted against 'post:<request_key>' the same way a click on the
+    plain post link is. The plain "see the post" link stays the unwrapped,
+    plain post URL, so a reader can always reach the post directly even if
+    campaign-link redirects are ever unavailable."""
     with api_tx('read committed') as tx:
         person = tx.execute(_Q_PERSON, dict(id=person_id)).fetchone()
         card = tx.execute(_Q_CARD, dict(rk=request_key, pl=platform)).fetchone()
@@ -115,9 +122,12 @@ def send_card_live(person_id: int, request_key: str, external_post_id: str, plat
 
     def build(row: dict) -> tuple[str, str]:
         with api_tx() as tx:
-            wrapped = make_campaign_link(tx, f'post:{request_key}', post_url, person_id)
-        html = card_live_html(row['first_name'], card['image_url'], post_url,
-                              share_url_for(wrapped),
+            # external_ok=True: the sharer dialog lives on www.facebook.com,
+            # not our own web app, which make_campaign_link otherwise
+            # refuses (spec 3.4/3.5 CTA attribution for E5).
+            wrapped = make_campaign_link(tx, f'post:{request_key}', share_url_for(post_url),
+                                        person_id, external_ok=True)
+        html = card_live_html(row['first_name'], card['image_url'], post_url, wrapped,
                               unsub_url(UNSUB_SCOPE, row['email'], WEB_BASE_URL))
         return SUBJECT, html
 

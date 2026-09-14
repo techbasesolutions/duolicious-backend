@@ -100,3 +100,24 @@ def test_send_card_ready_uses_runner_exempt(make_person, monkeypatch):
     assert send_card_ready(p['id'], rk) is True
     assert len(sent) == 1 and '/spotlight/card/' in sent[0]['body']
     assert send_card_ready(p['id'], rk) is False      # same campaign id, idempotent
+
+
+def test_send_card_live_wraps_share_link_and_is_idempotent(make_person, monkeypatch):
+    import service.campaigns.runner as r
+    sent = []
+    class _S:
+        def send(self, **kw): sent.append(kw); return 'mid'
+    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'live-{p["id"]}@ahavah-test.invalid', id=p['id']))
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute(
+            "UPDATE publishing_queue SET image_url = %(u)s WHERE request_key = %(rk)s AND platform = 'facebook'",
+            dict(u='https://cdn.ahavah.app/spotlight/x.png', rk=rk))
+    from emails.spotlight_card_live import send_card_live
+    assert send_card_live(p['id'], rk, '123_456', 'facebook') is True
+    assert len(sent) == 1
+    body = sent[0]['body']
+    assert '/s/' in body and 'https://www.facebook.com/123_456' in body
+    assert send_card_live(p['id'], rk, '123_456', 'facebook') is False   # same campaign id, idempotent
