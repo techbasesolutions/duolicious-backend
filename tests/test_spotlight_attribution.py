@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from pydantic import ValidationError
 
@@ -10,8 +12,9 @@ from service.growth.queries import post_stats
 
 def test_attribute_stamps_person_and_latest_human_click(make_person):
     joiner = make_person(name='Joiner')
+    rk = uuid.uuid4().hex
     with api_tx() as tx:
-        url = make_campaign_link(tx, 'post:rk1', f'{WEB_BASE_URL}/discover', None)
+        url = make_campaign_link(tx, f'post:{rk}', f'{WEB_BASE_URL}/discover', None)
         key = url.rsplit('/', 1)[1]
         record_click(tx, key, 'facebookexternalhit/1.1')   # bot
         record_click(tx, key, 'Mozilla/5.0 (iPhone)')      # human
@@ -20,20 +23,30 @@ def test_attribute_stamps_person_and_latest_human_click(make_person):
         assert row['spotlight_ref'] == key
         stamped = tx.execute("SELECT ua_class FROM campaign_click WHERE link_key = %(k)s AND signup_person_id = %(pid)s", dict(k=key, pid=joiner['id'])).fetchall()
         assert [r['ua_class'] for r in stamped] == ['mobile']
-        assert post_stats(tx, 'rk1') == {'clicks': 1, 'signups': 1}
+        assert post_stats(tx, rk) == {'clicks': 1, 'signups': 1}
         assert attribute_signup(tx, joiner['id'], 'unknownkey') is False
         assert attribute_signup(tx, joiner['id'], None) is False
 
 
 def test_attribute_does_not_overwrite(make_person):
     p = make_person(name='Twice')
+    rk_a = uuid.uuid4().hex
+    rk_b = uuid.uuid4().hex
     with api_tx() as tx:
-        a = make_campaign_link(tx, 'post:a', f'{WEB_BASE_URL}/discover', None).rsplit('/', 1)[1]
-        b = make_campaign_link(tx, 'post:b', f'{WEB_BASE_URL}/discover', None).rsplit('/', 1)[1]
+        a = make_campaign_link(tx, f'post:{rk_a}', f'{WEB_BASE_URL}/discover', None).rsplit('/', 1)[1]
+        b = make_campaign_link(tx, f'post:{rk_b}', f'{WEB_BASE_URL}/discover', None).rsplit('/', 1)[1]
         record_click(tx, a, 'Mozilla/5.0'); record_click(tx, b, 'Mozilla/5.0')
         assert attribute_signup(tx, p['id'], a) is True
         assert attribute_signup(tx, p['id'], b) is False
         assert tx.execute("SELECT spotlight_ref FROM person WHERE id = %(id)s", dict(id=p['id'])).fetchone()['spotlight_ref'] == a
+
+
+def test_attribute_unknown_key_is_a_no_op(make_person):
+    p = make_person(name='Unknown')
+    with api_tx() as tx:
+        assert attribute_signup(tx, p['id'], 'nosuchkey') is False
+        row = tx.execute("SELECT spotlight_ref FROM person WHERE id = %(id)s", dict(id=p['id'])).fetchone()
+        assert row['spotlight_ref'] is None
 
 
 def test_post_finish_onboarding_model_validates_spotlight_ref():
