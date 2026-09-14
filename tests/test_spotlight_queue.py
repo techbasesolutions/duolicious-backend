@@ -198,7 +198,8 @@ def test_opt_out_cancels_a_roundup_that_tiles_the_member(make_person):
 
 def test_opt_out_leaves_a_published_roundup_for_the_removal_path(make_person):
     """Published rows are owned by the retention sweep or a removal task, not
-    by cancel_for_member, whichever way the member is on the card."""
+    by cancel_for_member's status sweep, whichever way the member is on the
+    card. The task itself is covered by the test below."""
     p = _make_eligible(make_person, name='TiledLive')
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
@@ -208,3 +209,30 @@ def test_opt_out_leaves_a_published_roundup_for_the_removal_path(make_person):
         set_spotlight_opt_in(tx, p['id'], False)
         rows = _rows(tx, rk)
     assert {r['status'] for r in rows} == {'published'}
+
+
+def test_opt_out_files_removal_tasks_for_a_published_roundup(make_person):
+    """C3: a live roundup that tiles this member shows their photo just as a
+    live card of their own does, so it earns the same removal task, with the
+    same two reason strings the admin worker already acts on. The row stays
+    `published` until the platform post is actually gone."""
+    p = _make_eligible(make_person, name='TiledPublishedTask')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        tx.execute("""UPDATE publishing_queue
+                         SET payload = %(pl)s::jsonb, status = 'published',
+                             external_post_id = 'post-' || platform
+                       WHERE request_key = %(rk)s""",
+                   dict(pl=_tile_payload(p['id'], 'TiledPublishedTask'), rk=rk))
+        set_spotlight_opt_in(tx, p['id'], False)
+        rows = _rows(tx, rk)
+        tasks = tx.execute("""SELECT t.platform, t.external_post_id, t.reason
+                                FROM spotlight_removal_task t
+                                JOIN publishing_queue q ON q.id = t.queue_id
+                               WHERE q.request_key = %(rk)s
+                               ORDER BY t.platform""", dict(rk=rk)).fetchall()
+    assert {r['status'] for r in rows} == {'published'}
+    assert [(t['platform'], t['external_post_id'], t['reason']) for t in tasks] == [
+        ('facebook', 'post-facebook', 'delete_via_api'),
+        ('instagram', 'post-instagram', 'manual_instagram'),
+    ]

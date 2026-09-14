@@ -126,17 +126,44 @@ _Q_CANCEL_TILE_ROWS = f"""
        AND status NOT IN ('published', 'cancelled')
 """
 
+_Q_PUBLISHED_SUBJECT_ROWS = """
+    SELECT id, platform, external_post_id FROM publishing_queue
+     WHERE subject_person_id = %(pid)s AND status = 'published'
+"""
 
-def cancel_for_member(tx, person_id: int, reason: str) -> int:
-    published = tx.execute(
-        "SELECT id, platform, external_post_id FROM publishing_queue WHERE subject_person_id = %(pid)s AND status = 'published'",
-        dict(pid=person_id)).fetchall()
-    for r in published:
+_Q_PUBLISHED_TILE_ROWS = f"""
+    SELECT id, platform, external_post_id FROM publishing_queue
+     WHERE {_TILE_MATCH}
+       AND status = 'published'
+"""
+
+
+def _file_removal_tasks(tx, rows) -> int:
+    """One task per published platform row. A Facebook post can be deleted
+    through the Graph API; Instagram has no delete endpoint for published
+    media, so that one is flagged for a human instead.
+
+    Those two reason strings are the contract the admin worker and the
+    removals list read, so a task filed for a roundup tile uses exactly the
+    same pair as one filed for a card's subject. Nothing downstream has to
+    know why the task exists in order to action it."""
+    for r in rows:
         tx.execute(
             """INSERT INTO spotlight_removal_task (queue_id, platform, external_post_id, reason)
                VALUES (%(q)s, %(pl)s, %(ext)s, %(reason)s)""",
             dict(q=r['id'], pl=r['platform'], ext=r['external_post_id'],
                  reason='delete_via_api' if r['platform'] == 'facebook' else 'manual_instagram'))
+    return len(rows)
+
+
+def cancel_for_member(tx, person_id: int, reason: str) -> int:
+    _file_removal_tasks(tx, tx.execute(_Q_PUBLISHED_SUBJECT_ROWS, dict(pid=person_id)).fetchall())
+    # A published roundup that tiles this member shows their photo exactly as a
+    # published card of their own does, so it earns the same removal task. The
+    # row's status is deliberately left at 'published': that is still the truth
+    # until the platform post is actually gone, and the task is what records
+    # that it has to go.
+    _file_removal_tasks(tx, tx.execute(_Q_PUBLISHED_TILE_ROWS, dict(pid=person_id)).fetchall())
     # Published rows keep their card until the retention sweep or a removal
     # task marks the platform post done -- only non-published rows' images
     # are deleted here, since those never got (and now never will get) a
@@ -156,9 +183,8 @@ def cancel_for_member(tx, person_id: int, reason: str) -> int:
     # cannot see it -- but its stored tile snapshot names (and shows the photo
     # of) up to four members. Withdrawn consent has to reach those rows too,
     # or a member who opted out is still published inside someone else's card.
-    # Published roundups are left alone for the same reason published subject
-    # rows are: the live post is owned by the retention sweep or a removal
-    # task, not by this function.
+    # Published roundups keep their status here, the same way published subject
+    # rows do: they were handled at the top, by a removal task.
     tile_keys = [r['image_key'] for r in tx.execute(_Q_TILE_IMAGE_KEYS, dict(pid=person_id)).fetchall()]
     tiled = tx.execute(_Q_CANCEL_TILE_ROWS, dict(pid=person_id, reason=f'tile_member_{reason}')).rowcount
     # Storage is best-effort and outside the transaction's success/failure:
