@@ -80,7 +80,9 @@ def set_spotlight_opt_in(tx, person_id: int, value: bool) -> None:
          WHERE id = %(id)s
         """,
         dict(v=value, id=person_id))
-    # Phase B hook: cancel queued cards for this member on opt-out.
+    if not value:
+        from service.spotlight.queue import cancel_for_member
+        cancel_for_member(tx, person_id, 'opt_out')
 
 
 def set_spotlight_opt_in_by_email(tx, email: str, value: bool) -> bool:
