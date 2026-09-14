@@ -774,7 +774,7 @@ def delete_onboardee_info(req: t.DeleteOnboardeeInfo, s: t.SessionInfo):
     with api_tx() as tx:
         tx.executemany(Q_DELETE_ONBOARDEE_PHOTO, params)
 
-def post_finish_onboarding(s: t.SessionInfo):
+def post_finish_onboarding(req: t.PostFinishOnboarding, s: t.SessionInfo):
     api_params = dict(
         email=s.email,
         normalized_email=normalize_email(s.email),
@@ -817,6 +817,14 @@ def post_finish_onboarding(s: t.SessionInfo):
         tx.execute('SET LOCAL statement_timeout = 15000') # 15 seconds
         tx.execute(Q_FINISH_ONBOARDING, params=api_params)
         row = tx.fetchone()
+
+        # Sign-up attribution (spec 3.4): credit the campaign-link click (if
+        # any) that led to this sign-up, now that the person row exists.
+        # Inside this same transaction so a rollback (e.g. the referral or
+        # club steps below raising) undoes the attribution too, rather than
+        # leaving a stamped person/click orphaned by a failed graduation.
+        from service.spotlight.attribution import attribute_signup
+        attribute_signup(tx, row['person_id'], req.spotlight_ref)
 
         # Phase W map fix: Q_FINISH_ONBOARDING builds the person from the
         # onboardee but never set person.country (ISO2), so every newly-

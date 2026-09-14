@@ -491,6 +491,16 @@ class PostCheckOtp(BaseModel):
     source: Optional[Literal['marriage_checklist']] = None
 
 
+class PostFinishOnboarding(BaseModel):
+    """POST /finish-onboarding body. `spotlight_ref` is the /s/<key>
+    campaign-link key the web app read back from its `ahavah.spotlight_ref`
+    cookie (spec 3.4) -- forwarded so `service.spotlight.attribution
+    .attribute_signup` can credit the click that led to this sign-up.
+    Optional: omitted (or invalid/unknown/stale) is a silent no-op there,
+    so every existing client that doesn't send it keeps working."""
+    spotlight_ref: Optional[str] = Field(default=None, max_length=32)
+
+
 class MarriageChecklistAnswer(BaseModel):
     """One answered checklist item. Composed into the results email and
     then discarded; never persisted. Scripture items carry `ref` (e.g.

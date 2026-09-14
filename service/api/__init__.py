@@ -341,8 +341,9 @@ def delete_onboardee_info(req: t.DeleteOnboardeeInfo, s: t.SessionInfo):
     return person.delete_onboardee_info(req, s)
 
 @apost('/finish-onboarding', expected_onboarding_status=False)
-def post_finish_onboarding(s: t.SessionInfo):
-    return person.post_finish_onboarding(s)
+@validate(t.PostFinishOnboarding)
+def post_finish_onboarding(req: t.PostFinishOnboarding, s: t.SessionInfo):
+    return person.post_finish_onboarding(req, s)
 
 # /next-questions, POST /answer, DELETE /answer routes removed in Task 0.3c —
 # Q&A subsystem strip per audit. The `person.post_answer` / `person.delete_answer`

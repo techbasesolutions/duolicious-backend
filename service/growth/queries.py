@@ -197,3 +197,21 @@ def count_reinvite_cohort(tx, days: int = 30, resend_days: int = 30) -> int:
     """How many members `emails.send_reinvite.recipients()` would return."""
     return int(tx.execute(_Q_COUNT_REINVITE_COHORT,
                           dict(days=days, resend=resend_days, ex=_excluded(), sup=suppressed_sql_pattern())).fetchone()['n'])
+
+# Per-post click/sign-up attribution (spec 3.4). A post's campaign_link.kind
+# is 'post:<request_key>' (see service.spotlight.attribution and the
+# publishing_queue.request_key it's minted against); bot clicks are excluded
+# from both counts so a crawler prefetching the link doesn't inflate either
+# number, and `signups` counts distinct signup_person_id so a person who
+# somehow shows up on two clicks for the same post is only counted once.
+_Q_POST_STATS = """
+    SELECT count(*)                                 AS clicks,
+           count(DISTINCT c.signup_person_id)        AS signups
+      FROM campaign_click c
+      JOIN campaign_link l ON l.key = c.link_key
+     WHERE l.kind = %(kind)s AND c.ua_class <> 'bot'
+"""
+
+def post_stats(tx, request_key: str) -> dict:
+    row = tx.execute(_Q_POST_STATS, dict(kind=f'post:{request_key}')).fetchone()
+    return {'clicks': row['clicks'], 'signups': row['signups']}
