@@ -269,7 +269,3 @@ def set_setting(tx, key: str, value: str) -> None:
         raise ValueError('bad_setting')
     tx.execute("INSERT INTO spotlight_setting (key, value, updated_at) VALUES (%(k)s, %(v)s, NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
                dict(k=key, v=value))
-
-
-def stamp_featured(tx, person_id: int) -> None:
-    tx.execute("UPDATE person SET spotlight_last_featured_at = NOW() WHERE id = %(pid)s", dict(pid=person_id))

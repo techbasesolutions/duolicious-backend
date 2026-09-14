@@ -99,10 +99,17 @@ You're receiving this because you opted in to Community Spotlight.
     )
 
 
-def send_card_live(person_id: int, request_key: str, external_post_id: str, platform: str) -> bool:
+def send_card_live(person_id: int, request_key: str, external_post_id: str, platform: str,
+                    post_url: str | None = None) -> bool:
     """Synchronous send for one platform's publish. `campaign_id` includes
     the platform since facebook and instagram publish (and so E5-fire)
     independently for the same request_key.
+
+    `post_url`: the worker's own receipt (Task 6) may carry the real post
+    URL it got back from the platform (Instagram's permalink lookup, in
+    particular) -- when it is an `https://` string it is used as-is;
+    otherwise this falls back to `post_url_for`, whose Instagram branch
+    still only links to the public profile (module docstring).
 
     The "Share your card" button's own click is what gets attributed: its
     href is a /s/<key> campaign link (make_campaign_link) whose target is
@@ -118,7 +125,11 @@ def send_card_live(person_id: int, request_key: str, external_post_id: str, plat
         card = tx.execute(_Q_CARD, dict(rk=request_key, pl=platform)).fetchone()
     if not person or not card or not card['image_url']:
         return False
-    post_url = post_url_for(platform, external_post_id)
+    if isinstance(post_url, str) and post_url.startswith('https://'):
+        resolved_post_url = post_url
+    else:
+        resolved_post_url = post_url_for(platform, external_post_id)
+    post_url = resolved_post_url
 
     def build(row: dict) -> tuple[str, str]:
         with api_tx() as tx:
@@ -140,12 +151,13 @@ def send_card_live(person_id: int, request_key: str, external_post_id: str, plat
     return result['sent'] == 1
 
 
-def send_card_live_async(person_id: int, request_key: str, external_post_id: str, platform: str) -> None:
+def send_card_live_async(person_id: int, request_key: str, external_post_id: str, platform: str,
+                          post_url: str | None = None) -> None:
     """Fire-and-forget from the admin/growth spotlight routes; failures are
     swallowed (the post is already live, the email is a nicety)."""
     def _go() -> None:
         try:
-            send_card_live(person_id, request_key, external_post_id, platform)
+            send_card_live(person_id, request_key, external_post_id, platform, post_url)
         except Exception:
             print(traceback.format_exc())
 

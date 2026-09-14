@@ -33,7 +33,7 @@ def test_eligible_member_passes(make_person):
     ("UPDATE person SET date_of_birth = (NOW() - interval '17 years')::date WHERE id = %(id)s", 'under_18'),
     ("UPDATE person SET deletion_requested_at = NOW() WHERE id = %(id)s", 'pending_deletion'),
     ("UPDATE person SET activated = FALSE WHERE id = %(id)s", 'not_activated'),
-    ("UPDATE person SET spotlight_last_featured_at = NOW() - interval '10 days' WHERE id = %(id)s", 'featured_recently'),
+    ("INSERT INTO spotlight_occurrence (kind, person_id, request_key) VALUES ('welcome', %(id)s, 'cooldown-test')", 'featured_recently'),
     ("DELETE FROM photo WHERE person_id = %(id)s", 'no_photo'),
 ])
 def test_each_reason(make_person, sql, reason):

@@ -154,3 +154,45 @@ def test_send_card_live_wraps_share_link_and_is_idempotent(make_person, monkeypa
     body = sent[0]['body']
     assert '/s/' in body and 'https://www.facebook.com/123_456' in body
     assert send_card_live(p['id'], rk, '123_456', 'facebook') is False   # same campaign id, idempotent
+
+
+def test_send_card_live_prefers_a_supplied_https_post_url(make_person, monkeypatch):
+    """Task 6: the worker's own receipt (Instagram's permalink lookup, in
+    particular) may already carry the real post URL; when it is https, it
+    wins over `post_url_for`'s Instagram-profile fallback."""
+    import service.campaigns.runner as r
+    sent = []
+    class _S:
+        def send(self, **kw): sent.append(kw); return 'mid'
+    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'live-ig-{p["id"]}@ahavah-test.invalid', id=p['id']))
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute(
+            "UPDATE publishing_queue SET image_url = %(u)s WHERE request_key = %(rk)s AND platform = 'instagram'",
+            dict(u='https://cdn.ahavah.app/spotlight/x.png', rk=rk))
+    from emails.spotlight_card_live import send_card_live
+    assert send_card_live(p['id'], rk, '77', 'instagram', post_url='https://www.instagram.com/p/abc/') is True
+    body = sent[0]['body']
+    assert 'https://www.instagram.com/p/abc/' in body
+    assert 'https://www.instagram.com/ahavah.app/' not in body
+
+
+def test_send_card_live_falls_back_when_post_url_is_not_https(make_person, monkeypatch):
+    import service.campaigns.runner as r
+    sent = []
+    class _S:
+        def send(self, **kw): sent.append(kw); return 'mid'
+    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'live-ig2-{p["id"]}@ahavah-test.invalid', id=p['id']))
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute(
+            "UPDATE publishing_queue SET image_url = %(u)s WHERE request_key = %(rk)s AND platform = 'instagram'",
+            dict(u='https://cdn.ahavah.app/spotlight/x.png', rk=rk))
+    from emails.spotlight_card_live import send_card_live, post_url_for
+    assert send_card_live(p['id'], rk, '77', 'instagram', post_url='not-a-url') is True
+    body = sent[0]['body']
+    assert post_url_for('instagram', '77') in body

@@ -42,8 +42,9 @@ from service.api.decorators import aget, apost, get, post, limiter, Q_GET_SESSIO
 from service.config import USER_IMAGES_BASE_URL
 from service.spotlight.dispatch import dispatch_check
 from service.spotlight.eligibility import eligibility, primary_photo_uuid, photo_url
+from service.spotlight.occurrence import record_occurrence, pictured_people, is_first_confirmation
 from service.spotlight.queue import (create_candidate, expire_member_approvals,
-                                     set_status, settings, set_setting, stamp_featured,
+                                     set_status, settings, set_setting,
                                      reap_expired_leases, record_receipt, OUTCOMES,
                                      OUTCOME_DELIVERY_STATE, PLATFORMS)
 from service.spotlight.revisions import attach_render, consent_complete, edit_caption
@@ -226,13 +227,14 @@ def _send_card_ready(person_id: int, request_key: str) -> None:
     send_card_ready_async(person_id, request_key)
 
 
-def _send_card_live(person_id: int, request_key: str, external_post_id: str, platform: str) -> None:
+def _send_card_live(person_id: int, request_key: str, external_post_id: str, platform: str,
+                     post_url: Optional[str] = None) -> None:
     try:
         from emails.spotlight_card_live import send_card_live_async
     except ImportError:
         print(f'E5 not available yet; card live for person {person_id} key {request_key}')
         return
-    send_card_live_async(person_id, request_key, external_post_id, platform)
+    send_card_live_async(person_id, request_key, external_post_id, platform, post_url)
 
 
 # ---------------------------------------------------------------------------
@@ -310,12 +312,21 @@ _Q_ROUNDUP_RECENT = """
                       AND created_at > NOW() - interval '6 days') AS recent
 """
 
+
+# The occurrence table (Wave 1 F05) is the source of truth for "when was this
+# person last featured", not `person.spotlight_last_featured_at` (a
+# denormalised display value only, per `service.spotlight.occurrence`). Both
+# queries below aggregate it themselves rather than joining `record_occurrence`'s
+# UPDATE target, so a person with zero occurrences still sorts correctly
+# (never featured first).
 _Q_LAST_FEATURED_GENDER = """
     SELECT g.name AS gender
-      FROM person p
+      FROM (SELECT person_id, MAX(created_at) AS last_featured
+              FROM spotlight_occurrence
+             GROUP BY person_id) o
+      JOIN person p ON p.id = o.person_id
       JOIN gender g ON g.id = p.gender_id
-     WHERE p.spotlight_last_featured_at IS NOT NULL
-     ORDER BY p.spotlight_last_featured_at DESC
+     ORDER BY o.last_featured DESC
      LIMIT 1
 """
 
@@ -327,12 +338,15 @@ _Q_SUGGEST = """
            split_part(p.name, ' ', 1) AS first_name,
            date_part('year', age(p.date_of_birth))::int AS age,
            COALESCE(p.country, p.location_short_friendly) AS country,
-           p.spotlight_last_featured_at
+           o.last_featured AS spotlight_last_featured_at
       FROM person p
       LEFT JOIN gender g ON g.id = p.gender_id
+      LEFT JOIN (SELECT person_id, MAX(created_at) AS last_featured
+                   FROM spotlight_occurrence
+                  GROUP BY person_id) o ON o.person_id = p.id
      WHERE p.spotlight_opt_in IS TRUE
      ORDER BY (g.name IS DISTINCT FROM %(recent)s::text) DESC,
-              p.spotlight_last_featured_at ASC NULLS FIRST,
+              o.last_featured ASC NULLS FIRST,
               p.spotlight_opt_in_at ASC
      LIMIT 50
 """
@@ -478,9 +492,11 @@ def post_growth_queue_complete(qid: str):
     error = body.get('error')
     queue_id = _qid(qid)
     live = None
+    occurrences = None
+    first_confirmation = None
     with api_tx() as tx:
         row = tx.execute(
-            """SELECT request_key, platform, subject_person_id, cancellation_requested_at
+            """SELECT request_key, platform, subject_person_id, cancellation_requested_at, kind
                  FROM publishing_queue WHERE id = %(id)s""",
             dict(id=queue_id)).fetchone()
         if not row:
@@ -494,13 +510,27 @@ def post_growth_queue_complete(qid: str):
                 abort(404)
             code = 409 if reason in ('lease_mismatch', 'not_processing') else 400
             return dict(error=reason), code
-        if (result == 'recorded' and status == 'published' and row['subject_person_id'] is not None
-                and row['cancellation_requested_at'] is None):
-            stamp_featured(tx, row['subject_person_id'])
-            live = (row['subject_person_id'], row['request_key'],
-                    external_post_id or '', row['platform'])
-        _audit(tx, s, 'growth.queue.complete', queue_id=str(queue_id), status=status,
-               delivery_state=OUTCOME_DELIVERY_STATE.get(status))
+        if result == 'recorded' and status == 'published':
+            # The cooldown unit is the feature OCCURRENCE (one per request_key
+            # and person), not the platform row (Wave 1 F05): stamping it here,
+            # once per confirmed publish, means a card's second platform to
+            # confirm never re-blocks itself on its own sibling's stamp.
+            people = pictured_people(tx, row)
+            occurrences = record_occurrence(tx, row['kind'], row['request_key'], people)
+            first_confirmation = is_first_confirmation(tx, row['request_key'])
+            # E5 ("your card is live") fires once per occurrence, on whichever
+            # platform confirms first -- never once per platform row, and
+            # never for a roundup (no subject_person_id).
+            if (first_confirmation and row['subject_person_id'] is not None
+                    and row['cancellation_requested_at'] is None):
+                live = (row['subject_person_id'], row['request_key'],
+                        external_post_id or '', row['platform'], post_url)
+        audit_metadata = dict(queue_id=str(queue_id), status=status,
+                               delivery_state=OUTCOME_DELIVERY_STATE.get(status))
+        if occurrences is not None:
+            audit_metadata['occurrences'] = occurrences
+            audit_metadata['first_confirmation'] = first_confirmation
+        _audit(tx, s, 'growth.queue.complete', **audit_metadata)
     # Outside the transaction on purpose: the mail path opens its own api_tx.
     if live is not None:
         _send_card_live(*live)

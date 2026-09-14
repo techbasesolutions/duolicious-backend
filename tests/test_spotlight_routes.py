@@ -420,7 +420,10 @@ def test_suggest_orders_never_featured_first(client, make_person):
     a = _make_eligible(make_person, name='Never', gender='Woman')
     b = _make_eligible(make_person, name='Old', gender='Woman')
     with api_tx() as tx:
-        tx.execute("UPDATE person SET spotlight_last_featured_at = NOW() - interval '60 days' WHERE id = %(id)s", dict(id=b['id']))
+        tx.execute(
+            """INSERT INTO spotlight_occurrence (kind, person_id, request_key, created_at)
+                VALUES ('welcome', %(id)s, 'old-suggest-key', NOW() - interval '60 days')""",
+            dict(id=b['id']))
     s = client.get('/admin/growth/spotlight/suggest', headers={'Authorization': f'Bearer {tok}'}).get_json()
     ids = [x['person_id'] for x in s]
     assert a['id'] in ids and (b['id'] not in ids or ids.index(a['id']) < ids.index(b['id']))

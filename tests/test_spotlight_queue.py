@@ -3,7 +3,7 @@ import json
 import pytest
 from database import api_tx
 from service.spotlight.queue import (create_candidate, expire_member_approvals,
-                                     set_status, cancel_for_member, settings, set_setting, stamp_featured)
+                                     set_status, cancel_for_member, settings, set_setting)
 from service.spotlight.revisions import current_revision, attach_render, approve_card
 from service.spotlight import set_spotlight_opt_in
 

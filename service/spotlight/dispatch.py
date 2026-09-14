@@ -28,7 +28,7 @@ REASONS = ('not_found', 'not_processing', 'lease_required', 'lease_mismatch', 'l
 
 _Q_ROW = """
     SELECT status, lease_token, (lease_until IS NOT NULL AND lease_until > NOW()) AS lease_valid,
-           cancellation_requested_at, current_revision_id, kind, subject_person_id
+           cancellation_requested_at, current_revision_id, kind, subject_person_id, request_key
       FROM publishing_queue WHERE id = %(id)s
 """
 
@@ -62,7 +62,8 @@ def dispatch_check(tx, queue_id, lease_token: Optional[str]) -> tuple[bool, str]
     if row['kind'] != 'roundup':
         if row['subject_person_id'] is None:
             return False, 'subject_missing'
-        ok, reason = eligibility(tx, row['subject_person_id'], rev['photo_uuid'])
+        ok, reason = eligibility(tx, row['subject_person_id'], rev['photo_uuid'],
+                                 exclude_request_key=row['request_key'])
         if not ok:
             return False, f'subject:{reason}'
     else:
@@ -71,7 +72,8 @@ def dispatch_check(tx, queue_id, lease_token: Optional[str]) -> tuple[bool, str]
         # time, since days can pass between the snapshot and the publish.
         for participant in (rev['participants'] or []):
             person_id = participant.get('person_id')
-            ok, reason = eligibility(tx, person_id, participant.get('photo_uuid'))
+            ok, reason = eligibility(tx, person_id, participant.get('photo_uuid'),
+                                     exclude_request_key=row['request_key'])
             if not ok:
                 return False, f'participant:{person_id}:{reason}'
     cfg = settings(tx)

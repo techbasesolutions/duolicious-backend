@@ -13,14 +13,17 @@ _Q = """
            (p.date_of_birth IS NOT NULL AND p.date_of_birth <= (NOW() - interval '18 years')::date) AS adult,
            EXISTS (SELECT 1 FROM skipped s WHERE s.object_person_id = p.id AND s.reported = TRUE) AS reported,
            (p.deletion_requested_at IS NOT NULL) AS pending_deletion,
-           (p.spotlight_last_featured_at IS NOT NULL AND p.spotlight_last_featured_at > NOW() - interval '30 days') AS featured_recently,
+           EXISTS (SELECT 1 FROM spotlight_occurrence o WHERE o.person_id = p.id
+                     AND o.created_at > NOW() - interval '30 days'
+                     AND (%(xrk)s::text IS NULL OR o.request_key <> %(xrk)s::text)) AS featured_recently,
            EXISTS (SELECT 1 FROM photo ph WHERE ph.person_id = p.id AND ph.moderation_status = 'approved') AS has_photo
       FROM person p WHERE p.id = %(pid)s
 """
 
 
-def eligibility(tx, person_id: int, photo_uuid: Optional[str] = None) -> tuple[bool, str]:
-    r = tx.execute(_Q, dict(pid=person_id)).fetchone()
+def eligibility(tx, person_id: int, photo_uuid: Optional[str] = None, *,
+                 exclude_request_key: Optional[str] = None) -> tuple[bool, str]:
+    r = tx.execute(_Q, dict(pid=person_id, xrk=exclude_request_key)).fetchone()
     if not r:
         return False, 'not_activated'
     if photo_uuid is not None:
