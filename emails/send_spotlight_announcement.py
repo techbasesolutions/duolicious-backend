@@ -27,8 +27,10 @@ _Q_RECIPIENTS = f"""
 """
 
 def build_for(row: dict) -> tuple[str, str]:
+    with api_tx() as tx:
+        confirm_url = spotlight_confirm_url(tx, row['email'])
     return SUBJECT, spotlight_announcement_html(
-        spotlight_confirm_url(row['email']),
+        confirm_url,
         f"{WEB_BASE_URL}/settings/privacy",
         _unsub_url(UNSUB_SCOPE, row['email'], WEB_BASE_URL))
 

@@ -3,6 +3,7 @@ from database import api_tx
 from service.spotlight.approval import make_card_token, parse_card_token, card_url, card_state
 from service.spotlight.queue import create_candidate, set_setting
 from service.spotlight.revisions import current_revision, attach_render
+from service.spotlight.withdrawal import withdraw_member
 from emails.spotlight_card_ready import card_ready_html, SUBJECT as S4
 from emails.spotlight_card_live import card_live_html, share_url_for, post_url_for, SUBJECT as S5
 
@@ -28,16 +29,22 @@ def _email(pid):
         return tx.execute("SELECT email FROM person WHERE id = %(id)s", dict(id=pid)).fetchone()['email']
 
 
-def test_token_roundtrip_and_expiry(monkeypatch):
+def test_token_roundtrip_and_expiry(monkeypatch, make_person):
     import service.spotlight.approval as ap
-    tok = make_card_token('abc', 'A@B.co')
-    assert parse_card_token(tok) == ('abc', 'a@b.co', 'ok')
-    assert parse_card_token('x.y') == (None, None, 'invalid')
+    p = make_person(name='TokRT')
+    email = _email(p['id'])
+    with api_tx() as tx:
+        tok = make_card_token(tx, 'abc', email.upper())
+    rk, em, nonce, status = parse_card_token(tok)
+    assert rk == 'abc' and em == email.lower() and status == 'ok' and nonce
+    assert parse_card_token('x.y') == (None, None, None, 'invalid')
     monkeypatch.setattr(ap, '_now_ts', lambda: 0)
-    old = make_card_token('abc', 'a@b.co')
+    with api_tx() as tx:
+        old = make_card_token(tx, 'abc', email)
     monkeypatch.undo()
-    assert parse_card_token(old)[2] == 'expired'
-    assert '/spotlight/card/' in card_url('abc', 'a@b.co')
+    assert parse_card_token(old)[3] == 'expired'
+    with api_tx() as tx:
+        assert '/spotlight/card/' in card_url(tx, 'abc', email)
 
 
 def test_get_is_read_only_and_post_approves(client, make_person):
@@ -49,19 +56,24 @@ def test_get_is_read_only_and_post_approves(client, make_person):
             rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
             photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
             attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
-        tok = make_card_token(rk, _email(p['id']))
+        email = _email(p['id'])
+        with api_tx() as tx:
+            tok = make_card_token(tx, rk, email)
         r = client.get(f'/spotlight/card/{tok}')
         body = r.get_json()
         assert r.status_code == 200 and body['status'] == 'awaiting_member' and body['photos'][0]['uuid'] == photo
         assert body['revision'] == 1 and body['preview_available'] is True and body['image_url'] == 'https://cdn/k.png'
-        assert body['photo_uuid'] == photo
+        assert body['photo_uuid'] == photo and body['stale'] is False
         with api_tx('read committed') as tx:
             assert {x['status'] for x in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'awaiting_member'}
         r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
         assert r.status_code == 200 and r.get_json()['result'] == 'approved'
         with api_tx('read committed') as tx:
             assert {x['status'] for x in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'review'}
-        assert client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo}).get_json()['result'] == 'already'
+        # The nonce is now single-use: a repeat with the same token no
+        # longer re-runs approve_card, it reports the current state.
+        r2 = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo}).get_json()
+        assert r2 == dict(ok=True, already=True, status='approved')
         assert client.get(f'/spotlight/card/{tok}').get_json()['status'] == 'approved'
     finally:
         with api_tx() as tx:
@@ -74,16 +86,21 @@ def test_post_approve_is_gated_on_settings_and_render(client, make_person):
     yet. Both return a JSON {"error": "<reason>"} body -- never a plain-text
     abort -- per Task 2 fix round 1."""
     p = _make_eligible(make_person)
+    email = _email(p['id'])
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
-    tok = make_card_token(rk, _email(p['id']))
-    r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
+        tok1 = make_card_token(tx, rk, email)
+    r = client.post(f'/spotlight/card/{tok1}', json={'decision': 'approve', 'photo_uuid': photo})
     assert r.status_code == 409 and r.get_json() == {'error': 'approvals_disabled'}
+    # A failed attempt still burns the nonce (Wave 1 F11: it is single-use
+    # once the state check passes), so the second attempt needs its own
+    # fresh token rather than replaying tok1.
     with api_tx() as tx:
         set_setting(tx, 'approvals_enabled', 'true')
+        tok2 = make_card_token(tx, rk, email)
     try:
-        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
+        r = client.post(f'/spotlight/card/{tok2}', json={'decision': 'approve', 'photo_uuid': photo})
         assert r.status_code == 409 and r.get_json() == {'error': 'preview_unavailable'}
     finally:
         with api_tx() as tx:
@@ -92,20 +109,58 @@ def test_post_approve_is_gated_on_settings_and_render(client, make_person):
 
 def test_post_skip_cancels_and_wrong_email_is_403(client, make_person):
     p = _make_eligible(make_person)
+    other = make_person(name='Other')
+    other_email = _email(other['id'])
+    email = _email(p['id'])
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
-    assert client.post(f'/spotlight/card/{make_card_token(rk, "someone@else.invalid")}', json={'decision': 'skip'}).status_code == 403
-    r = client.post(f'/spotlight/card/{make_card_token(rk, _email(p["id"]))}', json={'decision': 'skip'})
+        wrong_tok = make_card_token(tx, rk, other_email)
+    assert client.post(f'/spotlight/card/{wrong_tok}', json={'decision': 'skip'}).status_code == 403
+    with api_tx() as tx:
+        tok = make_card_token(tx, rk, email)
+    r = client.post(f'/spotlight/card/{tok}', json={'decision': 'skip'})
     assert r.status_code == 200
     with api_tx('read committed') as tx:
         assert {x['status'] for x in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'cancelled'}
-    assert client.get(f'/spotlight/card/{make_card_token(rk, _email(p["id"]))}').get_json()['status'] == 'skipped'
+    with api_tx() as tx:
+        get_tok = make_card_token(tx, rk, email)
+    assert client.get(f'/spotlight/card/{get_tok}').get_json()['status'] == 'skipped'
 
 
-def test_bad_tokens(client):
+def test_bad_tokens(client, make_person):
     assert client.get('/spotlight/card/not.a.token').status_code == 400
     assert client.post('/spotlight/card/not.a.token', json={'decision': 'skip'}).status_code == 400
-    assert client.get(f'/spotlight/card/{make_card_token("nope", "a@b.co")}').status_code == 404
+    p = make_person(name='NoSuchRequest')
+    email = _email(p['id'])
+    with api_tx() as tx:
+        tok = make_card_token(tx, 'nope', email)
+    assert client.get(f'/spotlight/card/{tok}').status_code == 404
+
+
+def test_card_token_replay_after_withdrawal_is_rejected(make_person, client):
+    p = _make_eligible(make_person)
+    photo = None
+    with api_tx() as tx:
+        photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
+        set_setting(tx, 'approvals_enabled', 'true')
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
+        email = tx.execute("SELECT email FROM person WHERE id = %(p)s", dict(p=p['id'])).fetchone()['email']
+        token = make_card_token(tx, rk, email)
+    try:
+        r = client.post(f'/spotlight/card/{token}', json=dict(decision='approve', photo_uuid=photo))
+        assert r.status_code == 200 and r.get_json()['ok'] is True
+        r = client.post(f'/spotlight/card/{token}', json=dict(decision='approve', photo_uuid=photo))
+        assert r.status_code == 200 and r.get_json()['already'] is True
+        with api_tx() as tx:
+            withdraw_member(tx, p['id'], 'opt_out')
+        r = client.post(f'/spotlight/card/{token}', json=dict(decision='approve', photo_uuid=photo))
+        assert r.status_code == 410 and r.get_json() == dict(error='stale')
+        with api_tx() as tx:
+            assert {x['status'] for x in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'cancelled'}
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')
 
 
 def test_e4_and_e5_html_are_on_template_and_escaped():

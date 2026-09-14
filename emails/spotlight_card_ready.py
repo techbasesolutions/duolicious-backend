@@ -87,7 +87,8 @@ def send_card_ready(person_id: int, request_key: str) -> bool:
     kind_label = _KIND_LABELS.get(candidate['kind'], candidate['kind'])
 
     def build(row: dict) -> tuple[str, str]:
-        cu = card_url(request_key, row['email'])
+        with api_tx() as tx:
+            cu = card_url(tx, request_key, row['email'])
         unsub = unsub_url(UNSUB_SCOPE, row['email'], WEB_BASE_URL)
         html = card_ready_html(row['first_name'], kind_label, cu,
                                CARD_TOKEN_TTL_SECONDS // 86400, unsub)

@@ -5,10 +5,15 @@ Mounted unauthenticated, mirroring service/api/spotlight_routes.py and
 service/api/unsubscribe_routes.py: the token is HMAC-signed
 (service.spotlight.approval) and binds a request_key to the recipient
 email, so the link can only decide the one request it was minted for, and
-only from the mailbox it was sent to. GET only decodes the token and
-reports the current state -- it never mutates. POST is the only endpoint
-that records a decision, and both decisions (approve, skip) are
-idempotent.
+only from the mailbox it was sent to. On top of the signature, a token
+carries a single-use nonce (Wave 1 F11) bound to the subject's consent
+epoch, so a replayed link reads back 'stale' once the member withdraws
+even though the signature and TTL still check out. GET only decodes the
+token and reports the current state -- it never mutates, not even the
+nonce's `used_at`. POST is the only endpoint that records a decision; the
+nonce is consumed on the first successful attempt, and a repeat POST with
+the same (now-used) token returns the current state idempotently rather
+than re-running the decision.
 """
 from __future__ import annotations
 
@@ -20,23 +25,25 @@ from database import api_tx
 from service.api.decorators import get, post
 from service.api.unsubscribe_routes import unsub_limit
 from service.spotlight.approval import CARD_TOKEN_TTL_SECONDS, card_state, parse_card_token
+from service.spotlight.nonce import check_nonce, consume_nonce
 from service.spotlight.queue import set_status
 from service.spotlight.revisions import approve_card
 
 
-def _resolve(token: str) -> tuple[str, str]:
-    rk, email, status = parse_card_token(token)
+def _resolve(token: str) -> tuple[str, str, str]:
+    rk, email, nonce, status = parse_card_token(token)
     if status == 'expired':
         abort(410)
-    if status != 'ok' or not rk or not email:
+    if status != 'ok' or not rk or not email or not nonce:
         abort(400)
-    return rk, email
+    return rk, email, nonce
 
 
 def _expires_at(token: str) -> str:
     # Token already validated by _resolve; the ts segment is its 3rd part
-    # (request_key.email_b64.ts.sig). Re-splitting here avoids widening
-    # parse_card_token's return type just to carry this one derived value.
+    # (request_key.email_b64.ts.nonce.sig). Re-splitting here avoids
+    # widening parse_card_token's return type just to carry this one
+    # derived value.
     ts = int(token.split('.')[2])
     return datetime.fromtimestamp(ts + CARD_TOKEN_TTL_SECONDS, tz=timezone.utc).isoformat()
 
@@ -49,7 +56,7 @@ def _status_of(row: dict) -> str:
     return 'awaiting_member'
 
 
-def _card_json(row: dict, token: str) -> dict:
+def _card_json(row: dict, token: str, *, stale: bool) -> dict:
     return dict(
         first_name=row['first_name'],
         age=row['age'],
@@ -63,22 +70,27 @@ def _card_json(row: dict, token: str) -> dict:
         image_url=row['image_url'],
         status=_status_of(row),
         expires_at=_expires_at(token),
+        stale=stale,
     )
 
 
 @get('/spotlight/card/<token>', limiter=unsub_limit)
 def get_spotlight_card(token: str):
-    rk, _email = _resolve(token)
+    rk, _email, nonce = _resolve(token)
     with api_tx('read committed') as tx:
         row = card_state(tx, rk)
-    if not row:
-        abort(404)
-    return jsonify(_card_json(row, token))
+        if not row:
+            abort(404)
+        stale = False
+        if row['subject_person_id'] is not None:
+            state = check_nonce(tx, nonce, row['subject_person_id'], 'card')
+            stale = state in ('stale', 'invalid')
+    return jsonify(_card_json(row, token, stale=stale))
 
 
 @post('/spotlight/card/<token>', limiter=unsub_limit)
 def post_spotlight_card(token: str):
-    rk, email = _resolve(token)
+    rk, email, nonce = _resolve(token)
     body = request.get_json(silent=True)
     body = body if isinstance(body, dict) else {}
     decision = body.get('decision')
@@ -92,12 +104,26 @@ def post_spotlight_card(token: str):
         if (row['email'] or '').strip().lower() != email:
             abort(403)
 
+        state = check_nonce(tx, nonce, row['subject_person_id'], 'card')
+
+        if state == 'used':
+            # No writes: report the current state idempotently rather than
+            # re-running (or erroring on) a decision already made.
+            fresh = card_state(tx, rk) or row
+            return dict(ok=True, already=True, status=_status_of(fresh))
+        if state == 'stale':
+            return dict(error='stale'), 410
+        if state != 'ok':
+            abort(400)  # invalid
+
+        consume_nonce(tx, nonce)
+
         if decision == 'approve':
             photo_uuid = body.get('photo_uuid')
             if not photo_uuid:
                 abort(400)
             try:
-                result = approve_card(tx, rk, row['subject_person_id'], photo_uuid)
+                result = approve_card(tx, rk, row['subject_person_id'], photo_uuid, nonce=nonce)
             except ValueError as e:
                 return dict(error=str(e)), 409
             return dict(ok=True, result=result)

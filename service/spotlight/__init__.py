@@ -14,8 +14,13 @@ Members opt in two ways:
 
 Tokens reuse the unsubscribe HMAC key (`service.unsubscribe._secret`) so
 there is one signing secret to rotate, but mint their own format with a
-`ts` segment so links expire after 30 days — unlike unsubscribe links,
-which must work indefinitely. GET never mutates: it only decodes the
+`ts` segment so links expire after 30 days, unlike unsubscribe links,
+which must work indefinitely. On top of the signature, a token carries a
+single-use nonce (Wave 1 F11, `service.spotlight.nonce`) minted against
+the recipient's current `spotlight_consent_epoch`: replaying a confirm
+link after the member withdraws reads back 'stale' even though the
+signature and TTL still check out, since `withdraw_member` bumps the
+epoch and burns any unused nonce. GET never mutates: it only decodes the
 token and reports the member's current state so the confirmation page
 can render before the member commits to anything.
 """
@@ -28,6 +33,7 @@ import time
 from urllib.parse import quote
 
 from service.config import WEB_BASE_URL
+from service.spotlight.nonce import issue_nonce
 from service.unsubscribe import _secret  # same key, fails closed when unset
 
 TOKEN_TTL_SECONDS = 30 * 24 * 3600
@@ -37,38 +43,52 @@ def _now_ts() -> int:
     return int(time.time())
 
 
-def _sign(email: str, ts: int) -> str:
-    payload = f"spotlight|{email}|{ts}".encode()
+def _sign(email: str, ts: int, nonce: str) -> str:
+    payload = f"spotlight|{email}|{ts}|{nonce}".encode()
     return base64.urlsafe_b64encode(hmac.new(_secret(), payload, hashlib.sha256).digest()).decode().rstrip('=')
 
 
-def make_confirm_token(email: str) -> str:
+def make_confirm_token(tx, email: str) -> str | None:
+    """None when no activated person has this email -- there is nothing to
+    mint a single-use nonce against."""
     norm = email.strip().lower()
+    row = tx.execute("SELECT id FROM person WHERE lower(email) = %(e)s AND activated", dict(e=norm)).fetchone()
+    if not row:
+        return None
+    nonce = issue_nonce(tx, row['id'], 'confirm')
     ts = _now_ts()
     e = base64.urlsafe_b64encode(norm.encode()).decode().rstrip('=')
-    return f"{e}.{ts}.{_sign(norm, ts)}"
+    return f"{e}.{ts}.{nonce}.{_sign(norm, ts, nonce)}"
 
 
-def parse_confirm_token(token: str) -> tuple[str | None, str]:
-    """Returns (email, status) where status is 'ok', 'invalid' or 'expired'."""
+def parse_confirm_token(token: str) -> tuple[str | None, str | None, str]:
+    """Returns (email, nonce, status) where status is 'ok', 'invalid' or
+    'expired'. Pure: signature and TTL only. An old 3-segment token (minted
+    before this nonce segment existed) is rejected as 'invalid' -- nothing
+    was sent under the old format, so there is nothing to honour. Nonce
+    state (used/stale) is checked separately, inside a transaction, via
+    `service.spotlight.nonce.check_nonce`."""
     parts = (token or '').split('.')
-    if len(parts) != 3:
-        return None, 'invalid'
-    e, ts_s, sig = parts
+    if len(parts) != 4:
+        return None, None, 'invalid'
+    e, ts_s, nonce, sig = parts
     try:
         email = base64.urlsafe_b64decode(e + '=' * (-len(e) % 4)).decode()
         ts = int(ts_s)
     except Exception:
-        return None, 'invalid'
-    if not hmac.compare_digest(_sign(email, ts), sig):
-        return None, 'invalid'
+        return None, None, 'invalid'
+    if not nonce or not hmac.compare_digest(_sign(email, ts, nonce), sig):
+        return None, None, 'invalid'
     if _now_ts() - ts > TOKEN_TTL_SECONDS:
-        return None, 'expired'
-    return email, 'ok'
+        return None, None, 'expired'
+    return email, nonce, 'ok'
 
 
-def spotlight_confirm_url(email: str) -> str:
-    return f"{WEB_BASE_URL.rstrip('/')}/spotlight/confirm/{quote(make_confirm_token(email))}"
+def spotlight_confirm_url(tx, email: str) -> str | None:
+    token = make_confirm_token(tx, email)
+    if token is None:
+        return None
+    return f"{WEB_BASE_URL.rstrip('/')}/spotlight/confirm/{quote(token)}"
 
 
 def set_spotlight_opt_in(tx, person_id: int, value: bool) -> None:
@@ -83,11 +103,3 @@ def set_spotlight_opt_in(tx, person_id: int, value: bool) -> None:
     if not value:
         from service.spotlight.withdrawal import withdraw_member
         withdraw_member(tx, person_id, 'opt_out')
-
-
-def set_spotlight_opt_in_by_email(tx, email: str, value: bool) -> bool:
-    row = tx.execute("SELECT id FROM person WHERE lower(email) = %(e)s AND activated", dict(e=email.lower())).fetchone()
-    if not row:
-        return False
-    set_spotlight_opt_in(tx, row['id'], value)
-    return True

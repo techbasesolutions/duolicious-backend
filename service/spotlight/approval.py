@@ -5,7 +5,11 @@ Mirrors `service.spotlight`'s HMAC token scheme (same shared secret,
 `_now_ts`, base64url without padding), but a card token binds a
 `request_key` together with the recipient email so the link can only
 decide the one request it was minted for, and only from the mailbox it
-was sent to. GET never mutates: `card_state` only reads.
+was sent to. On top of the signature, a token carries a single-use nonce
+(Wave 1 F11, `service.spotlight.nonce`) minted against the recipient's
+current `spotlight_consent_epoch`: replaying a card link after the member
+withdraws reads back 'stale' even though the signature and TTL still
+check out. GET never mutates: `card_state` only reads.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ from urllib.parse import quote
 
 from service.config import WEB_BASE_URL
 from service.spotlight.eligibility import photo_url
+from service.spotlight.nonce import issue_nonce
 from service.spotlight.revisions import current_revision
 from service.unsubscribe import _secret  # same key, fails closed when unset
 
@@ -27,39 +32,52 @@ def _now_ts() -> int:
     return int(time.time())
 
 
-def _sign(request_key: str, email: str, ts: int) -> str:
-    payload = f"card|{request_key}|{email}|{ts}".encode()
+def _sign(request_key: str, email: str, ts: int, nonce: str) -> str:
+    payload = f"card|{request_key}|{email}|{ts}|{nonce}".encode()
     return base64.urlsafe_b64encode(hmac.new(_secret(), payload, hashlib.sha256).digest()).decode().rstrip('=')
 
 
-def make_card_token(request_key: str, email: str) -> str:
+def make_card_token(tx, request_key: str, email: str) -> str | None:
+    """None when no activated person has this email -- there is nothing to
+    mint a single-use nonce against."""
     norm = email.strip().lower()
+    row = tx.execute("SELECT id FROM person WHERE lower(email) = %(e)s AND activated", dict(e=norm)).fetchone()
+    if not row:
+        return None
+    nonce = issue_nonce(tx, row['id'], 'card')
     ts = _now_ts()
     e = base64.urlsafe_b64encode(norm.encode()).decode().rstrip('=')
-    return f"{request_key}.{e}.{ts}.{_sign(request_key, norm, ts)}"
+    return f"{request_key}.{e}.{ts}.{nonce}.{_sign(request_key, norm, ts, nonce)}"
 
 
-def parse_card_token(token: str) -> tuple[str | None, str | None, str]:
-    """Returns (request_key, email, status) where status is 'ok', 'invalid'
-    or 'expired'."""
+def parse_card_token(token: str) -> tuple[str | None, str | None, str | None, str]:
+    """Returns (request_key, email, nonce, status) where status is 'ok',
+    'invalid' or 'expired'. Pure: signature and TTL only. An old 4-segment
+    token (minted before this nonce segment existed) is rejected as
+    'invalid' -- nothing was sent under the old format, so there is
+    nothing to honour. Nonce state (used/stale) is checked separately,
+    inside a transaction, via `service.spotlight.nonce.check_nonce`."""
     parts = (token or '').split('.')
-    if len(parts) != 4:
-        return None, None, 'invalid'
-    rk, e, ts_s, sig = parts
+    if len(parts) != 5:
+        return None, None, None, 'invalid'
+    rk, e, ts_s, nonce, sig = parts
     try:
         email = base64.urlsafe_b64decode(e + '=' * (-len(e) % 4)).decode()
         ts = int(ts_s)
     except Exception:
-        return None, None, 'invalid'
-    if not hmac.compare_digest(_sign(rk, email, ts), sig):
-        return None, None, 'invalid'
+        return None, None, None, 'invalid'
+    if not nonce or not hmac.compare_digest(_sign(rk, email, ts, nonce), sig):
+        return None, None, None, 'invalid'
     if _now_ts() - ts > CARD_TOKEN_TTL_SECONDS:
-        return None, None, 'expired'
-    return rk, email, 'ok'
+        return None, None, None, 'expired'
+    return rk, email, nonce, 'ok'
 
 
-def card_url(request_key: str, email: str) -> str:
-    return f"{WEB_BASE_URL.rstrip('/')}/spotlight/card/{quote(make_card_token(request_key, email))}"
+def card_url(tx, request_key: str, email: str) -> str | None:
+    token = make_card_token(tx, request_key, email)
+    if token is None:
+        return None
+    return f"{WEB_BASE_URL.rstrip('/')}/spotlight/card/{quote(token)}"
 
 
 # One row per request_key (both platform rows carry the same subject,
