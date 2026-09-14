@@ -4,7 +4,9 @@ import uuid
 from typing import Optional
 from service.campaigns import make_campaign_link
 from service.config import WEB_BASE_URL
-from service.spotlight.eligibility import eligibility
+from service.spotlight.eligibility import eligibility, primary_photo_uuid
+from service.spotlight.revisions import create_revision
+from service.spotlight.roundup import roundup_snapshot
 from service.spotlight.storage import delete_images
 
 KINDS = ('welcome', 'roundup', 'member_of_week', 'highlight')
@@ -18,7 +20,12 @@ TRANSITIONS = {
     'awaiting_render': {'review', 'cancelled'},
 }
 MAX_ATTEMPTS = 3
-_SETTING_KEYS = ('scheduler_enabled', 'auto_welcome', 'auto_roundup')
+# Wave 1 (migration 0044) seeded five more boolean flags alongside the
+# original three; `approve_card`, `edit_caption` and the render tick all
+# gate on the new ones, so they must be settable the same way.
+_SETTING_KEYS = ('scheduler_enabled', 'auto_welcome', 'auto_roundup',
+                 'approvals_enabled', 'roundup_tiles_enabled', 'invites_enabled',
+                 'publication_enabled', 'external_access_enabled')
 # Keys whose value is not a 'true'/'false' flag. The page-token health probe
 # writes an ISO timestamp and a validity flag here, so these two accept any
 # string value; every other key stays a strict boolean.
@@ -53,23 +60,22 @@ def create_candidate(tx, *, kind: str, subject_person_id: Optional[int], caption
             """INSERT INTO publishing_queue (request_key, kind, subject_person_id, platform, caption, status, created_by)
                VALUES (%(rk)s, %(kind)s, %(pid)s, %(pl)s, %(cap)s, %(st)s, %(by)s)""",
             dict(rk=rk, kind=kind, pid=subject_person_id, pl=platform, cap=caption, st=status, by=created_by))
+
+    # Revision 1 (Wave 1, F01): every request's content starts life as an
+    # immutable revision, and every queue row of the key points at it -- a
+    # welcome/member_of_week card's chosen photo is its subject's primary
+    # approved photo; a roundup carries no photo of its own. Participants
+    # stay empty (count-only) unless roundup_tiles_enabled is on, which
+    # Task 8 formalises properly -- the setting is seeded false, so that
+    # branch is dormant today.
+    photo_uuid = primary_photo_uuid(tx, subject_person_id) if subject_person_id is not None else None
+    participants: list = []
+    if kind == 'roundup' and settings(tx).get('roundup_tiles_enabled') == 'true':
+        participants = [{'person_id': tile['person_id'], 'photo_uuid': None}
+                         for tile in roundup_snapshot(tx)['tiles']]
+    create_revision(tx, rk, caption=caption, photo_uuid=photo_uuid, participants=participants,
+                    channels=list(platforms), created_by=created_by)
     return rk
-
-
-def set_member_approval(tx, request_key: str, photo_uuid: str) -> int:
-    owner = tx.execute("SELECT subject_person_id FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1", dict(rk=request_key)).fetchone()
-    if not owner or owner['subject_person_id'] is None:
-        raise ValueError('no_subject')
-    owned = tx.execute("SELECT 1 FROM photo WHERE uuid::text = %(u)s AND person_id = %(pid)s AND moderation_status = 'approved'",
-                       dict(u=photo_uuid, pid=owner['subject_person_id'])).fetchone()
-    if not owned:
-        raise ValueError('photo_not_owned')
-    cur = tx.execute(
-        """UPDATE publishing_queue SET status = 'awaiting_render', member_approved_at = NOW(),
-                  approved_photo_uuid = %(u)s::uuid, updated_at = NOW()
-            WHERE request_key = %(rk)s AND status = 'awaiting_member'""",
-        dict(u=photo_uuid, rk=request_key))
-    return cur.rowcount
 
 
 def expire_member_approvals(tx, days: int = 7) -> int:
@@ -77,14 +83,6 @@ def expire_member_approvals(tx, days: int = 7) -> int:
         """UPDATE publishing_queue SET status = 'cancelled', error = 'approval_expired', updated_at = NOW()
             WHERE status = 'awaiting_member' AND created_at < NOW() - make_interval(days => %(d)s)""",
         dict(d=days))
-    return cur.rowcount
-
-
-def attach_image(tx, request_key: str, image_key: str, image_url: str) -> int:
-    cur = tx.execute(
-        """UPDATE publishing_queue SET status = 'review', image_key = %(k)s, image_url = %(u)s, updated_at = NOW()
-            WHERE request_key = %(rk)s AND status = 'awaiting_render'""",
-        dict(k=image_key, u=image_url, rk=request_key))
     return cur.rowcount
 
 

@@ -24,6 +24,7 @@ sends all happen strictly outside the handler's own transaction.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import uuid as uuid_mod
 from datetime import date, datetime, timedelta, timezone
@@ -38,11 +39,12 @@ from duohash import sha512
 from service.admin import record_audit, require_admin
 from service.api.cron_auth import is_cron_request, require_admin_or_cron
 from service.api.decorators import aget, apost, get, post, limiter, Q_GET_SESSION, _is_private_ip
-from service.config import USER_IMAGES_BASE_URL, WEB_BASE_URL
+from service.config import USER_IMAGES_BASE_URL
 from service.spotlight.eligibility import eligibility, primary_photo_uuid, photo_url
-from service.spotlight.queue import (create_candidate, expire_member_approvals, attach_image,
+from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      set_status, settings, set_setting, stamp_featured,
                                      reap_expired_leases, PLATFORMS)
+from service.spotlight.revisions import attach_render, consent_complete, edit_caption
 from service.spotlight.roundup import roundup_snapshot
 from service.spotlight.storage import _bucket, delete_images
 
@@ -238,6 +240,9 @@ def _send_card_live(person_id: int, request_key: str, external_post_id: str, pla
 # Clicks and sign-ups are per REQUEST (both platform rows share the campaign
 # link), counted off campaign_link.kind = 'post:<request_key>' and excluding
 # the bot user-agent class so previews and crawlers don't inflate the number.
+# q.member_approved_at and q.approved_photo_uuid (the pre-Wave-1 columns) are
+# left untouched but no longer written by anything -- both are now sourced
+# from the current revision and its consent row instead (Task 2).
 _Q_ROWS = """
     SELECT q.id::text AS id,
            q.request_key,
@@ -250,14 +255,19 @@ _Q_ROWS = """
            q.attempts,
            q.external_post_id,
            q.error,
-           q.member_approved_at,
+           q.current_revision_id,
+           r.revision AS revision_number,
+           r.asset_hash AS revision_asset_hash,
+           (SELECT sc.approved_at FROM spotlight_revision_consent sc
+              WHERE sc.revision_id = q.current_revision_id
+                AND sc.role = 'subject' AND sc.person_id = q.subject_person_id) AS member_approved_at,
            q.subject_person_id,
            q.payload,
            split_part(p.name, ' ', 1) AS first_name,
            date_part('year', age(p.date_of_birth))::int AS age,
            COALESCE(p.country, p.location_short_friendly) AS country,
            COALESCE(
-               q.approved_photo_uuid::text,
+               r.photo_uuid::text,
                (SELECT ph.uuid::text FROM photo ph
                  WHERE ph.person_id = q.subject_person_id
                    AND ph.moderation_status = 'approved'
@@ -272,8 +282,12 @@ _Q_ROWS = """
                AND c.ua_class <> 'bot')::int AS signups
       FROM publishing_queue q
       LEFT JOIN person p ON p.id = q.subject_person_id
+      LEFT JOIN spotlight_revision r ON r.id = q.current_revision_id
      WHERE (%(status)s::text IS NULL OR q.status = %(status)s::text)
        AND (%(due)s::bool IS NOT TRUE OR q.scheduled_for <= NOW())
+       AND (%(needs_render)s::bool IS NOT TRUE
+            OR (r.asset_hash IS NULL
+                AND q.status NOT IN ('cancelled', 'published', 'processing', 'scheduled')))
      ORDER BY q.created_at DESC
      LIMIT 200
 """
@@ -340,7 +354,7 @@ _Q_REMOVALS = """
 """
 
 
-def _queue_row(r) -> dict:
+def _queue_row(r, consent_ok: Optional[bool] = None) -> dict:
     subject = None
     if r['subject_person_id'] is not None:
         subject = dict(
@@ -366,6 +380,8 @@ def _queue_row(r) -> dict:
         subject=subject,
         clicks=r['clicks'],
         signups=r['signups'],
+        revision=r['revision_number'],
+        consent_complete=consent_ok,
     )
     # Only kind 'roundup' rows carry a payload snapshot (stamped at creation
     # by post_growth_spotlight_roundup); every other kind leaves these keys
@@ -386,9 +402,23 @@ def get_growth_queue():
     _gate()
     status = request.args.get('status') or None
     due = request.args.get('due') in ('1', 'true', 'yes')
+    # needs_render replaces status=awaiting_render as the render tick's real
+    # selector (Task 2): a subject row stays `awaiting_member` with approvals
+    # disabled, but still needs rendering, so it must be picked up here too.
+    # The old status filter keeps working unchanged for compatibility.
+    needs_render = request.args.get('needs_render') in ('1', 'true', 'yes')
     with api_tx('read committed') as tx:
-        rows = tx.execute(_Q_ROWS, dict(status=status, due=due)).fetchall()
-    return jsonify([_queue_row(r) for r in rows])
+        rows = tx.execute(_Q_ROWS, dict(status=status, due=due, needs_render=needs_render)).fetchall()
+        # Memoised per revision_id: both platform rows of a request share one
+        # current revision, so this never computes the same answer twice.
+        cache: dict = {}
+        out = []
+        for r in rows:
+            rid = r['current_revision_id']
+            if rid is not None and rid not in cache:
+                cache[rid] = consent_complete(tx, rid)
+            out.append(_queue_row(r, cache.get(rid)))
+    return jsonify(out)
 
 
 @post('/admin/growth/queue/claim', limiter=growth_limit)
@@ -537,13 +567,28 @@ def post_growth_queue_image(request_key: str):
             moved = True
         else:
             rows = tx.execute(
-                "SELECT platform, image_key, image_url FROM publishing_queue WHERE request_key = %(rk)s",
+                """SELECT platform, image_key, image_url, current_revision_id
+                     FROM publishing_queue WHERE request_key = %(rk)s""",
                 dict(rk=request_key)).fetchall()
             if rows and all(r['image_url'] for r in rows):
-                # attach_image is the state transition (awaiting_render -> review);
-                # it stamps one key/url across every row of the request, so each
-                # platform's own rendered image is written back afterwards.
-                attach_image(tx, request_key, key, url)
+                # One render per revision (Task 2): the platform image that
+                # completes the set stamps the revision's asset_hash/image
+                # columns once. A retry that lands here again (revision
+                # already rendered) is a no-op, not an error -- each row's
+                # OWN image_key/url is still restored below regardless.
+                rev_id = rows[0]['current_revision_id']
+                try:
+                    attach_render(tx, rev_id, hashlib.sha256(data).hexdigest(), key, url)
+                except ValueError:
+                    pass
+                # A roundup (no subject) row is ready to schedule as soon as
+                # it is rendered. A subject row stays `awaiting_member` even
+                # once rendered -- approve_card is what moves it on to
+                # review, and only once the member actually consents.
+                tx.execute(
+                    """UPDATE publishing_queue SET status = 'review', updated_at = NOW()
+                        WHERE request_key = %(rk)s AND status = 'awaiting_render'""",
+                    dict(rk=request_key))
                 for r in rows:
                     tx.execute(
                         """UPDATE publishing_queue SET image_key = %(k)s, image_url = %(u)s
@@ -787,33 +832,27 @@ def post_growth_queue_caption(s: t.SessionInfo, qid: str):
     caption = _body().get('caption')
     if not isinstance(caption, str) or not caption.strip():
         abort(400)
-    caption_text: str = caption
     with api_tx() as tx:
         row = tx.execute(
             "SELECT request_key FROM publishing_queue WHERE id = %(id)s",
             dict(id=queue_id)).fetchone()
         if not row:
             abort(409)
-        # The link is looked up, never re-minted: `create_candidate` mints
-        # exactly one campaign link per request key (kind 'post:<request_key>',
-        # shared by both platform rows) and `_Q_ROWS` counts clicks and
-        # sign-ups against that one key, so a second `make_campaign_link` call
-        # here would split the count across two links for the same post.
-        link = tx.execute(
-            "SELECT key FROM campaign_link WHERE kind = %(k)s LIMIT 1",
-            dict(k=f"post:{row['request_key']}")).fetchone()
-        if link:
-            url = f"{WEB_BASE_URL.rstrip('/')}/s/{link['key']}"
-            if url not in caption_text:
-                caption_text = f"{caption_text.rstrip()} {url}"
-        cur = tx.execute(
-            """UPDATE publishing_queue SET caption = %(c)s, updated_at = NOW()
-                WHERE id = %(id)s AND status NOT IN ('published', 'cancelled')""",
-            dict(c=caption_text, id=queue_id))
-        if not cur.rowcount:
-            abort(409)
+        # edit_caption (Task 2) is the Phase B logic moved into
+        # service.spotlight.revisions: it preserves the request's one /s/
+        # campaign link and creates a new revision rather than editing the
+        # current one, so a caption change never silently alters content a
+        # member already consented to. It raises in_flight for a
+        # scheduled/processing row, the same set create_revision refuses.
+        try:
+            edit_caption(tx, row['request_key'], caption, _actor(s))
+        except ValueError as e:
+            abort(409, str(e))
+        stored = tx.execute(
+            "SELECT caption FROM publishing_queue WHERE id = %(id)s",
+            dict(id=queue_id)).fetchone()['caption']
         _audit(tx, s, 'growth.queue.caption', queue_id=str(queue_id))
-    return dict(ok=True, caption=caption_text)
+    return dict(ok=True, caption=stored)
 
 
 @apost('/admin/growth/queue/purge')

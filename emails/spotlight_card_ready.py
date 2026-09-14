@@ -44,8 +44,8 @@ def card_ready_html(first_name: str, kind_label: str, card_url: str, expires_day
 
 <p class="e-text" style="margin:0 0 16px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
   {name}, we would like to feature you as {label}. Nothing is posted until
-  you say so. Review the card, choose the photo you prefer, and approve or
-  skip.
+  you say so. Once your card preview is ready, you can review it, choose
+  the photo you prefer, and approve or skip.
 </p>
 
 {button("Review my card", card_url)}

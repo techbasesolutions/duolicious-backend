@@ -20,7 +20,8 @@ from database import api_tx
 from service.api.decorators import get, post
 from service.api.unsubscribe_routes import unsub_limit
 from service.spotlight.approval import CARD_TOKEN_TTL_SECONDS, card_state, parse_card_token
-from service.spotlight.queue import set_member_approval, set_status
+from service.spotlight.queue import set_status
+from service.spotlight.revisions import approve_card
 
 
 def _resolve(token: str) -> tuple[str, str]:
@@ -41,7 +42,7 @@ def _expires_at(token: str) -> str:
 
 
 def _status_of(row: dict) -> str:
-    if row['member_approved_at']:
+    if row['consented']:
         return 'approved'
     if row['status'] == 'cancelled':
         return 'skipped'
@@ -56,7 +57,9 @@ def _card_json(row: dict, token: str) -> dict:
         kind=row['kind'],
         caption=row['caption'],
         photos=row['photos'],
-        approved_photo_uuid=row['approved_photo_uuid'],
+        revision=row['revision'],
+        preview_available=row['preview_available'],
+        image_url=row['image_url'],
         status=_status_of(row),
         expires_at=_expires_at(token),
     )
@@ -93,10 +96,10 @@ def post_spotlight_card(token: str):
             if not photo_uuid:
                 abort(400)
             try:
-                n = set_member_approval(tx, rk, photo_uuid)
+                result = approve_card(tx, rk, row['subject_person_id'], photo_uuid)
             except ValueError as e:
-                abort(400, str(e))
-            return dict(ok=True, already=(n == 0))
+                abort(409, str(e))
+            return dict(ok=True, result=result)
 
         # skip: cancel every row of this request that is still awaiting the
         # member's decision. Nothing left in that state means a previous

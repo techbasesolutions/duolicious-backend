@@ -2,8 +2,9 @@ import json
 
 import pytest
 from database import api_tx
-from service.spotlight.queue import (create_candidate, set_member_approval, expire_member_approvals, attach_image,
+from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      set_status, cancel_for_member, settings, set_setting, stamp_featured)
+from service.spotlight.revisions import current_revision, attach_render, approve_card
 from service.spotlight import set_spotlight_opt_in
 
 
@@ -50,26 +51,34 @@ def test_roundup_has_no_subject_and_awaits_render():
         assert {r['status'] for r in _rows(tx, rk)} == {'awaiting_render'}
 
 
-def test_member_approval_then_image_then_review(make_person):
+def test_member_approval_then_render_then_review(make_person):
+    """set_member_approval + attach_image (pre-Wave-1 queue.py) are replaced
+    by revision-bound consent: the card is rendered first (attach_render),
+    then approve_card records the subject's consent against that exact
+    revision and, once consent is complete, moves the row on to review."""
     p = _make_eligible(make_person)
     with api_tx() as tx:
+        set_setting(tx, 'approvals_enabled', 'true')
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
-        assert set_member_approval(tx, rk, photo) == 2
-        assert {r['status'] for r in _rows(tx, rk)} == {'awaiting_render'}
-        assert all(r['approved_photo_uuid'] is not None and r['member_approved_at'] is not None for r in _rows(tx, rk))
-        assert attach_image(tx, rk, 'spotlight/x.png', 'https://cdn/x.png') == 2
+        attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/x.png')
+        assert {r['status'] for r in _rows(tx, rk)} == {'awaiting_member'}
+        assert approve_card(tx, rk, p['id'], photo) == 'approved'
         assert {r['status'] for r in _rows(tx, rk)} == {'review'}
+        set_setting(tx, 'approvals_enabled', 'false')
 
 
-def test_member_approval_rejects_foreign_photo(make_person):
+def test_approve_card_rejects_foreign_photo(make_person):
     p = _make_eligible(make_person)
     other = _make_eligible(make_person, name='Other')
     with api_tx() as tx:
+        set_setting(tx, 'approvals_enabled', 'true')
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
         foreign = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=other['id'])).fetchone()['u']
-        with pytest.raises(ValueError):
-            set_member_approval(tx, rk, foreign)
+        with pytest.raises(ValueError, match='photo_not_owned'):
+            approve_card(tx, rk, p['id'], foreign)
+        set_setting(tx, 'approvals_enabled', 'false')
 
 
 def test_expire_member_approvals(make_person):
@@ -84,7 +93,10 @@ def test_expire_member_approvals(make_person):
 def test_set_status_transitions(make_person):
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
-        attach_image(tx, rk, 'k', 'https://cdn/k.png')
+        # attach_image (pre-Wave-1) used to make this transition; a roundup
+        # is ready for review as soon as it is rendered (Task 2), which this
+        # test does not otherwise exercise, so the status is set directly.
+        tx.execute("UPDATE publishing_queue SET status = 'review' WHERE request_key = %(rk)s", dict(rk=rk))
         qid = _rows(tx, rk)[0]['id']
         set_status(tx, qid, 'scheduled')
         with pytest.raises(ValueError):

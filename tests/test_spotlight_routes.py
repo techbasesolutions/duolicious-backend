@@ -15,7 +15,8 @@ import pytest
 
 from database import api_tx
 from service.spotlight import set_spotlight_opt_in
-from service.spotlight.queue import create_candidate, attach_image, set_status, set_setting, set_member_approval
+from service.spotlight.queue import create_candidate, set_status, set_setting
+from service.spotlight.revisions import current_revision, attach_render
 
 
 def _session_for(p, signed_in: bool = True) -> str:
@@ -63,6 +64,17 @@ def _make_eligible(make_person, name='Elig', gender='Woman'):
     return p
 
 
+def _render(tx, rk, key='k', url='https://cdn/k.png'):
+    """Stand-in for the /admin/growth/queue/<rk>/image route (Task 2): renders
+    the request's current revision and stamps every row's own image columns
+    and status, the same end state attach_image (pre-Wave-1) used to leave
+    behind for a roundup."""
+    rev = current_revision(tx, rk)
+    attach_render(tx, rev['id'], f'hash-{rk}', key, url)
+    tx.execute("UPDATE publishing_queue SET image_key = %(k)s, image_url = %(u)s, status = 'review', updated_at = NOW() WHERE request_key = %(rk)s",
+               dict(k=key, u=url, rk=rk))
+
+
 def test_non_admin_and_bad_secret_are_403(client, make_person):
     p = make_person(name='Nobody')
     tok = _session_for(p)
@@ -88,7 +100,7 @@ def test_cron_can_list_claim_and_complete(client, make_person):
     p = _make_eligible(make_person)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
-        attach_image(tx, rk, 'k', 'https://cdn/k.png')
+        _render(tx, rk)
         set_setting(tx, 'scheduler_enabled', 'true')
         for r in tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall():
             set_status(tx, r['id'], 'scheduled')
@@ -138,13 +150,13 @@ def test_claim_reaps_expired_leases(client, make_person):
 def test_queue_due_filter(client, make_person):
     with api_tx() as tx:
         rk_due = create_candidate(tx, kind='roundup', subject_person_id=None, caption='due', created_by='t')
+        _render(tx, rk_due, 'k', 'https://cdn/k.png')
         for r in tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk_due)).fetchall():
-            attach_image(tx, rk_due, 'k', 'https://cdn/k.png')
             set_status(tx, r['id'], 'scheduled')
         tx.execute("UPDATE publishing_queue SET scheduled_for = NOW() - interval '1 minute' WHERE request_key = %(rk)s", dict(rk=rk_due))
         rk_future = create_candidate(tx, kind='roundup', subject_person_id=None, caption='future', created_by='t')
+        _render(tx, rk_future, 'k2', 'https://cdn/k2.png')
         for r in tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk_future)).fetchall():
-            attach_image(tx, rk_future, 'k2', 'https://cdn/k2.png')
             set_status(tx, r['id'], 'scheduled')
         tx.execute("UPDATE publishing_queue SET scheduled_for = NOW() + interval '1 day' WHERE request_key = %(rk)s", dict(rk=rk_future))
     H = {'X-Growth-Cron': 'test-cron-secret'}
@@ -168,7 +180,7 @@ def test_image_upload_attaches_and_moves_to_review(client, monkeypatch, make_per
     with api_tx('read committed') as tx:
         rows = tx.execute("SELECT platform, status, image_url FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()
     assert {r['status'] for r in rows} == {'review'}
-    # attach_image stamps one url across the whole request key; each row must
+    # attach_render stamps one url on the revision (Task 2); each row must
     # still end up pointing at its OWN rendered file.
     for r in rows:
         assert r['image_url'].endswith(f"/spotlight/{rk}-{r['platform']}.png")
@@ -203,7 +215,7 @@ def test_admin_approve_default_slot_and_purge(client, make_person):
     A = {'Authorization': f'Bearer {tok}'}
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
-        attach_image(tx, rk, 'k', 'https://cdn/k.png')
+        _render(tx, rk)
         qid = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1", dict(rk=rk)).fetchone()['id']
     r = client.post(f'/admin/growth/queue/{qid}/approve', json={'scheduled_for': None}, headers=A)
     assert r.status_code == 200 and r.get_json()['status'] == 'scheduled' and r.get_json()['scheduled_for'] is not None
@@ -348,7 +360,15 @@ def test_roundup_route_stores_and_serves_tile_payload(client, make_person):
     with api_tx() as tx:
         rk_w = create_candidate(tx, kind='welcome', subject_person_id=a['id'], caption='c', created_by='t')
         photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=a['id'])).fetchone()['u']
-        set_member_approval(tx, rk_w, photo)
+        # set_member_approval (removed in Task 2, replaced by revision-bound
+        # approve_card) used to stamp these two columns; roundup_snapshot's
+        # candidate query still reads them as-is (Task 8 rewires the roundup
+        # path onto revisions), so the test stamps them directly to keep
+        # exercising the tile-snapshot path this task does not touch.
+        tx.execute(
+            """UPDATE publishing_queue SET approved_photo_uuid = %(u)s::uuid, member_approved_at = NOW()
+                WHERE request_key = %(rk)s""",
+            dict(u=photo, rk=rk_w))
     H = {'X-Growth-Cron': 'test-cron-secret'}
     r = client.post('/admin/growth/spotlight/roundup', json={}, headers=H)
     assert r.status_code == 200
@@ -484,6 +504,46 @@ def test_caption_edit_keeps_exactly_one_campaign_link(client, make_person):
     r2 = client.post(f'/admin/growth/queue/{qid}/caption', json={'caption': body}, headers=A)
     assert r2.status_code == 200
     assert r2.get_json()['caption'].count(link) == 1
+
+
+def test_queue_rows_carry_revision_and_consent_complete(client, make_person):
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+    H = {'X-Growth-Cron': 'test-cron-secret'}
+    rows = [r for r in client.get('/admin/growth/queue', headers=H).get_json() if r['request_key'] == rk]
+    assert len(rows) == 2
+    assert all(r['revision'] == 1 for r in rows)
+    # No one has consented yet, and this is a subject-bearing request, so it
+    # is not complete.
+    assert all(r['consent_complete'] is False for r in rows)
+
+
+def test_queue_needs_render_filter_lists_unrendered_revisions(client, make_person):
+    with api_tx() as tx:
+        rendered_rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        _render(tx, rendered_rk)
+        unrendered_rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c2', created_by='t')
+    H = {'X-Growth-Cron': 'test-cron-secret'}
+    rows = client.get('/admin/growth/queue?needs_render=1', headers=H).get_json()
+    keys = {r['request_key'] for r in rows}
+    assert unrendered_rk in keys and rendered_rk not in keys
+    # The old status filter still works unchanged, for compatibility.
+    still_awaiting = client.get('/admin/growth/queue?status=awaiting_render', headers=H).get_json()
+    assert unrendered_rk in {r['request_key'] for r in still_awaiting}
+
+
+def test_caption_route_refuses_a_scheduled_row(client, make_person):
+    admin = _make_admin(make_person); tok = _session_for(admin)
+    A = {'Authorization': f'Bearer {tok}'}
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        _render(tx, rk)
+        qid = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1", dict(rk=rk)).fetchone()['id']
+        for r in tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall():
+            set_status(tx, r['id'], 'scheduled')
+    r = client.post(f'/admin/growth/queue/{qid}/caption', json={'caption': 'x'}, headers=A)
+    assert r.status_code == 409
 
 
 def test_growth_limit_exempts_cron_header_not_bare_ip(monkeypatch):

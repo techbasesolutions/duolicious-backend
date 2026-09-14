@@ -17,6 +17,7 @@ from urllib.parse import quote
 
 from service.config import WEB_BASE_URL
 from service.spotlight.eligibility import photo_url
+from service.spotlight.revisions import current_revision
 from service.unsubscribe import _secret  # same key, fails closed when unset
 
 CARD_TOKEN_TTL_SECONDS = 7 * 24 * 3600
@@ -62,11 +63,13 @@ def card_url(request_key: str, email: str) -> str:
 
 
 # One row per request_key (both platform rows carry the same subject,
-# kind, caption and approval state), so the facebook row (or the first
-# platform alphabetically when facebook has no row) stands in for the pair.
+# kind and queue status), so the facebook row (or the first platform
+# alphabetically when facebook has no row) stands in for the pair. Content
+# (caption, photo, render) is no longer read off the queue row at all --
+# it comes from the current revision, so a card in flight always reflects
+# exactly what the member is being asked to consent to.
 _Q_STATE = """
-    SELECT q.subject_person_id, q.kind, q.caption, q.image_url, q.status,
-           q.approved_photo_uuid::text AS approved_photo_uuid, q.member_approved_at,
+    SELECT q.subject_person_id, q.kind, q.status,
            p.email, split_part(p.name, ' ', 1) AS first_name,
            date_part('year', age(p.date_of_birth))::int AS age,
            COALESCE(p.country, p.location_short_friendly) AS country
@@ -90,6 +93,16 @@ def card_state(tx, request_key: str) -> dict | None:
     if not row:
         return None
     photo_rows = tx.execute(_Q_PHOTOS, dict(pid=row['subject_person_id'])).fetchall()
+    rev = current_revision(tx, request_key)
+    # Consent never carries over between revisions (spec: the primary key is
+    # per revision), so "approved" only ever reflects the CURRENT revision --
+    # an older revision's consent row, if any, is irrelevant here.
+    consented = False
+    if rev and row['subject_person_id'] is not None:
+        consented = tx.execute(
+            """SELECT 1 FROM spotlight_revision_consent
+                WHERE revision_id = %(rid)s AND person_id = %(pid)s AND role = 'subject'""",
+            dict(rid=rev['id'], pid=row['subject_person_id'])).fetchone() is not None
     return dict(
         subject_person_id=row['subject_person_id'],
         email=row['email'],
@@ -98,9 +111,11 @@ def card_state(tx, request_key: str) -> dict | None:
         country=row['country'],
         status=row['status'],
         photos=[dict(uuid=r['uuid'], url=photo_url(r['uuid'])) for r in photo_rows],
-        approved_photo_uuid=row['approved_photo_uuid'],
-        member_approved_at=row['member_approved_at'],
         kind=row['kind'],
-        caption=row['caption'],
-        image_url=row['image_url'],
+        caption=rev['caption'] if rev else None,
+        photo_uuid=rev['photo_uuid'] if rev else None,
+        revision=rev['revision'] if rev else None,
+        preview_available=bool(rev and rev['asset_hash']),
+        image_url=rev['image_url'] if rev else None,
+        consented=consented,
     )

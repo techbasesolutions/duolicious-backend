@@ -4,8 +4,20 @@ on purpose -- test files in this suite do not import from each other."""
 from __future__ import annotations
 
 from database import api_tx
-from service.spotlight.queue import create_candidate, set_member_approval
+from service.spotlight.queue import create_candidate
 from service.spotlight.roundup import roundup_snapshot
+
+
+def _stamp_member_approval(tx, request_key, photo_uuid):
+    """set_member_approval (removed in Task 2, replaced by revision-bound
+    approve_card) used to stamp these two columns; roundup_snapshot's
+    candidate query still reads them as-is (Task 8 rewires the roundup path
+    onto revisions), so this stamps them directly to keep exercising the
+    tile-snapshot path this task does not touch."""
+    tx.execute(
+        """UPDATE publishing_queue SET approved_photo_uuid = %(u)s::uuid, member_approved_at = NOW()
+            WHERE request_key = %(rk)s""",
+        dict(u=photo_uuid, rk=request_key))
 
 
 def _make_eligible(make_person, name='Elig', gender='Woman'):
@@ -30,7 +42,7 @@ def test_snapshot_lists_only_approved_newcomers(make_person):
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=a['id'], caption='c', created_by='t')
         photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=a['id'])).fetchone()['u']
-        set_member_approval(tx, rk, photo)
+        _stamp_member_approval(tx, rk, photo)
         create_candidate(tx, kind='welcome', subject_person_id=b['id'], caption='c', created_by='t')
         tx.execute("UPDATE person SET country = 'GB' WHERE id = %(id)s", dict(id=a['id']))
         tx.execute("UPDATE person SET country = 'US' WHERE id = %(id)s", dict(id=b['id']))
@@ -52,5 +64,5 @@ def test_snapshot_caps_tiles_at_four(make_person):
         for p in people:
             rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
             photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
-            set_member_approval(tx, rk, photo)
+            _stamp_member_approval(tx, rk, photo)
         assert len(roundup_snapshot(tx, days=7)['tiles']) <= 4
