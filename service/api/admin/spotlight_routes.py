@@ -525,12 +525,16 @@ def post_growth_queue_complete(qid: str):
                     and row['cancellation_requested_at'] is None):
                 live = (row['subject_person_id'], row['request_key'],
                         external_post_id or '', row['platform'], post_url)
-        audit_metadata = dict(queue_id=str(queue_id), status=status,
-                               delivery_state=OUTCOME_DELIVERY_STATE.get(status))
-        if occurrences is not None:
-            audit_metadata['occurrences'] = occurrences
-            audit_metadata['first_confirmation'] = first_confirmation
-        _audit(tx, s, 'growth.queue.complete', **audit_metadata)
+        # A duplicate ('already') receipt changed nothing -- record_receipt's
+        # own no-writes guarantee -- so it earns no audit row either; only a
+        # receipt that actually moved the row is logged.
+        if result == 'recorded':
+            audit_metadata = dict(queue_id=str(queue_id), status=status,
+                                   delivery_state=OUTCOME_DELIVERY_STATE.get(status))
+            if occurrences is not None:
+                audit_metadata['occurrences'] = occurrences
+                audit_metadata['first_confirmation'] = first_confirmation
+            _audit(tx, s, 'growth.queue.complete', **audit_metadata)
     # Outside the transaction on purpose: the mail path opens its own api_tx.
     if live is not None:
         _send_card_live(*live)

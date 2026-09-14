@@ -152,13 +152,82 @@ def test_complete_route_requires_lease_and_maps_conflicts(make_person, client, m
 
 
 def test_claim_route_returns_lease_token(make_person, client):
+    from service.spotlight.queue import set_setting
     p = _make_eligible(make_person)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         tx.execute("UPDATE publishing_queue SET status = 'scheduled', scheduled_for = NOW() - interval '1 minute' WHERE request_key = %(rk)s", dict(rk=rk))
-        from service.spotlight.queue import set_setting; set_setting(tx, 'scheduler_enabled', 'true')
-    r = client.post('/admin/growth/queue/claim', json=dict(max=50), headers={'X-Growth-Cron': 'test-cron-secret'})
-    mine = [x for x in r.get_json() if x['request_key'] == rk]
-    assert len(mine) == 2 and all(isinstance(x['lease_token'], str) and len(x['lease_token']) == 32 for x in mine)
+        set_setting(tx, 'scheduler_enabled', 'true')
+    try:
+        r = client.post('/admin/growth/queue/claim', json=dict(max=50), headers={'X-Growth-Cron': 'test-cron-secret'})
+        mine = [x for x in r.get_json() if x['request_key'] == rk]
+        assert len(mine) == 2 and all(isinstance(x['lease_token'], str) and len(x['lease_token']) == 32 for x in mine)
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'scheduler_enabled', 'false')
+
+
+def test_late_receipt_on_a_roundup_files_one_unattributed_task():
+    """Fix round 1, ruling 1: `record_receipt` does not know WHO withdrew --
+    a roundup row has no subject -- so the late removal task it files is
+    attributed to no one (`person_id NULL`); the withdrawing member's own
+    `withdraw_member` call is what names them, on whichever rows it reached
+    directly."""
     with api_tx() as tx:
-        set_setting(tx, 'scheduler_enabled', 'false')
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        rev = current_revision(tx, rk)
+        attach_render(tx, rev['id'], 'h', 'k', 'https://cdn/k.png')
+        tx.execute("UPDATE publishing_queue SET status = 'scheduled', scheduled_for = NOW() - interval '1 minute' WHERE request_key = %(rk)s", dict(rk=rk))
+        rows = sorted([r for r in tx.execute("SELECT * FROM claim_spotlight_posts(10)").fetchall()
+                       if r['request_key'] == rk], key=lambda r: r['platform'])
+        fb = rows[0]
+        # No `withdraw_member` call here on purpose: the brief's ruling is
+        # about what `record_receipt` does on its own when a row it is
+        # completing already carries the stamp, however it got there.
+        tx.execute("UPDATE publishing_queue SET cancellation_requested_at = NOW() WHERE id = %(id)s", dict(id=fb['id']))
+        assert record_receipt(tx, fb['id'], fb['lease_token'], 'published', external_post_id='1_2') == 'recorded'
+        tasks = tx.execute(
+            "SELECT person_id, request_key, external_post_id, done_at FROM spotlight_removal_task WHERE queue_id = %(id)s",
+            dict(id=fb['id'])).fetchall()
+        assert [(t['person_id'], t['request_key'], t['external_post_id'], t['done_at']) for t in tasks] == [(None, rk, '1_2', None)]
+
+
+def test_complete_route_rejects_a_non_string_lease_token(make_person, client):
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk, rows = _claimed(tx, p['id'])
+        q = rows[0]; qid = str(q['id'])
+    h = {'X-Growth-Cron': 'test-cron-secret'}
+    r = client.post(f'/admin/growth/queue/{qid}/complete',
+                    json=dict(status='published', external_post_id='1', lease_token=12345), headers=h)
+    assert r.status_code == 400 and r.get_json()['error'] == 'lease_required'
+    with api_tx() as tx:
+        assert _row(tx, q['id'])['status'] == 'processing'
+
+
+def test_duplicate_receipt_is_not_audited(make_person, client, monkeypatch):
+    """Fix round 1, ruling 3: a receipt that changes nothing earns no audit
+    row -- only a `'recorded'` result does. The cron path's own `_audit`
+    just prints (no session to attribute to), so the assertion is on
+    `_audit` itself rather than `admin_audit_log`, the same way other tests
+    in this suite monkeypatch a route-level function to observe a call."""
+    import service.api.admin.spotlight_routes as routes
+    calls = []
+    real_audit = routes._audit
+
+    def _spy(tx, s, action, **metadata):
+        calls.append((action, metadata))
+        return real_audit(tx, s, action, **metadata)
+
+    monkeypatch.setattr(routes, '_audit', _spy)
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk, rows = _claimed(tx, p['id'])
+        q = rows[0]; qid = str(q['id']); lease = q['lease_token']
+    h = {'X-Growth-Cron': 'test-cron-secret'}
+    body = dict(status='published', external_post_id='1', lease_token=lease)
+    assert client.post(f'/admin/growth/queue/{qid}/complete', json=body, headers=h).status_code == 200
+    assert len(calls) == 1
+    r = client.post(f'/admin/growth/queue/{qid}/complete', json=body, headers=h)
+    assert r.status_code == 200 and r.get_json()['already'] is True
+    assert len(calls) == 1   # the duplicate call never reaches _audit at all

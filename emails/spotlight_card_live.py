@@ -1,14 +1,15 @@
 """E5 card live: the member's Spotlight card has published (spec 3.1, 3.4,
 3.5, section 2). Canonical shell. Copy rules: NO em dashes. Sentence case.
 
-Instagram permalink note: the publishing worker (Task 6) stores whatever id
-the platform API returns for `external_post_id`. Facebook's post id doubles
-as a stable permalink path, but Instagram's real web permalink needs the
-post's shortcode, which the Graph API returns on a separate lookup that
-Task 7 (removal/lifecycle) is the first to need and store. Until that lands,
-`post_url_for('instagram', ...)` links to the public Ahavah Instagram
-profile instead of guessing a shortcode from the media id (which would
-produce a broken link)."""
+Instagram permalink note: the admin worker (Task 6) resolves Instagram's
+real web permalink via a separate Graph lookup (the id alone is not enough
+to build one) and sends it through the `/complete` receipt's `post_url`
+field, alongside Facebook's own id-derived path. `send_card_live` below uses
+that `post_url` as-is whenever it is an `https://` string. `post_url_for
+('instagram', ...)` is only the FALLBACK for a receipt that arrives with no
+usable `post_url` (an older worker, or a failed lookup): it links to the
+public Ahavah Instagram profile instead of guessing a shortcode from the
+media id, which would produce a broken link."""
 from __future__ import annotations
 
 import threading

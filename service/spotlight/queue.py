@@ -6,7 +6,7 @@ from typing import Optional
 from service.campaigns import make_campaign_link
 from service.config import WEB_BASE_URL
 from service.spotlight.eligibility import eligibility, primary_photo_uuid
-from service.spotlight.revisions import create_revision, current_revision
+from service.spotlight.revisions import create_revision
 from service.spotlight.roundup import roundup_snapshot
 
 KINDS = ('welcome', 'roundup', 'member_of_week', 'highlight')
@@ -131,29 +131,22 @@ _Q_RECEIPT_ROW = """
 def _file_late_removal_task(tx, queue_id, row: dict, external_post_id: Optional[str]) -> None:
     """A `published` receipt landing after the member withdrew (row 5 rule):
     the removal task has to be filed the moment the post is known to be
-    live, not left for the next withdrawal (there may not be one). Lazy
-    import mirrors `cancel_for_member`'s: `withdrawal.py` does not import
-    this module, so there is no real cycle, but the pattern stays consistent
-    with the rest of the file.
+    live, not left for the next withdrawal (there may not be one).
+
+    `record_receipt` only knows THAT `cancellation_requested_at` is set, not
+    WHO withdrew: a roundup row has no subject, and the withdrawing member's
+    own `withdraw_member` call is what names them, on whichever rows it
+    reached directly (their own card, or an already-published sibling row).
+    This is just the one row that was still in flight -- for a roundup, it
+    files with `person_id NULL`, exactly like `row['subject_person_id']`
+    already is for that kind. Lazy import mirrors `cancel_for_member`'s:
+    `withdrawal.py` does not import this module, so there is no real cycle,
+    but the pattern stays consistent with the rest of the file.
     """
     from service.spotlight.withdrawal import _file_removal_tasks
     task_row = dict(id=queue_id, platform=row['platform'], external_post_id=external_post_id,
                      request_key=row['request_key'])
-    if row['subject_person_id'] is not None:
-        _file_removal_tasks(tx, [task_row], row['subject_person_id'])
-        return
-    # A roundup has no subject: the removal task is attributed to each
-    # participant named in the CURRENT revision. `_file_removal_tasks`
-    # guards on an already-open task per queue_id, so only the first
-    # participant's call actually inserts a row -- there is only one live
-    # post to remove regardless of how many members are pictured in it.
-    rev = current_revision(tx, row['request_key'])
-    participants = (rev['participants'] if rev else None) or []
-    if not participants:
-        _file_removal_tasks(tx, [task_row], None)
-        return
-    for participant in participants:
-        _file_removal_tasks(tx, [task_row], participant.get('person_id'))
+    _file_removal_tasks(tx, [task_row], row['subject_person_id'])
 
 
 def record_receipt(tx, queue_id, lease_token: Optional[str], outcome: str, *,
@@ -178,7 +171,10 @@ def record_receipt(tx, queue_id, lease_token: Optional[str], outcome: str, *,
     """
     if outcome not in OUTCOMES:
         raise ValueError('bad_outcome')
-    if not lease_token:
+    # A truthy non-string (an int, say, from a loosely-typed request body)
+    # must never reach `hmac.compare_digest` below, which raises TypeError
+    # on anything but two `str` (or two `bytes`) -- fail closed here instead.
+    if not isinstance(lease_token, str) or not lease_token:
         raise ValueError('lease_required')
     row = tx.execute(_Q_RECEIPT_ROW, dict(id=queue_id)).fetchone()
     if not row:
@@ -190,9 +186,15 @@ def record_receipt(tx, queue_id, lease_token: Optional[str], outcome: str, *,
             (outcome == 'published' and row['status'] == 'published'
              and row['external_post_id'] == external_post_id)
             or (outcome == 'failed' and row['status'] == 'failed')
-            or (outcome in ('delivery_unknown', 'review') and row['status'] == 'review'
-                and row['delivery_state'] == ('delivery_unknown' if outcome == 'delivery_unknown'
-                                               else row['delivery_state']))
+            or (outcome == 'delivery_unknown' and row['status'] == 'review'
+                and row['delivery_state'] == 'delivery_unknown')
+            # A `review` receipt is a duplicate whenever the row is already
+            # parked in review, regardless of its delivery_state: an
+            # operator-parked row (an ineligible check, a lease-expiry reap,
+            # or an earlier delivery_unknown) is not reset by a repeat
+            # `review` receipt -- there is nothing left for a second one to
+            # change.
+            or (outcome == 'review' and row['status'] == 'review')
         )
         if duplicate:
             return 'already'
