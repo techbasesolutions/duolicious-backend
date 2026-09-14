@@ -35,7 +35,7 @@ from flask import abort, jsonify, request
 from database import api_tx
 from duohash import sha512
 from service.admin import record_audit, require_admin
-from service.api.cron_auth import require_admin_or_cron, is_cron_request
+from service.api.cron_auth import require_admin_or_cron
 from service.api.decorators import aget, apost, get, post, Q_GET_SESSION
 from service.config import USER_IMAGES_BASE_URL
 from service.spotlight.eligibility import eligibility, primary_photo_uuid, photo_url
@@ -69,7 +69,13 @@ def _session() -> Optional[t.SessionInfo]:
     session_token_hash = sha512(session_token)
     with api_tx('READ COMMITTED') as tx:
         row = tx.execute(Q_GET_SESSION, dict(session_token_hash=session_token_hash)).fetchone()
-    if not row:
+    # `require_auth` defaults to expected_sign_in_status=True and
+    # expected_onboarding_status=True and compares them against
+    # `session_info.signed_in` and `session_info.person_id is not None`
+    # (decorators.py lines 344-357). Both checks are repeated here, or a
+    # pre-OTP duo_session row minted by POST /request-otp for an admin's
+    # email would authenticate as that admin.
+    if not row or not row['signed_in'] or row['person_id'] is None:
         return None
     return t.SessionInfo(
         email=row['email'],
@@ -99,8 +105,12 @@ def _actor(s: Optional[t.SessionInfo]) -> str:
 
 def _audit(tx, s, action, **metadata):
     """Human mutations write an audit row inside the mutation's transaction.
-    Cron has no actor to attribute, so it logs a line instead."""
-    if s is not None and not is_cron_request():
+    Cron has no actor to attribute, so it logs a line instead.
+
+    Keyed on the session alone, never on `is_cron_request()`: an admin who
+    happens to send the cron header as well is still a human actor and must
+    still leave an audit trail."""
+    if s is not None:
         record_audit(tx, s, action, metadata=metadata)
     else:
         print(f'cron {action} {metadata}')
@@ -238,6 +248,7 @@ _Q_WELCOME_CANDIDATES = """
        AND NOT EXISTS (SELECT 1 FROM publishing_queue q
                         WHERE q.subject_person_id = p.id AND q.kind = 'welcome')
      ORDER BY p.spotlight_opt_in_at
+     LIMIT 50
 """
 
 _Q_ROUNDUP_RECENT = """
@@ -420,10 +431,15 @@ def post_growth_queue_image(request_key: str):
 
     with api_tx('read committed') as tx:
         known = tx.execute(
-            "SELECT 1 FROM publishing_queue WHERE request_key = %(rk)s AND platform = %(pl)s",
+            """SELECT status FROM publishing_queue
+                WHERE request_key = %(rk)s AND platform = %(pl)s""",
             dict(rk=request_key, pl=platform)).fetchone()
     if not known:
         abort(404)
+    # A row that is already scheduled, leased, published or cancelled must
+    # not have its artwork swapped underneath it.
+    if known['status'] not in ('awaiting_member', 'awaiting_render', 'review'):
+        return dict(error='bad_status'), 409
 
     # Upload outside any transaction: a network round trip must not hold the
     # api connection lock.
@@ -548,13 +564,21 @@ def post_growth_removal_done(removal_id: int):
 def post_growth_token_health():
     s = _gate()
     body = _body()
-    expires_at = body.get('expires_at')
-    valid = bool(body.get('valid'))
+    raw_expires = body.get('expires_at')
+    if raw_expires is not None and not isinstance(raw_expires, str):
+        abort(400)
+    # Parsed with the same helper GET uses, and stored normalised, so the
+    # read side can never trip over a value the write side accepted.
+    parsed = _parse_dt(raw_expires)
+    expires_at = parsed.isoformat() if parsed is not None else ''
+    valid = body.get('valid')
+    if not isinstance(valid, bool):
+        abort(400)
     with api_tx() as tx:
-        set_setting(tx, 'token_expires_at', expires_at or '')
+        set_setting(tx, 'token_expires_at', expires_at)
         set_setting(tx, 'token_valid', 'true' if valid else 'false')
         _audit(tx, s, 'growth.token.health', valid=valid, expires_at=expires_at)
-    return dict(ok=True)
+    return dict(ok=True, expires_at=expires_at or None, valid=valid)
 
 
 # ---------------------------------------------------------------------------

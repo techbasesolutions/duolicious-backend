@@ -13,11 +13,16 @@ import secrets
 import pytest
 
 from database import api_tx
+from service.spotlight import set_spotlight_opt_in
 from service.spotlight.queue import create_candidate, attach_image, set_status, set_setting
 
 
-def _session_for(p) -> str:
-    """Mint a real duo_session row and return its bearer token."""
+def _session_for(p, signed_in: bool = True) -> str:
+    """Mint a real duo_session row and return its bearer token.
+
+    `signed_in=False` is the shape POST /request-otp leaves behind before the
+    code is entered: a real session row for a real email that has NOT
+    authenticated yet."""
     tok = secrets.token_hex(32)
     with api_tx() as tx:
         email = tx.execute("SELECT email FROM person WHERE id = %(i)s",
@@ -25,9 +30,9 @@ def _session_for(p) -> str:
         tx.execute(
             """
             INSERT INTO duo_session (session_token_hash, email, person_id, signed_in, otp)
-            VALUES (%(h)s, %(e)s, %(p)s, TRUE, '123456')
+            VALUES (%(h)s, %(e)s, %(p)s, %(s)s, '123456')
             """,
-            dict(h=hashlib.sha512(tok.encode()).hexdigest(), e=email, p=p['id']),
+            dict(h=hashlib.sha512(tok.encode()).hexdigest(), e=email, p=p['id'], s=signed_in),
         )
     return tok
 
@@ -62,6 +67,20 @@ def test_non_admin_and_bad_secret_are_403(client, make_person):
     tok = _session_for(p)
     assert client.get('/admin/growth/queue', headers={'Authorization': f'Bearer {tok}'}).status_code == 403
     assert client.get('/admin/growth/queue', headers={'X-Growth-Cron': 'wrong'}).status_code == 403
+
+
+def test_pre_otp_admin_session_is_rejected(client, make_person):
+    """A duo_session row exists the moment /request-otp is called, before the
+    code is entered. `require_auth` refuses it (expected_sign_in_status=True),
+    so the hand-rolled `_session()` on the admin-or-cron routes must too --
+    otherwise anyone who knows an admin's email gets admin."""
+    admin = _make_admin(make_person)
+    tok = _session_for(admin, signed_in=False)
+    r = client.get('/admin/growth/queue', headers={'Authorization': f'Bearer {tok}'})
+    assert r.status_code == 403
+    # The same person, properly signed in, is allowed through.
+    good = _session_for(admin)
+    assert client.get('/admin/growth/queue', headers={'Authorization': f'Bearer {good}'}).status_code == 200
 
 
 def test_cron_can_list_claim_and_complete(client, make_person):
@@ -102,9 +121,36 @@ def test_image_upload_attaches_and_moves_to_review(client, monkeypatch, make_per
     assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'instagram', 'png_base64': png}, headers=H).status_code == 200
     assert [c[0] for c in calls] == [f'spotlight/{rk}-facebook.png', f'spotlight/{rk}-instagram.png']
     with api_tx('read committed') as tx:
-        assert {r['status'] for r in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'review'}
+        rows = tx.execute("SELECT platform, status, image_url FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()
+    assert {r['status'] for r in rows} == {'review'}
+    # attach_image stamps one url across the whole request key; each row must
+    # still end up pointing at its OWN rendered file.
+    for r in rows:
+        assert r['image_url'].endswith(f"/spotlight/{rk}-{r['platform']}.png")
     bad = base64.b64encode(b'notpng').decode()
     assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'facebook', 'png_base64': bad}, headers=H).status_code == 400
+
+
+def test_image_upload_refuses_a_published_row(client, monkeypatch):
+    import base64
+    calls = []
+    import service.api.admin.spotlight_routes as sr
+    monkeypatch.setattr(sr, '_put_png', lambda key, data: calls.append(key))
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        tx.execute("""UPDATE publishing_queue SET status = 'published', image_key = 'original.png'
+                       WHERE request_key = %(rk)s AND platform = 'facebook'""", dict(rk=rk))
+    png = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'0' * 100).decode()
+    r = client.post(f'/admin/growth/queue/{rk}/image',
+                    json={'platform': 'facebook', 'png_base64': png},
+                    headers={'X-Growth-Cron': 'test-cron-secret'})
+    assert r.status_code == 409 and r.get_json() == {'error': 'bad_status'}
+    assert calls == []
+    with api_tx('read committed') as tx:
+        row = tx.execute("""SELECT image_key FROM publishing_queue
+                             WHERE request_key = %(rk)s AND platform = 'facebook'""",
+                         dict(rk=rk)).fetchone()
+    assert row['image_key'] == 'original.png'
 
 
 def test_admin_approve_default_slot_and_purge(client, make_person):
@@ -121,6 +167,49 @@ def test_admin_approve_default_slot_and_purge(client, make_person):
     with api_tx('read committed') as tx:
         n = tx.execute("SELECT count(*) AS n FROM admin_audit_log WHERE action IN ('growth.queue.approve','growth.queue.purge')").fetchone()['n']
     assert n >= 2
+
+
+def test_admin_with_cron_header_still_audits(client, make_person):
+    """The cron header must never launder a human mutation past the audit log:
+    `_audit` keys on the session, not on the header."""
+    admin = _make_admin(make_person); tok = _session_for(admin)
+    headers = {'Authorization': f'Bearer {tok}', 'X-Growth-Cron': 'test-cron-secret'}
+    with api_tx('read committed') as tx:
+        before = tx.execute("SELECT count(*) AS n FROM admin_audit_log WHERE action = 'growth.queue.purge'").fetchone()['n']
+    assert client.post('/admin/growth/queue/purge', json={}, headers=headers).status_code == 200
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            """SELECT actor_email FROM admin_audit_log
+                WHERE action = 'growth.queue.purge' ORDER BY created_at DESC LIMIT 1""").fetchone()
+        after = tx.execute("SELECT count(*) AS n FROM admin_audit_log WHERE action = 'growth.queue.purge'").fetchone()['n']
+    assert after == before + 1
+    assert row['actor_email']
+
+
+def test_removals_listed_and_marked_done(client, make_person):
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute("""UPDATE publishing_queue
+                         SET status = 'published', external_post_id = 'ig-1'
+                       WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk))
+        # Opting out cancels the queue and files a removal task for anything
+        # already published (service/spotlight/queue.py::cancel_for_member).
+        set_spotlight_opt_in(tx, p['id'], False)
+    H = {'X-Growth-Cron': 'test-cron-secret'}
+    rows = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
+    mine = [r for r in rows if r['request_key'] == rk]
+    assert len(mine) == 1
+    task = mine[0]
+    assert task['platform'] == 'instagram' and task['external_post_id'] == 'ig-1'
+    assert task['reason'] == 'manual_instagram' and task['done_at'] is None
+    assert client.post(f"/admin/growth/removals/{task['id']}/done", json={}, headers=H).status_code == 200
+    with api_tx('read committed') as tx:
+        done_at = tx.execute("SELECT done_at FROM spotlight_removal_task WHERE id = %(i)s",
+                             dict(i=task['id'])).fetchone()['done_at']
+    assert done_at is not None
+    assert not any(r['id'] == task['id']
+                   for r in client.get('/admin/growth/removals?pending=1', headers=H).get_json())
 
 
 def test_candidates_and_welcome(client, make_person, monkeypatch):
@@ -146,6 +235,13 @@ def test_settings_and_token_health(client, make_person):
     assert client.post('/admin/growth/token-health', json={'expires_at': '2027-01-01T00:00:00Z', 'valid': True}, headers=H).status_code == 200
     th = client.get('/admin/growth/token-health', headers=A).get_json()
     assert th['valid'] is True and th['days_left'] > 0
+    # Rejections: a non-string / unparsable expiry, and a non-boolean `valid`.
+    assert client.post('/admin/growth/token-health', json={'expires_at': 12345, 'valid': True}, headers=H).status_code == 400
+    assert client.post('/admin/growth/token-health', json={'expires_at': 'not-a-date', 'valid': True}, headers=H).status_code == 400
+    assert client.post('/admin/growth/token-health', json={'expires_at': None, 'valid': 'yes'}, headers=H).status_code == 400
+    # A rejected write leaves the stored value alone.
+    th = client.get('/admin/growth/token-health', headers=A).get_json()
+    assert th['valid'] is True and th['days_left'] > 0 and th['expires_at']
     client.post('/admin/growth/settings', json={'key': 'auto_welcome', 'value': 'false'}, headers=A)
 
 
