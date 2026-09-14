@@ -16,6 +16,9 @@ MAX_TILES = 4
 # for their approved welcome card (one per platform, both stamped with the
 # same approved_photo_uuid by set_member_approval) -- the photo is pulled via
 # a correlated subquery rather than a JOIN so no de-duplication is needed.
+# `_excluded()` is applied here as well as in _Q_TOTALS below: a test account
+# that opted in and approved a welcome card would otherwise be tiled onto a
+# real published roundup while being left out of the count beside it.
 _Q_CANDIDATES = """
     SELECT p.id,
            split_part(p.name, ' ', 1) AS first_name,
@@ -29,6 +32,7 @@ _Q_CANDIDATES = """
              LIMIT 1) AS photo_uuid
       FROM person p
      WHERE p.sign_up_time > NOW() - make_interval(days => %(days)s)
+       AND lower(p.email) <> ALL(%(ex)s)
        AND EXISTS (SELECT 1 FROM publishing_queue q
                     WHERE q.subject_person_id = p.id
                       AND q.kind = 'welcome'
@@ -49,7 +53,7 @@ _Q_TOTALS = """
 
 def roundup_snapshot(tx, days: int = 7) -> dict:
     tiles = []
-    for r in tx.execute(_Q_CANDIDATES, dict(days=days)).fetchall():
+    for r in tx.execute(_Q_CANDIDATES, dict(days=days, ex=_excluded())).fetchall():
         if not r['photo_uuid']:
             continue
         ok, _reason = eligibility(tx, r['id'])

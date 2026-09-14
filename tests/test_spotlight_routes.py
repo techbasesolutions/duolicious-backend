@@ -8,6 +8,7 @@ on purpose -- test files in this suite do not import from each other.
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 
 import pytest
@@ -206,10 +207,19 @@ def test_admin_approve_default_slot_and_purge(client, make_person):
         qid = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1", dict(rk=rk)).fetchone()['id']
     r = client.post(f'/admin/growth/queue/{qid}/approve', json={'scheduled_for': None}, headers=A)
     assert r.status_code == 200 and r.get_json()['status'] == 'scheduled' and r.get_json()['scheduled_for'] is not None
+    # Purge is global by design, and the test database persists between runs,
+    # so the assertion is scoped to the rows this test created rather than to
+    # the table being left empty.
     r = client.post('/admin/growth/queue/purge', json={}, headers=A)
-    assert r.status_code == 200 and r.get_json()['cancelled'] >= 1
+    assert r.status_code == 200
     with api_tx('read committed') as tx:
+        mine = tx.execute("SELECT status, error FROM publishing_queue WHERE request_key = %(rk)s",
+                          dict(rk=rk)).fetchall()
         n = tx.execute("SELECT count(*) AS n FROM admin_audit_log WHERE action IN ('growth.queue.approve','growth.queue.purge')").fetchone()['n']
+    assert len(mine) == 2
+    assert {row['status'] for row in mine} == {'cancelled'}
+    assert {row['error'] for row in mine} == {'purged'}
+    assert r.get_json()['cancelled'] >= len(mine)
     assert n >= 2
 
 
@@ -218,6 +228,8 @@ def test_admin_with_cron_header_still_audits(client, make_person):
     `_audit` keys on the session, not on the header."""
     admin = _make_admin(make_person); tok = _session_for(admin)
     headers = {'Authorization': f'Bearer {tok}', 'X-Growth-Cron': 'test-cron-secret'}
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
     with api_tx('read committed') as tx:
         before = tx.execute("SELECT count(*) AS n FROM admin_audit_log WHERE action = 'growth.queue.purge'").fetchone()['n']
     assert client.post('/admin/growth/queue/purge', json={}, headers=headers).status_code == 200
@@ -226,6 +238,11 @@ def test_admin_with_cron_header_still_audits(client, make_person):
             """SELECT actor_email FROM admin_audit_log
                 WHERE action = 'growth.queue.purge' ORDER BY created_at DESC LIMIT 1""").fetchone()
         after = tx.execute("SELECT count(*) AS n FROM admin_audit_log WHERE action = 'growth.queue.purge'").fetchone()['n']
+        # Scoped to this test's own rows: purge is global, but the assertion
+        # must not depend on what else is in a persistent test database.
+        mine = tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s",
+                          dict(rk=rk)).fetchall()
+    assert {r['status'] for r in mine} == {'cancelled'}
     assert after == before + 1
     assert row['actor_email']
 
@@ -344,3 +361,96 @@ def test_roundup_route_stores_and_serves_tile_payload(client, make_person):
         assert any(t['person_id'] == a['id'] for t in row['tiles'])
     welcome_row = next(x for x in rows if x['request_key'] == rk_w)
     assert 'tiles' not in welcome_row and 'count' not in welcome_row and 'countries' not in welcome_row
+
+
+def test_cron_header_never_resolves_a_session(client, monkeypatch):
+    """I6: `_gate` checks the cron header before `_session`, so a cron call
+    never opens a transaction (and never takes the api connection lock) to
+    look up a bearer token it does not carry."""
+    import service.api.admin.spotlight_routes as sr
+
+    def _must_not_run():
+        raise AssertionError('_session must never run for a valid cron request')
+
+    monkeypatch.setattr(sr, '_session', _must_not_run)
+    assert client.get('/admin/growth/queue', headers={'X-Growth-Cron': 'test-cron-secret'}).status_code == 200
+
+
+def test_roundup_eligible_checks_every_tile_member(client, make_person):
+    """C1: a roundup has no subject, so `eligible` walks the stored tile
+    snapshot instead. One tile member who has since been reported blocks the
+    whole card, because the card cannot be published without their face."""
+    a = _make_eligible(make_person, name='TileSubject')
+    reporter = make_person(name='TileReporter', gender='Man')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        tx.execute(
+            "UPDATE publishing_queue SET payload = %(pl)s::jsonb WHERE request_key = %(rk)s",
+            dict(pl=json.dumps(dict(
+                tiles=[dict(person_id=a['id'], first_name='TileSubject', photo_url='https://cdn/t.jpg')],
+                count=1, countries=1)), rk=rk))
+        qid = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
+                         dict(rk=rk)).fetchone()['id']
+    H = {'X-Growth-Cron': 'test-cron-secret'}
+    assert client.get(f'/admin/growth/queue/{qid}/eligible', headers=H).get_json() == {'ok': True, 'reason': ''}
+    with api_tx() as tx:
+        tx.execute(
+            """INSERT INTO skipped (subject_person_id, object_person_id, reported, report_reason)
+               VALUES (%(a)s, %(b)s, TRUE, 'spam')""",
+            dict(a=reporter['id'], b=a['id']))
+    assert client.get(f'/admin/growth/queue/{qid}/eligible', headers=H).get_json() == {
+        'ok': False, 'reason': f"tile:{a['id']}:reported"}
+
+
+def test_image_upload_refuses_a_row_that_moved_during_the_upload(client, monkeypatch):
+    """I9: the status is read before the upload and the upload is a network
+    round trip, so the write repeats the check in its own WHERE. A row that
+    was approved in between keeps its old artwork and gets the same 409."""
+    import base64
+    import service.api.admin.spotlight_routes as sr
+
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+
+    def _flip(key, data):
+        # Stands in for the approve that lands while the bytes are in flight.
+        # Safe to open a transaction here: `_put_png` is called outside the
+        # handler's own, exactly so a round trip never holds the lock.
+        with api_tx() as tx:
+            tx.execute("UPDATE publishing_queue SET status = 'scheduled' WHERE request_key = %(rk)s",
+                       dict(rk=rk))
+
+    monkeypatch.setattr(sr, '_put_png', _flip)
+    png = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'0' * 100).decode()
+    r = client.post(f'/admin/growth/queue/{rk}/image',
+                    json={'platform': 'facebook', 'png_base64': png},
+                    headers={'X-Growth-Cron': 'test-cron-secret'})
+    assert r.status_code == 409 and r.get_json() == {'error': 'bad_status'}
+    with api_tx('read committed') as tx:
+        rows = tx.execute(
+            """SELECT status, image_key, image_url FROM publishing_queue
+                WHERE request_key = %(rk)s""", dict(rk=rk)).fetchall()
+    assert {row['status'] for row in rows} == {'scheduled'}
+    assert all(row['image_key'] is None and row['image_url'] is None for row in rows)
+
+
+def test_queue_row_counts_one_signup_per_person(client, make_person):
+    """M-b: two clicks that lead back to the same member are one sign-up, so
+    the queue view and `post_stats` report the same number. Also covers I3:
+    a route-created candidate has its own campaign_link row."""
+    from service.campaigns import record_click
+
+    p = _make_eligible(make_person, name='SignupOnce')
+    joiner = make_person(name='SignupJoiner')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        key = tx.execute("SELECT key FROM campaign_link WHERE kind = %(k)s",
+                         dict(k=f'post:{rk}')).fetchone()['key']
+        record_click(tx, key, 'Mozilla/5.0 (iPhone)')
+        record_click(tx, key, 'Mozilla/5.0 (iPhone)')
+        tx.execute("UPDATE campaign_click SET signup_person_id = %(pid)s WHERE link_key = %(k)s",
+                   dict(pid=joiner['id'], k=key))
+    rows = client.get('/admin/growth/queue', headers={'X-Growth-Cron': 'test-cron-secret'}).get_json()
+    mine = [r for r in rows if r['request_key'] == rk]
+    assert len(mine) == 2
+    assert all(r['clicks'] == 2 and r['signups'] == 1 for r in mine)

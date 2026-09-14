@@ -47,6 +47,12 @@ _Q_RECIPIENT_COUNT = f"""
 # days. Facebook only (not instagram): the two platform rows share the same
 # subject and caption, and the curated post the email links out to is the
 # facebook one (post_url below).
+#
+# The three extra conditions are consent and correctness, not tidiness. A row
+# stays 'published' forever, so without them the email would keep re-featuring
+# a member for a week after they opted out, or after a removal task was filed
+# to take the post down; and `post_url` is built from external_post_id, so a
+# published row that never recorded one would link to facebook.com/None.
 _Q_SPOTLIGHT = """
     SELECT split_part(p.name, ' ', 1) AS first_name,
            date_part('year', age(p.date_of_birth))::int AS age,
@@ -57,6 +63,9 @@ _Q_SPOTLIGHT = """
       JOIN person p ON p.id = q.subject_person_id
      WHERE q.kind = 'member_of_week' AND q.platform = 'facebook' AND q.status = 'published'
        AND q.updated_at > NOW() - interval '7 days'
+       AND p.spotlight_opt_in
+       AND q.external_post_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM spotlight_removal_task t WHERE t.queue_id = q.id)
      ORDER BY q.updated_at DESC
      LIMIT 1
 """

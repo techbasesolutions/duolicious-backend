@@ -29,3 +29,20 @@ def test_delete_images_swallows_errors(monkeypatch):
     monkeypatch.setattr(st, '_bucket', lambda: _B())
     assert st.delete_images(['a', 'b']) == 2      # requested count, no raise
     assert st.delete_images([]) == 0
+
+
+def test_delete_images_batches_at_the_api_limit(monkeypatch):
+    """M-d: S3 and Spaces reject a DeleteObjects request carrying more than
+    1000 keys, so a large sweep goes in chunks rather than one call that would
+    fail whole."""
+    import service.spotlight.storage as st
+    batches = []
+
+    class _B:
+        def delete_objects(self, **kw):
+            batches.append(len(kw['Delete']['Objects']))
+            return {}
+
+    monkeypatch.setattr(st, '_bucket', lambda: _B())
+    assert st.delete_images([f'k{i}' for i in range(2500)]) == 2500
+    assert batches == [1000, 1000, 500]

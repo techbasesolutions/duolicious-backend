@@ -2,6 +2,8 @@
 from __future__ import annotations
 import uuid
 from typing import Optional
+from service.campaigns import make_campaign_link
+from service.config import WEB_BASE_URL
 from service.spotlight.eligibility import eligibility
 from service.spotlight.storage import delete_images
 
@@ -38,6 +40,14 @@ def create_candidate(tx, *, kind: str, subject_person_id: Optional[int], caption
             raise ValueError(reason)
         status = 'awaiting_member'
     rk = uuid.uuid4().hex
+    # Spec 3.4: every published card carries a measurable CTA, so the link is
+    # minted here, once per request, and appended to the caption both platform
+    # rows share. Minting it at creation (rather than in each caption builder)
+    # means a hand-written caption from the admin surface gets one too, and
+    # the kind 'post:<request_key>' is what `post_stats` and the queue view
+    # count clicks and sign-ups against.
+    link = make_campaign_link(tx, f'post:{rk}', f"{WEB_BASE_URL}/", None)
+    caption = f"{caption} {link}"
     for platform in platforms:
         tx.execute(
             """INSERT INTO publishing_queue (request_key, kind, subject_person_id, platform, caption, status, created_by)
@@ -95,6 +105,28 @@ def set_status(tx, queue_id: str, status: str, *, external_post_id: Optional[str
         dict(st=status, ext=external_post_id, err=error, id=queue_id))
 
 
+# Containment against the stored snapshot: a tile object carries first_name
+# and photo_url as well, so `@>` with just the person_id matches the whole
+# tile without having to reproduce the rest of it.
+_TILE_MATCH = """
+    kind = 'roundup'
+      AND payload->'tiles' @> jsonb_build_array(jsonb_build_object('person_id', %(pid)s))
+"""
+
+_Q_TILE_IMAGE_KEYS = f"""
+    SELECT image_key FROM publishing_queue
+     WHERE {_TILE_MATCH}
+       AND image_key IS NOT NULL
+       AND status NOT IN ('published', 'cancelled')
+"""
+
+_Q_CANCEL_TILE_ROWS = f"""
+    UPDATE publishing_queue SET status = 'cancelled', error = %(reason)s, updated_at = NOW()
+     WHERE {_TILE_MATCH}
+       AND status NOT IN ('published', 'cancelled')
+"""
+
+
 def cancel_for_member(tx, person_id: int, reason: str) -> int:
     published = tx.execute(
         "SELECT id, platform, external_post_id FROM publishing_queue WHERE subject_person_id = %(pid)s AND status = 'published'",
@@ -114,14 +146,25 @@ def cancel_for_member(tx, person_id: int, reason: str) -> int:
             WHERE subject_person_id = %(pid)s AND image_key IS NOT NULL
               AND status NOT IN ('published')""",
         dict(pid=person_id)).fetchall()]
-    cur = tx.execute(
+    # rowcount is read straight away: `tx.execute` hands back the connection's
+    # one cursor, so the next statement would overwrite it.
+    cancelled = tx.execute(
         """UPDATE publishing_queue SET status = 'cancelled', error = %(reason)s, updated_at = NOW()
             WHERE subject_person_id = %(pid)s AND status NOT IN ('published', 'cancelled')""",
-        dict(pid=person_id, reason=reason))
+        dict(pid=person_id, reason=reason)).rowcount
+    # A roundup row carries no subject_person_id at all, so the sweep above
+    # cannot see it -- but its stored tile snapshot names (and shows the photo
+    # of) up to four members. Withdrawn consent has to reach those rows too,
+    # or a member who opted out is still published inside someone else's card.
+    # Published roundups are left alone for the same reason published subject
+    # rows are: the live post is owned by the retention sweep or a removal
+    # task, not by this function.
+    tile_keys = [r['image_key'] for r in tx.execute(_Q_TILE_IMAGE_KEYS, dict(pid=person_id)).fetchall()]
+    tiled = tx.execute(_Q_CANCEL_TILE_ROWS, dict(pid=person_id, reason=f'tile_member_{reason}')).rowcount
     # Storage is best-effort and outside the transaction's success/failure:
-    # a Spaces error here must never roll back the cancellation above.
-    delete_images(keys)
-    return cur.rowcount
+    # a Spaces error here must never roll back the cancellations above.
+    delete_images(keys + tile_keys)
+    return cancelled + tiled
 
 
 def reap_expired_leases(tx) -> int:

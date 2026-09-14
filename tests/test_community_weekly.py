@@ -100,7 +100,11 @@ def test_invalid_spotlight_post_url_also_falls_back(capsys):
 def test_week_context_spotlight_from_published_member_of_week(make_person):
     p = make_person(name='Sarah Cohen')
     with api_tx() as tx:
-        tx.execute("UPDATE person SET date_of_birth = '1995-01-01', country = 'US' WHERE id = %(id)s",
+        # spotlight_opt_in is part of the query now (C2): a published row only
+        # keeps appearing for as long as the member still consents.
+        tx.execute("""UPDATE person SET date_of_birth = '1995-01-01', country = 'US',
+                             spotlight_opt_in = TRUE
+                       WHERE id = %(id)s""",
                    dict(id=p['id']))
         tx.execute(
             """INSERT INTO publishing_queue
@@ -132,3 +136,61 @@ def test_week_context_spotlight_none_when_row_older_than_7_days(make_person):
     # still be within its own 7-day window), but this member's stale row
     # must never be the one surfaced.
     assert spotlight is None or spotlight['post_url'] != 'https://www.facebook.com/1'
+
+
+# ---------------------------------------------------------------------------
+# C2: a publishing_queue row stays 'published' forever, so the weekly block
+# has to re-check consent and removal on every run. Each case below stamps
+# updated_at ahead of real time so its own row would otherwise win the
+# ORDER BY, which is what makes the absence meaningful.
+# ---------------------------------------------------------------------------
+
+def _publish_member_of_week(tx, person_id: int, request_key: str, **columns) -> None:
+    tx.execute("DELETE FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=request_key))
+    tx.execute(
+        """INSERT INTO publishing_queue
+               (request_key, kind, subject_person_id, platform, caption, status,
+                image_url, external_post_id, updated_at)
+           VALUES (%(rk)s, 'member_of_week', %(pid)s, 'facebook', 'c', 'published',
+                   'https://cdn/x.png', %(ext)s, NOW() + interval '2 hours')""",
+        dict(rk=request_key, pid=person_id, ext=columns.get('external_post_id', '77')))
+
+
+def test_week_context_skips_a_member_who_opted_out(make_person):
+    p = make_person(name='OptedOutSpot')
+    rk = f'wk-optout-{p["id"]}'
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET date_of_birth = '1995-01-01', country = 'US', spotlight_opt_in = FALSE WHERE id = %(id)s",
+                   dict(id=p['id']))
+        _publish_member_of_week(tx, p['id'], rk)
+    spotlight = _week_context()['spotlight']
+    assert spotlight is None or spotlight['post_url'] != 'https://www.facebook.com/77'
+
+
+def test_week_context_skips_a_row_with_a_removal_task(make_person):
+    p = make_person(name='RemovedSpot')
+    rk = f'wk-removed-{p["id"]}'
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET date_of_birth = '1995-01-01', country = 'US', spotlight_opt_in = TRUE WHERE id = %(id)s",
+                   dict(id=p['id']))
+        _publish_member_of_week(tx, p['id'], rk, external_post_id='78')
+        tx.execute(
+            """INSERT INTO spotlight_removal_task (queue_id, platform, external_post_id, reason)
+               SELECT id, platform, external_post_id, 'delete_via_api'
+                 FROM publishing_queue WHERE request_key = %(rk)s""",
+            dict(rk=rk))
+    spotlight = _week_context()['spotlight']
+    assert spotlight is None or spotlight['post_url'] != 'https://www.facebook.com/78'
+
+
+def test_week_context_skips_a_published_row_with_no_external_post_id(make_person):
+    """post_url is built from external_post_id, so a row without one would
+    link to facebook.com/None."""
+    p = make_person(name='NoPostIdSpot')
+    rk = f'wk-noext-{p["id"]}'
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET date_of_birth = '1995-01-01', country = 'US', spotlight_opt_in = TRUE WHERE id = %(id)s",
+                   dict(id=p['id']))
+        _publish_member_of_week(tx, p['id'], rk, external_post_id=None)
+    spotlight = _week_context()['spotlight']
+    assert spotlight is None or spotlight['post_url'] != 'https://www.facebook.com/None'

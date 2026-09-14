@@ -36,8 +36,9 @@ from flask import abort, jsonify, request
 from database import api_tx
 from duohash import sha512
 from service.admin import record_audit, require_admin
-from service.api.cron_auth import require_admin_or_cron
+from service.api.cron_auth import is_cron_request, require_admin_or_cron
 from service.api.decorators import aget, apost, get, post, Q_GET_SESSION
+from service.api.unsubscribe_routes import unsub_limit
 from service.config import USER_IMAGES_BASE_URL
 from service.spotlight.eligibility import eligibility, primary_photo_uuid, photo_url
 from service.spotlight.queue import (create_candidate, expire_member_approvals, attach_image,
@@ -90,7 +91,16 @@ def _session() -> Optional[t.SessionInfo]:
 
 
 def _gate() -> Optional[t.SessionInfo]:
-    """Resolve + authorise in one call. Both happen before any api_tx opens."""
+    """Resolve + authorise in one call. Both happen before any api_tx opens.
+
+    The cron header is checked FIRST and short-circuits: a valid cron request
+    carries no bearer, so resolving a session for it would open a transaction
+    (and take the api connection lock) to look up a token that is not there.
+    Every minute, on every growth call. `require_admin_or_cron` makes the same
+    check, so the authorisation answer is unchanged either way.
+    """
+    if is_cron_request():
+        return None
     s = _session()
     require_admin_or_cron(s)
     return s
@@ -231,11 +241,10 @@ _Q_ROWS = """
               JOIN campaign_link l ON l.key = c.link_key
              WHERE l.kind = 'post:' || q.request_key
                AND c.ua_class <> 'bot')::int AS clicks,
-           (SELECT count(*) FROM campaign_click c
+           (SELECT count(DISTINCT c.signup_person_id) FROM campaign_click c
               JOIN campaign_link l ON l.key = c.link_key
              WHERE l.kind = 'post:' || q.request_key
-               AND c.ua_class <> 'bot'
-               AND c.signup_person_id IS NOT NULL)::int AS signups
+               AND c.ua_class <> 'bot')::int AS signups
       FROM publishing_queue q
       LEFT JOIN person p ON p.id = q.subject_person_id
      WHERE (%(status)s::text IS NULL OR q.status = %(status)s::text)
@@ -347,7 +356,7 @@ def _queue_row(r) -> dict:
 # Admin-or-cron endpoints (unauthenticated decorators; see DECORATOR NOTE)
 # ---------------------------------------------------------------------------
 
-@get('/admin/growth/queue')
+@get('/admin/growth/queue', limiter=unsub_limit)
 def get_growth_queue():
     _gate()
     status = request.args.get('status') or None
@@ -357,7 +366,7 @@ def get_growth_queue():
     return jsonify([_queue_row(r) for r in rows])
 
 
-@post('/admin/growth/queue/claim')
+@post('/admin/growth/queue/claim', limiter=unsub_limit)
 def post_growth_queue_claim():
     s = _gate()
     body = _body()
@@ -390,7 +399,7 @@ def post_growth_queue_claim():
     return jsonify(claimed)
 
 
-@post('/admin/growth/queue/<qid>/complete')
+@post('/admin/growth/queue/<qid>/complete', limiter=unsub_limit)
 def post_growth_queue_complete(qid: str):
     s = _gate()
     body = _body()
@@ -422,22 +431,37 @@ def post_growth_queue_complete(qid: str):
     return dict(ok=True, status=status)
 
 
-@get('/admin/growth/queue/<qid>/eligible')
+@get('/admin/growth/queue/<qid>/eligible', limiter=unsub_limit)
 def get_growth_queue_eligible(qid: str):
     _gate()
     queue_id = _qid(qid)
     with api_tx('read committed') as tx:
-        row = tx.execute("SELECT kind, subject_person_id FROM publishing_queue WHERE id = %(id)s",
+        row = tx.execute("SELECT kind, subject_person_id, payload FROM publishing_queue WHERE id = %(id)s",
                          dict(id=queue_id)).fetchone()
         if not row:
             abort(404)
-        if row['kind'] == 'roundup' or row['subject_person_id'] is None:
+        if row['kind'] == 'roundup':
+            # A roundup has no subject, but the tile snapshot stored at
+            # creation names (and shows the photo of) up to four members. Days
+            # can pass between that snapshot and the publish, so every tile is
+            # re-checked here: one member who has since opted out, been
+            # reported or asked for deletion blocks the whole card, because
+            # the card cannot be published without their face on it.
+            for tile in (row['payload'] or {}).get('tiles') or []:
+                tile_person_id = tile.get('person_id')
+                if tile_person_id is None:
+                    continue
+                ok, reason = eligibility(tx, tile_person_id)
+                if not ok:
+                    return dict(ok=False, reason=f'tile:{tile_person_id}:{reason}')
+            return dict(ok=True, reason='')
+        if row['subject_person_id'] is None:
             return dict(ok=True, reason='')
         ok, reason = eligibility(tx, row['subject_person_id'])
     return dict(ok=ok, reason=reason)
 
 
-@post('/admin/growth/queue/<request_key>/image')
+@post('/admin/growth/queue/<request_key>/image', limiter=unsub_limit)
 def post_growth_queue_image(request_key: str):
     s = _gate()
     body = _body()
@@ -472,29 +496,41 @@ def post_growth_queue_image(request_key: str):
     # api connection lock.
     _put_png(key, data)
 
+    # The status was read before the upload, and the upload is a network round
+    # trip: an approve or a cancel can land in between. The write repeats the
+    # check as part of its own WHERE, so the row is only stamped if it is still
+    # in a state that may have its artwork replaced. Zero rows updated means it
+    # moved, and the answer is the same 409 the pre-check gives.
+    moved = False
     with api_tx() as tx:
-        tx.execute(
+        cur = tx.execute(
             """UPDATE publishing_queue SET image_key = %(k)s, image_url = %(u)s, updated_at = NOW()
-                WHERE request_key = %(rk)s AND platform = %(pl)s""",
+                WHERE request_key = %(rk)s AND platform = %(pl)s
+                  AND status IN ('awaiting_member', 'awaiting_render', 'review')""",
             dict(k=key, u=url, rk=request_key, pl=platform))
-        rows = tx.execute(
-            "SELECT platform, image_key, image_url FROM publishing_queue WHERE request_key = %(rk)s",
-            dict(rk=request_key)).fetchall()
-        if rows and all(r['image_url'] for r in rows):
-            # attach_image is the state transition (awaiting_render -> review);
-            # it stamps one key/url across every row of the request, so each
-            # platform's own rendered image is written back afterwards.
-            attach_image(tx, request_key, key, url)
-            for r in rows:
-                tx.execute(
-                    """UPDATE publishing_queue SET image_key = %(k)s, image_url = %(u)s
-                        WHERE request_key = %(rk)s AND platform = %(pl)s""",
-                    dict(k=r['image_key'], u=r['image_url'], rk=request_key, pl=r['platform']))
-        _audit(tx, s, 'growth.queue.image', request_key=request_key, platform=platform)
+        if not cur.rowcount:
+            moved = True
+        else:
+            rows = tx.execute(
+                "SELECT platform, image_key, image_url FROM publishing_queue WHERE request_key = %(rk)s",
+                dict(rk=request_key)).fetchall()
+            if rows and all(r['image_url'] for r in rows):
+                # attach_image is the state transition (awaiting_render -> review);
+                # it stamps one key/url across every row of the request, so each
+                # platform's own rendered image is written back afterwards.
+                attach_image(tx, request_key, key, url)
+                for r in rows:
+                    tx.execute(
+                        """UPDATE publishing_queue SET image_key = %(k)s, image_url = %(u)s
+                            WHERE request_key = %(rk)s AND platform = %(pl)s""",
+                        dict(k=r['image_key'], u=r['image_url'], rk=request_key, pl=r['platform']))
+            _audit(tx, s, 'growth.queue.image', request_key=request_key, platform=platform)
+    if moved:
+        return dict(error='bad_status'), 409
     return dict(image_url=url)
 
 
-@get('/admin/growth/candidates')
+@get('/admin/growth/candidates', limiter=unsub_limit)
 def get_growth_candidates():
     _gate()
     with api_tx('read committed') as tx:
@@ -510,7 +546,7 @@ def get_growth_candidates():
     return dict(welcomes=welcomes, roundup_due=roundup_due)
 
 
-@post('/admin/growth/spotlight/welcome')
+@post('/admin/growth/spotlight/welcome', limiter=unsub_limit)
 def post_growth_spotlight_welcome():
     s = _gate()
     person_id = _body().get('person_id')
@@ -541,7 +577,7 @@ def post_growth_spotlight_welcome():
     return dict(request_key=rk)
 
 
-@post('/admin/growth/spotlight/roundup')
+@post('/admin/growth/spotlight/roundup', limiter=unsub_limit)
 def post_growth_spotlight_roundup():
     s = _gate()
     with api_tx() as tx:
@@ -557,7 +593,7 @@ def post_growth_spotlight_roundup():
     return dict(request_key=rk)
 
 
-@post('/admin/growth/queue/expire-approvals')
+@post('/admin/growth/queue/expire-approvals', limiter=unsub_limit)
 def post_growth_queue_expire_approvals():
     s = _gate()
     with api_tx() as tx:
@@ -566,14 +602,14 @@ def post_growth_queue_expire_approvals():
     return dict(cancelled=n)
 
 
-@get('/admin/growth/settings')
+@get('/admin/growth/settings', limiter=unsub_limit)
 def get_growth_settings():
     _gate()
     with api_tx('read committed') as tx:
         return settings(tx)
 
 
-@get('/admin/growth/removals')
+@get('/admin/growth/removals', limiter=unsub_limit)
 def get_growth_removals():
     _gate()
     pending = request.args.get('pending') in ('1', 'true', 'yes')
@@ -582,7 +618,7 @@ def get_growth_removals():
     return jsonify([_row(r) for r in rows])
 
 
-@post('/admin/growth/removals/<int:removal_id>/done')
+@post('/admin/growth/removals/<int:removal_id>/done', limiter=unsub_limit)
 def post_growth_removal_done(removal_id: int):
     s = _gate()
     with api_tx() as tx:
@@ -607,7 +643,7 @@ def post_growth_removal_done(removal_id: int):
     return dict(ok=True, updated=updated)
 
 
-@post('/admin/growth/token-health')
+@post('/admin/growth/token-health', limiter=unsub_limit)
 def post_growth_token_health():
     s = _gate()
     body = _body()

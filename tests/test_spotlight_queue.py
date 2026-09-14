@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from database import api_tx
 from service.spotlight.queue import (create_candidate, set_member_approval, expire_member_approvals, attach_image,
@@ -137,3 +139,72 @@ def test_settings_roundtrip():
         with pytest.raises(ValueError):
             set_setting(tx, 'nope', 'true')
         set_setting(tx, 'auto_welcome', 'false')
+
+
+def test_create_candidate_appends_a_campaign_link_to_the_caption(make_person):
+    """I3: every card's caption carries its own /s/ link, minted once per
+    request in create_candidate so both platform rows share it and a
+    hand-written caption gets one too."""
+    from service.campaigns import record_click
+    from service.config import WEB_BASE_URL
+    from service.growth.queries import post_stats
+
+    p = _make_eligible(make_person, name='Linked')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'],
+                              caption='Welcome to Ahavah, Linked.', created_by='t')
+        captions = {r['caption'] for r in _rows(tx, rk)}
+        assert len(captions) == 1
+        caption = captions.pop()
+        assert caption.startswith('Welcome to Ahavah, Linked. ')
+        assert ' https://' in caption
+        assert f" {WEB_BASE_URL.rstrip('/')}/s/" in caption
+
+        key = caption.rsplit('/', 1)[1]
+        link = tx.execute("SELECT kind FROM campaign_link WHERE key = %(k)s", dict(k=key)).fetchone()
+        assert link['kind'] == f'post:{rk}'
+
+        record_click(tx, key, 'Mozilla/5.0 (iPhone)')
+        assert post_stats(tx, rk) == {'clicks': 1, 'signups': 0}
+
+
+def _tile_payload(person_id, first_name):
+    return json.dumps(dict(
+        tiles=[dict(person_id=person_id, first_name=first_name, photo_url='https://cdn/t.jpg')],
+        count=1, countries=1))
+
+
+def test_opt_out_cancels_a_roundup_that_tiles_the_member(make_person):
+    """C1: a roundup carries no subject_person_id, so the subject sweep cannot
+    reach it -- but its stored tile snapshot shows this member's photo, so
+    withdrawn consent has to cancel it all the same. Another member's roundup
+    is left alone."""
+    p = _make_eligible(make_person, name='Tiled')
+    other = _make_eligible(make_person, name='Untiled')
+    with api_tx() as tx:
+        mine = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        theirs = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        tx.execute("UPDATE publishing_queue SET payload = %(pl)s::jsonb WHERE request_key = %(rk)s",
+                   dict(pl=_tile_payload(p['id'], 'Tiled'), rk=mine))
+        tx.execute("UPDATE publishing_queue SET payload = %(pl)s::jsonb WHERE request_key = %(rk)s",
+                   dict(pl=_tile_payload(other['id'], 'Untiled'), rk=theirs))
+        set_spotlight_opt_in(tx, p['id'], False)
+        cancelled = _rows(tx, mine)
+        untouched = _rows(tx, theirs)
+    assert {r['status'] for r in cancelled} == {'cancelled'}
+    assert {r['error'] for r in cancelled} == {'tile_member_opt_out'}
+    assert {r['status'] for r in untouched} == {'awaiting_render'}
+
+
+def test_opt_out_leaves_a_published_roundup_for_the_removal_path(make_person):
+    """Published rows are owned by the retention sweep or a removal task, not
+    by cancel_for_member, whichever way the member is on the card."""
+    p = _make_eligible(make_person, name='TiledLive')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        tx.execute("""UPDATE publishing_queue SET payload = %(pl)s::jsonb, status = 'published'
+                       WHERE request_key = %(rk)s""",
+                   dict(pl=_tile_payload(p['id'], 'TiledLive'), rk=rk))
+        set_spotlight_opt_in(tx, p['id'], False)
+        rows = _rows(tx, rk)
+    assert {r['status'] for r in rows} == {'published'}
