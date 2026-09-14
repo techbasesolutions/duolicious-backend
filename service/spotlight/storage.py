@@ -21,6 +21,9 @@ def _configured() -> bool:
     return bool(R2_ACCESS_KEY_ID) and bool(R2_BUCKET_NAME)
 
 
+_bucket_cache = None
+
+
 def _bucket():
     """The same credentials and endpoint `service/api/admin/spotlight_routes.py`
     uploads spotlight cards through (`service.person`'s R2/Spaces settings),
@@ -28,19 +31,29 @@ def _bucket():
     read timeout, and no retries, so an unreachable or slow endpoint fails
     fast instead of blocking whichever transaction called `delete_images`
     (a withdrawal, a cancellation, a retention sweep) potentially for
-    minutes. Resolved lazily (imported here, not at module scope) so tests
-    can monkeypatch this function directly."""
-    import boto3
-    from botocore.config import Config
-    from service.person import R2_ACCESS_KEY_ID, R2_ACCESS_KEY_SECRET, R2_BUCKET_NAME, BOTO_ENDPOINT_URL
-    s3 = boto3.resource(
-        's3',
-        endpoint_url=BOTO_ENDPOINT_URL,
-        aws_access_key_id=R2_ACCESS_KEY_ID,
-        aws_secret_access_key=R2_ACCESS_KEY_SECRET,
-        config=Config(connect_timeout=5, read_timeout=10, retries={'max_attempts': 1}),
-    )
-    return s3.Bucket(R2_BUCKET_NAME)
+    minutes.
+
+    Built once and cached at module level (fix round 1): `delete_images`
+    used to call this once per 1000-key batch, rebuilding the boto3
+    resource each time for no reason -- credentials and the endpoint never
+    change within a process. Resolved lazily on first use (imported here,
+    not at module scope) so tests can monkeypatch this function directly;
+    a monkeypatch always wins since it replaces this whole function, cache
+    and all."""
+    global _bucket_cache
+    if _bucket_cache is None:
+        import boto3
+        from botocore.config import Config
+        from service.person import R2_ACCESS_KEY_ID, R2_ACCESS_KEY_SECRET, R2_BUCKET_NAME, BOTO_ENDPOINT_URL
+        s3 = boto3.resource(
+            's3',
+            endpoint_url=BOTO_ENDPOINT_URL,
+            aws_access_key_id=R2_ACCESS_KEY_ID,
+            aws_secret_access_key=R2_ACCESS_KEY_SECRET,
+            config=Config(connect_timeout=5, read_timeout=10, retries={'max_attempts': 1}),
+        )
+        _bucket_cache = s3.Bucket(R2_BUCKET_NAME)
+    return _bucket_cache
 
 
 # S3 (and Spaces) reject a DeleteObjects request carrying more than 1000 keys,

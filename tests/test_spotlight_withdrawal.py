@@ -52,6 +52,13 @@ def _auth_headers_for(p, signed_in: bool = True) -> dict:
     return {'Authorization': f'Bearer {tok}'}
 
 
+def _make_admin(make_person):
+    p = make_person(name='WithdrawAdmin')
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET roles = ARRAY['admin']::TEXT[] WHERE id = %(i)s", dict(i=p['id']))
+    return p
+
+
 def _mint_ban_token(tx, person_id: int) -> str:
     """No production mint function exists outside the report-and-ban flow
     (antiabuse.sql.Q_MAKE_REPORT); build the token row directly the way
@@ -102,12 +109,17 @@ def test_every_status_is_handled(make_person, status, expected_status, stamped):
 
 
 def test_second_call_is_idempotent_except_epoch(make_person):
+    """Fix round 1 (ruling 2): a processing row's cancellation stamp is
+    idempotent too -- `left_attempting` must count 2 on the first call and
+    0 on the second, the same idempotence `cancelled` already had."""
     p = _make_eligible(make_person)
     with api_tx() as tx:
         _row_in(tx, p['id'], 'review')
+        _row_in(tx, p['id'], 'processing', delivery_state='attempting')
         first = withdraw_member(tx, p['id'], 'opt_out')
         second = withdraw_member(tx, p['id'], 'opt_out')
         assert first['cancelled'] == 2
+        assert first['left_attempting'] == 2
         assert {k: v for k, v in second.items() if k != 'epoch'} == dict(cancelled=0, left_attempting=0, roundups_reissued=0, removal_tasks=0, nonces_invalidated=0)
         assert second['epoch'] == 2
 
@@ -117,6 +129,18 @@ def test_bad_reason_rejected(make_person):
     with api_tx() as tx:
         with pytest.raises(ValueError, match='bad_reason'):
             withdraw_member(tx, p['id'], 'because')
+
+
+def test_withdraw_member_requires_existing_person(make_person):
+    """Fix round 1 (ruling 4): `withdraw_member` must refuse a person_id
+    with no person row, before any write -- there is nothing to snapshot a
+    removal task's person_id against, nothing to bump the consent epoch on."""
+    p = make_person()
+    with api_tx() as tx:
+        tx.execute("DELETE FROM person WHERE id = %(p)s", dict(p=p['id']))
+    with api_tx() as tx:
+        with pytest.raises(ValueError, match='not_found'):
+            withdraw_member(tx, p['id'], 'opt_out')
 
 
 def test_nonces_invalidated(make_person):
@@ -146,6 +170,41 @@ def test_roundup_participant_reissued_without_member(make_person):
         assert rev3['asset_hash'] is None
         assert tx.execute("SELECT count(*) AS n FROM spotlight_revision_consent WHERE revision_id = %(r)s", dict(r=rev3['id'])).fetchone()['n'] == 0
         assert {r['status'] for r in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'awaiting_render'}
+
+
+def test_reissue_leaves_a_published_sibling_row_untouched(make_person):
+    """Fix round 1 (ruling 1): Task 5's per-platform `record_receipt` means
+    a roundup's two platform rows can now complete independently -- one can
+    already be `published` while the other is still `review`. The re-issue
+    step must only touch the still-pending row: the published sibling keeps
+    its own status, external_post_id and image_key (it was already handled
+    by step 2's removal-task filing), and re-issuing the pending row must
+    not raise despite the published sibling (`create_revision`'s terminal
+    guard, `ignore_terminal_siblings=True`)."""
+    a = _make_eligible(make_person, name='A')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='r', created_by='t')
+        rev = current_revision(tx, rk)
+        create_revision(tx, rk, caption='r', photo_uuid=None, participants=[dict(person_id=a['id'])], channels=rev['channels'], created_by='t')
+        tx.execute("""UPDATE publishing_queue SET status = 'published', external_post_id = 'fb-1',
+                             image_key = 'spotlight/live.png', image_url = 'https://cdn/live.png', delivery_state = 'published'
+                       WHERE request_key = %(rk)s AND platform = 'facebook'""", dict(rk=rk))
+        tx.execute("""UPDATE publishing_queue SET status = 'review', image_key = 'spotlight/pending.png',
+                             image_url = 'https://cdn/pending.png'
+                       WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk))
+        out = withdraw_member(tx, a['id'], 'account_deletion')
+        assert out['roundups_reissued'] == 1
+        assert out['cancelled'] == 0
+        rows = {r['platform']: r for r in tx.execute(
+            "SELECT platform, status, external_post_id, image_key FROM publishing_queue WHERE request_key = %(rk)s",
+            dict(rk=rk)).fetchall()}
+        assert rows['facebook']['status'] == 'published'
+        assert rows['facebook']['external_post_id'] == 'fb-1'
+        assert rows['facebook']['image_key'] == 'spotlight/live.png'
+        assert rows['instagram']['status'] == 'awaiting_render'
+        assert rows['instagram']['image_key'] is None
+        tasks = tx.execute("SELECT platform, external_post_id FROM spotlight_removal_task WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()
+        assert [(t['platform'], t['external_post_id']) for t in tasks] == [('facebook', 'fb-1')]
 
 
 def test_published_roundup_participant_files_removal_task(make_person):
@@ -223,6 +282,72 @@ def test_pending_deletion_cron_withdraws_before_hard_delete(make_person):
     with api_tx() as tx:
         assert tx.execute("SELECT count(*) AS n FROM person WHERE id = %(p)s", dict(p=p['id'])).fetchone()['n'] == 0
         assert tx.execute("SELECT count(*) AS n FROM spotlight_removal_task WHERE request_key = %(rk)s AND person_id = %(p)s AND external_post_id = '88'", dict(rk=rk, p=p['id'])).fetchone()['n'] == 2
+
+
+def test_cron_second_pass_excludes_a_person_not_covered_by_the_withdrawal_pass(make_person, monkeypatch):
+    """Fix round 1 (ruling 3): `_withdraw_all` returns exactly the ids it
+    withdrew, and the hard-delete pass intersects against that list. Proven
+    by simulating a second member crossing the grace boundary DURING the
+    withdrawal pass (a real race the two-pass split could otherwise miss):
+    that member must survive this run even though a naive re-select in pass
+    2 would find them freshly expired."""
+    import service.cron.pendingdeletion as pd
+    from service.cron.pendingdeletion import hard_delete_expired_once
+    p = _make_eligible(make_person)
+    latecomer = make_person(name='Latecomer')
+    with api_tx() as tx:
+        tx.execute("""UPDATE person SET activated = FALSE, deletion_requested_at = NOW() - interval '8 days',
+                             sign_in_time = NOW() - interval '9 days' WHERE id = %(p)s""", dict(p=p['id']))
+    real_withdraw_all = pd._withdraw_all
+
+    def _fake_withdraw_all(person_ids):
+        assert latecomer['id'] not in person_ids  # sanity: the race hasn't happened yet from pass 1's view
+        with api_tx() as tx:
+            tx.execute("""UPDATE person SET activated = FALSE, deletion_requested_at = NOW() - interval '8 days',
+                                 sign_in_time = NOW() - interval '9 days' WHERE id = %(p)s""", dict(p=latecomer['id']))
+        return real_withdraw_all(person_ids)
+
+    monkeypatch.setattr(pd, '_withdraw_all', _fake_withdraw_all)
+    asyncio.run(hard_delete_expired_once())
+    with api_tx() as tx:
+        assert tx.execute("SELECT count(*) AS n FROM person WHERE id = %(p)s", dict(p=p['id'])).fetchone()['n'] == 0
+        assert tx.execute("SELECT count(*) AS n FROM person WHERE id = %(p)s", dict(p=latecomer['id'])).fetchone()['n'] == 1
+
+
+def test_admin_deactivate_route_withdraws(make_person, client):
+    """Fix round 1 (ruling 5): POST /admin/users/:uuid/deactivate must
+    withdraw Spotlight in the same transaction as the deactivation."""
+    admin = _make_admin(make_person)
+    headers = _auth_headers_for(admin)
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        target_uuid = tx.execute("SELECT uuid::text AS u FROM person WHERE id = %(p)s", dict(p=p['id'])).fetchone()['u']
+        rk = _row_in(tx, p['id'], 'review')
+    resp = client.post(f'/admin/users/{target_uuid}/deactivate', json={'reason': 'policy violation'}, headers=headers)
+    assert resp.status_code == 200
+    with api_tx() as tx:
+        assert {v[0] for v in _statuses(tx, rk).values()} == {'cancelled'}
+        assert tx.execute("SELECT spotlight_consent_epoch AS e FROM person WHERE id = %(p)s", dict(p=p['id'])).fetchone()['e'] == 1
+
+
+def test_admin_hard_delete_route_withdraws(make_person, client):
+    """Fix round 1 (ruling 5): DELETE /admin/users/:uuid must withdraw
+    Spotlight before the hard-delete -- the removal task's snapshotted
+    person_id/request_key must survive the person row disappearing."""
+    admin = _make_admin(make_person)
+    headers = _auth_headers_for(admin)
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        row = tx.execute("SELECT uuid::text AS u, email FROM person WHERE id = %(p)s", dict(p=p['id'])).fetchone()
+        target_uuid, email = row['u'], row['email']
+        rk = _row_in(tx, p['id'], 'published', external='66')
+    resp = client.delete(f'/admin/users/{target_uuid}', json={'confirm_email': email, 'reason': 'policy violation'}, headers=headers)
+    assert resp.status_code == 200
+    with api_tx() as tx:
+        assert tx.execute("SELECT count(*) AS n FROM person WHERE id = %(p)s", dict(p=p['id'])).fetchone()['n'] == 0
+        assert tx.execute(
+            "SELECT count(*) AS n FROM spotlight_removal_task WHERE request_key = %(rk)s AND person_id = %(p)s AND external_post_id = '66'",
+            dict(rk=rk, p=p['id'])).fetchone()['n'] == 2
 
 
 def test_weekly_email_excludes_deleting_member(make_person):

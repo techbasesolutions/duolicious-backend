@@ -60,8 +60,8 @@ _Q_STAMP_PUBLISHED = f"""
 """
 
 _Q_STAMP_PROCESSING = f"""
-    UPDATE publishing_queue SET cancellation_requested_at = COALESCE(cancellation_requested_at, NOW())
-     WHERE status = 'processing' AND {_MEMBER_MATCH}
+    UPDATE publishing_queue SET cancellation_requested_at = NOW()
+     WHERE status = 'processing' AND cancellation_requested_at IS NULL AND {_MEMBER_MATCH}
 """
 
 # Roundup rows short of publish, naming the member as a revision participant.
@@ -154,6 +154,8 @@ def withdraw_member(tx, person_id: int, reason: str) -> dict:
                  removal_tasks=int, nonces_invalidated=int, epoch=int)."""
     if reason not in REASONS:
         raise ValueError('bad_reason')
+    if not tx.execute("SELECT 1 FROM person WHERE id = %(pid)s", dict(pid=person_id)).fetchone():
+        raise ValueError('not_found')
     params = dict(pid=person_id)
 
     # Step 2: published rows naming the member (subject, tile or
@@ -177,23 +179,31 @@ def withdraw_member(tx, person_id: int, reason: str) -> dict:
     reissue_keys = [r['request_key'] for r in tx.execute(_Q_REISSUE_CANDIDATES, params).fetchall()]
     for request_key in reissue_keys:
         rev = current_revision(tx, request_key)
+        # Scoped to the same three reissuable statuses as the candidate
+        # query above: a published or cancelled sibling row of the SAME
+        # request_key (e.g. one platform already posted before the other
+        # was withdrawn) must keep its own status, external_post_id and
+        # image_key untouched -- it was already handled by step 2's
+        # removal-task filing if published, or is simply done if cancelled.
         old_keys = [r['image_key'] for r in tx.execute(
-            "SELECT image_key FROM publishing_queue WHERE request_key = %(rk)s AND image_key IS NOT NULL",
+            """SELECT image_key FROM publishing_queue
+                WHERE request_key = %(rk)s AND status IN ('awaiting_render', 'review', 'failed')
+                  AND image_key IS NOT NULL""",
             dict(rk=request_key)).fetchall()]
         create_revision(
             tx, request_key, caption=rev['caption'], photo_uuid=None,
             participants=[p for p in (rev['participants'] or []) if p['person_id'] != person_id],
             channels=rev['channels'], layout_version=rev['layout_version'],
-            created_by=f'withdrawal:{reason}')
-        # The new revision has no render of its own yet, so every row of the
-        # request_key goes back to awaiting_render -- a direct status write
-        # (not set_status/TRANSITIONS), the same way expire_member_approvals
-        # bypasses it for a system-driven sweep rather than a single
-        # queue-row action.
+            created_by=f'withdrawal:{reason}', ignore_terminal_siblings=True)
+        # The new revision has no render of its own yet, so every REISSUABLE
+        # row of the request_key goes back to awaiting_render -- a direct
+        # status write (not set_status/TRANSITIONS), the same way
+        # expire_member_approvals bypasses it for a system-driven sweep
+        # rather than a single queue-row action.
         tx.execute(
             """UPDATE publishing_queue SET status = 'awaiting_render', image_key = NULL, image_url = NULL,
                       updated_at = NOW()
-                WHERE request_key = %(rk)s""",
+                WHERE request_key = %(rk)s AND status IN ('awaiting_render', 'review', 'failed')""",
             dict(rk=request_key))
         delete_images(old_keys)
     roundups_reissued = len(reissue_keys)

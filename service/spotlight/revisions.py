@@ -38,11 +38,25 @@ def _statuses(tx, request_key: str) -> set:
 
 def create_revision(tx, request_key: str, *, caption: str, photo_uuid: Optional[str],
                      participants: list, channels: list, layout_version: str = 'v1',
-                     created_by: str) -> int:
+                     created_by: str, ignore_terminal_siblings: bool = False) -> int:
+    """`ignore_terminal_siblings` (Wave 1 F03 fix round 1): a roundup's two
+    platform rows can now complete independently (Task 5's `record_receipt`
+    lets one platform reach `published` while the other is still `review`
+    or `failed`), so the terminal guard below -- written when every row of
+    a request_key was assumed to move in lockstep -- would otherwise block
+    Spotlight withdrawal from ever re-issuing the still-pending row just
+    because its sibling already published. Set only by
+    `service.spotlight.withdrawal.withdraw_member`'s re-issue step, which
+    has already confirmed (via its own status-scoped query) that the row it
+    is actually re-issuing is not itself terminal; the published/cancelled
+    sibling's own status, external_post_id and image_key are separate
+    `publishing_queue` columns this function never touches, so it is
+    unaffected either way. `edit_caption`/`approve_card` never pass this,
+    so admin-driven edits keep the original whole-request guard."""
     statuses = _statuses(tx, request_key)
     if statuses & set(IN_FLIGHT):
         raise ValueError('in_flight')
-    if statuses & set(TERMINAL):
+    if statuses & set(TERMINAL) and not ignore_terminal_siblings:
         raise ValueError('terminal')
     next_rev = tx.execute(
         "SELECT COALESCE(MAX(revision), 0) + 1 AS n FROM spotlight_revision WHERE request_key = %(rk)s",

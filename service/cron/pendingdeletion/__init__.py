@@ -43,7 +43,7 @@ _Q_EXPIRED = """
 """
 
 
-def _withdraw_all(person_ids: list) -> None:
+def _withdraw_all(person_ids: list) -> list:
     """Withdraws Spotlight for every person about to be hard-deleted, on a
     single sync transaction/connection (not the caller's async one).
 
@@ -58,12 +58,22 @@ def _withdraw_all(person_ids: list) -> None:
     every attempt. Keeping the two transactions from ever being open at the
     same time avoids the conflict entirely. Otherwise follows the same
     threaded-sync-from-async-cron pattern
-    `service.cron.spotlightretention.retention_sweep` already uses."""
+    `service.cron.spotlightretention.retention_sweep` already uses.
+
+    Returns the ids actually withdrawn (fix round 1): the caller's second
+    (hard-delete) pass intersects its own fresh row set against this list,
+    so a person who was not part of THIS withdrawal pass can never be
+    hard-deleted in the same run -- including someone who only crosses the
+    grace boundary during the pass -- and simply waits for the next hourly
+    run, where a withdrawal pass will cover them first."""
     if not person_ids:
-        return
+        return []
+    withdrawn = []
     with _sync_api_tx() as tx:
         for person_id in person_ids:
             withdraw_member(tx, person_id, 'hard_delete')
+            withdrawn.append(person_id)
+    return withdrawn
 
 
 async def hard_delete_expired_once():
@@ -94,21 +104,26 @@ async def hard_delete_expired_once():
     Wave 1 F03: Spotlight is withdrawn for every candidate row in its own
     pass, BEFORE the transaction below (the one that actually hard-deletes)
     even opens -- see `_withdraw_all`'s docstring for why the two must not
-    overlap in time.
+    overlap in time. Fix round 1: the second pass only hard-deletes rows
+    `_withdraw_all` actually withdrew, so anyone who crosses the grace
+    boundary during the withdrawal pass (not selected by it, so never
+    withdrawn) is excluded from this run rather than hard-deleted without
+    ever having Spotlight touched -- they are picked up correctly next hour.
     """
     async with api_tx() as tx:
         candidates = await (await tx.execute(_Q_EXPIRED, dict(days=GRACE_PERIOD_DAYS))).fetchall()
 
-    if candidates:
-        await asyncio.to_thread(_withdraw_all, [r['id'] for r in candidates])
+    withdrawn = await asyncio.to_thread(_withdraw_all, [r['id'] for r in candidates]) if candidates else []
 
     async with api_tx() as tx:
         # Re-selected rather than trusting the candidates list above: the
         # withdrawal pass takes a moment, and re-querying means this
         # transaction only ever acts on rows that are STILL expired right
         # now (e.g. one could in principle have been un-deleted meanwhile).
+        # Intersected against `withdrawn` so nothing not covered by the
+        # withdrawal pass above is ever hard-deleted this run.
         expired_cur = await tx.execute(_Q_EXPIRED, dict(days=GRACE_PERIOD_DAYS))
-        rows = await expired_cur.fetchall()
+        rows = [r for r in await expired_cur.fetchall() if r['id'] in withdrawn]
 
         if rows:
             person_ids = [r['id'] for r in rows]
