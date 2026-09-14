@@ -153,3 +153,19 @@ activity tables the brief names (`liked(liker_id, liked_id, created_at)`,
 `country`, `date_of_birth`, `deletion_requested_at`, `spotlight_opt_in`,
 `reinvite_sent_at`, `subscription_expires_at`, `gender_id`, `sign_up_time`,
 `email`, `name`) were also checked and match the brief exactly.
+
+## Finding 5 (added 2026-09-13, later session): Vercel plan (spec 8.2) CLOSED
+
+Queried the Vercel API with the stored techbase-hq token (read only):
+team `techbase-hq` plan = `pro` (id team_0K5YNhstBMw45Ef5f7PGB0jL); projects
+`ahavah-web`, `ahavah-admin`, `ahavah-signup` all on that team, no crons
+defined yet. Pro supports per-minute cron schedules, so Phase B's
+`/api/growth/publish-due` worker is not blocked by plan.
+
+## Finding 6 (added 2026-09-13): droplet web base URL (final review I9) CLOSED
+
+`AHAVAH_WEB_BASE_URL=https://ahavah.app` on the droplet and inside the api
+container, so `/s/<key>` and `/spotlight/confirm/<token>` resolve to the Next
+app. Found while checking: `https://ahavah.app/u/<token>` returned 404 (no
+web route), so every emailed unsubscribe link was dead; fixed on the branch
+by the web `/u/[token]` forwarder (commit fd19ce9).
