@@ -109,8 +109,12 @@ def test_set_status_transitions(make_person):
         set_status(tx, qid, 'scheduled')
         with pytest.raises(ValueError):
             set_status(tx, qid, 'published')            # scheduled -> published not allowed (must pass processing)
-        tx.execute("UPDATE publishing_queue SET status = 'processing', attempts = 3 WHERE id = %(id)s", dict(id=qid))
-        set_status(tx, qid, 'failed', error='boom')
+        # Wave 1 F04: `processing` is no longer a source key in TRANSITIONS, so
+        # a row leaves it only through `record_receipt` (tests/test_spotlight_delivery.py)
+        # or the lease-expiry sweep -- never through `set_status`. The failed
+        # state this test needs is set directly, the same way the lease-expiry
+        # sweep itself bypasses set_status for a system-driven move.
+        tx.execute("UPDATE publishing_queue SET status = 'failed', attempts = 3, error = 'boom' WHERE id = %(id)s", dict(id=qid))
         with pytest.raises(ValueError):
             set_status(tx, qid, 'scheduled')            # attempts exhausted
 

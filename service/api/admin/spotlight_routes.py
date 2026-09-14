@@ -44,7 +44,8 @@ from service.spotlight.dispatch import dispatch_check
 from service.spotlight.eligibility import eligibility, primary_photo_uuid, photo_url
 from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      set_status, settings, set_setting, stamp_featured,
-                                     reap_expired_leases, PLATFORMS)
+                                     reap_expired_leases, record_receipt, OUTCOMES,
+                                     OUTCOME_DELIVERY_STATE, PLATFORMS)
 from service.spotlight.revisions import attach_render, consent_complete, edit_caption
 from service.spotlight.roundup import roundup_snapshot
 from service.spotlight.storage import _bucket, delete_images
@@ -457,34 +458,53 @@ def post_growth_queue_claim():
 
 @post('/admin/growth/queue/<qid>/complete', limiter=growth_limit)
 def post_growth_queue_complete(qid: str):
+    """The worker's receipt for one lease's dispatch attempt (Wave 1 F04).
+    `record_receipt` does the real work and binds the receipt to the exact
+    lease `claim_spotlight_posts` handed out; this route only maps its
+    outcomes onto HTTP and decides whether the live-card email may fire.
+
+    A withdrawn member must never receive "your card is live": the row's
+    `cancellation_requested_at` is read in the SAME SELECT used for the
+    email decision, before `record_receipt` runs, so a late `published`
+    receipt against a withdrawn member's row is recorded (and its removal
+    task filed, inside `record_receipt` itself) without ever sending it.
+    """
     s = _gate()
     body = _body()
     status = body.get('status')
-    if status not in ('published', 'failed', 'review'):
-        abort(400)
-    queue_id = _qid(qid)
+    lease_token = body.get('lease_token')
     external_post_id = body.get('external_post_id')
+    post_url = body.get('post_url')
     error = body.get('error')
+    queue_id = _qid(qid)
     live = None
     with api_tx() as tx:
         row = tx.execute(
-            "SELECT request_key, platform, subject_person_id FROM publishing_queue WHERE id = %(id)s",
+            """SELECT request_key, platform, subject_person_id, cancellation_requested_at
+                 FROM publishing_queue WHERE id = %(id)s""",
             dict(id=queue_id)).fetchone()
         if not row:
             abort(404)
         try:
-            set_status(tx, queue_id, status, external_post_id=external_post_id, error=error)
+            result = record_receipt(tx, queue_id, lease_token, status,
+                                    external_post_id=external_post_id, post_url=post_url, error=error)
         except ValueError as e:
-            abort(409, str(e))
-        if status == 'published' and row['subject_person_id'] is not None:
+            reason = str(e)
+            if reason == 'not_found':
+                abort(404)
+            code = 409 if reason in ('lease_mismatch', 'not_processing') else 400
+            return dict(error=reason), code
+        if (result == 'recorded' and status == 'published' and row['subject_person_id'] is not None
+                and row['cancellation_requested_at'] is None):
             stamp_featured(tx, row['subject_person_id'])
             live = (row['subject_person_id'], row['request_key'],
                     external_post_id or '', row['platform'])
-        _audit(tx, s, 'growth.queue.complete', queue_id=str(queue_id), status=status)
+        _audit(tx, s, 'growth.queue.complete', queue_id=str(queue_id), status=status,
+               delivery_state=OUTCOME_DELIVERY_STATE.get(status))
     # Outside the transaction on purpose: the mail path opens its own api_tx.
     if live is not None:
         _send_card_live(*live)
-    return dict(ok=True, status=status)
+    return dict(ok=True, status=status, already=(result == 'already'))
 
 
 @get('/admin/growth/queue/<qid>/eligible', limiter=growth_limit)

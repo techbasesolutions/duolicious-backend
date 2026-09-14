@@ -16,6 +16,8 @@ async cron -- see `service/cron/pendingdeletion/__init__.py::_withdraw_all`.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from service.spotlight.revisions import create_revision, current_revision
 from service.spotlight.storage import delete_images
 
@@ -104,7 +106,7 @@ _Q_CANCEL_TILE_OR_PARTICIPANT_ROWS = f"""
 """
 
 
-def _file_removal_tasks(tx, rows, person_id: int) -> int:
+def _file_removal_tasks(tx, rows, person_id: Optional[int]) -> int:
     """One open task per published platform row. A Facebook post can be
     deleted through the Graph API; Instagram has no delete endpoint for
     published media, so that one is flagged for a human instead.

@@ -1,11 +1,12 @@
 """Publishing queue operations (spec 3.6). Every function runs inside the caller's api_tx; never open one here."""
 from __future__ import annotations
+import hmac
 import uuid
 from typing import Optional
 from service.campaigns import make_campaign_link
 from service.config import WEB_BASE_URL
 from service.spotlight.eligibility import eligibility, primary_photo_uuid
-from service.spotlight.revisions import create_revision
+from service.spotlight.revisions import create_revision, current_revision
 from service.spotlight.roundup import roundup_snapshot
 
 KINDS = ('welcome', 'roundup', 'member_of_week', 'highlight')
@@ -13,12 +14,30 @@ PLATFORMS = ('facebook', 'instagram')
 TRANSITIONS = {
     'review': {'scheduled', 'cancelled'},
     'scheduled': {'cancelled', 'processing'},
-    'processing': {'published', 'failed', 'review'},
     'failed': {'scheduled', 'cancelled'},
     'awaiting_member': {'awaiting_render', 'cancelled', 'review'},
     'awaiting_render': {'review', 'cancelled'},
 }
+# `processing` is deliberately NOT a key here (Wave 1 F04): the only ways out
+# of it are `claim_spotlight_posts`' own SQL (never reached this table) and
+# `record_receipt` below, which binds the exit to the lease that produced it.
+# `set_status` therefore can no longer move a `processing` row anywhere --
+# it stays available for the operator moves that never touch `processing`
+# (review -> scheduled, failed -> scheduled, etc).
 MAX_ATTEMPTS = 3
+# Outcomes a publish attempt can report back through `record_receipt`. Kept
+# distinct from `publishing_queue.status`: 'review' as an outcome always
+# lands the row in status 'review' with delivery_state reset to 'none' (an
+# operator decision, e.g. "ineligible now"), while 'delivery_unknown' also
+# lands in status 'review' but keeps delivery_state 'delivery_unknown' so the
+# two park-in-review reasons stay distinguishable on the row.
+OUTCOMES = ('published', 'failed', 'delivery_unknown', 'review')
+OUTCOME_DELIVERY_STATE = {
+    'published': 'published',
+    'failed': 'failed',
+    'delivery_unknown': 'delivery_unknown',
+    'review': 'none',
+}
 # Wave 1 (migration 0044) seeded five more boolean flags alongside the
 # original three; `approve_card`, `edit_caption` and the render tick all
 # gate on the new ones, so they must be settable the same way.
@@ -100,6 +119,115 @@ def set_status(tx, queue_id: str, status: str, *, external_post_id: Optional[str
                   error = %(err)s, lease_until = NULL, updated_at = NOW()
             WHERE id = %(id)s""",
         dict(st=status, ext=external_post_id, err=error, id=queue_id))
+
+
+_Q_RECEIPT_ROW = """
+    SELECT status, lease_token, delivery_state, external_post_id, cancellation_requested_at,
+           subject_person_id, platform, request_key
+      FROM publishing_queue WHERE id = %(id)s FOR UPDATE
+"""
+
+
+def _file_late_removal_task(tx, queue_id, row: dict, external_post_id: Optional[str]) -> None:
+    """A `published` receipt landing after the member withdrew (row 5 rule):
+    the removal task has to be filed the moment the post is known to be
+    live, not left for the next withdrawal (there may not be one). Lazy
+    import mirrors `cancel_for_member`'s: `withdrawal.py` does not import
+    this module, so there is no real cycle, but the pattern stays consistent
+    with the rest of the file.
+    """
+    from service.spotlight.withdrawal import _file_removal_tasks
+    task_row = dict(id=queue_id, platform=row['platform'], external_post_id=external_post_id,
+                     request_key=row['request_key'])
+    if row['subject_person_id'] is not None:
+        _file_removal_tasks(tx, [task_row], row['subject_person_id'])
+        return
+    # A roundup has no subject: the removal task is attributed to each
+    # participant named in the CURRENT revision. `_file_removal_tasks`
+    # guards on an already-open task per queue_id, so only the first
+    # participant's call actually inserts a row -- there is only one live
+    # post to remove regardless of how many members are pictured in it.
+    rev = current_revision(tx, row['request_key'])
+    participants = (rev['participants'] if rev else None) or []
+    if not participants:
+        _file_removal_tasks(tx, [task_row], None)
+        return
+    for participant in participants:
+        _file_removal_tasks(tx, [task_row], participant.get('person_id'))
+
+
+def record_receipt(tx, queue_id, lease_token: Optional[str], outcome: str, *,
+                    external_post_id: Optional[str] = None, post_url: Optional[str] = None,
+                    error: Optional[str] = None) -> str:
+    """The worker's report of what happened to one lease's dispatch attempt
+    (Wave 1 F04). Bound to the exact lease `claim_spotlight_posts` handed
+    out, so a receipt for an attempt nobody currently holds (a stale lease,
+    a reused lease, no lease at all) is refused rather than trusted.
+
+    Delivery state is deliberately separate from withdrawal: a member can
+    withdraw while a row is `processing`, and the lease holder must still be
+    able to report what actually happened on the platform -- `withdraw_member`
+    only stamps `cancellation_requested_at` on such a row (Task 4) and never
+    touches its status, so this function is the only thing that can move it
+    out of `processing`. See module docstring / TRANSITIONS above: `set_status`
+    can no longer do so.
+
+    Returns 'recorded' or 'already'. Raises ValueError with one of:
+    not_found, lease_required, lease_mismatch, not_processing, bad_outcome,
+    external_id_required.
+    """
+    if outcome not in OUTCOMES:
+        raise ValueError('bad_outcome')
+    if not lease_token:
+        raise ValueError('lease_required')
+    row = tx.execute(_Q_RECEIPT_ROW, dict(id=queue_id)).fetchone()
+    if not row:
+        raise ValueError('not_found')
+    if not row['lease_token'] or not hmac.compare_digest(row['lease_token'], lease_token):
+        raise ValueError('lease_mismatch')
+    if row['status'] != 'processing':
+        duplicate = (
+            (outcome == 'published' and row['status'] == 'published'
+             and row['external_post_id'] == external_post_id)
+            or (outcome == 'failed' and row['status'] == 'failed')
+            or (outcome in ('delivery_unknown', 'review') and row['status'] == 'review'
+                and row['delivery_state'] == ('delivery_unknown' if outcome == 'delivery_unknown'
+                                               else row['delivery_state']))
+        )
+        if duplicate:
+            return 'already'
+        raise ValueError('not_processing')
+
+    if outcome == 'published':
+        if not external_post_id:
+            raise ValueError('external_id_required')
+        tx.execute(
+            """UPDATE publishing_queue SET status = 'published', delivery_state = 'published',
+                      external_post_id = %(ext)s, post_url = %(url)s, error = NULL,
+                      lease_until = NULL, updated_at = NOW()
+                WHERE id = %(id)s""",
+            dict(ext=external_post_id, url=post_url, id=queue_id))
+        if row['cancellation_requested_at'] is not None:
+            _file_late_removal_task(tx, queue_id, row, external_post_id)
+    elif outcome == 'failed':
+        tx.execute(
+            """UPDATE publishing_queue SET status = 'failed', delivery_state = 'failed',
+                      error = %(err)s, lease_until = NULL, updated_at = NOW()
+                WHERE id = %(id)s""",
+            dict(err=error, id=queue_id))
+    elif outcome == 'delivery_unknown':
+        tx.execute(
+            """UPDATE publishing_queue SET status = 'review', delivery_state = 'delivery_unknown',
+                      error = %(err)s, lease_until = NULL, updated_at = NOW()
+                WHERE id = %(id)s""",
+            dict(err=error, id=queue_id))
+    else:  # 'review'
+        tx.execute(
+            """UPDATE publishing_queue SET status = 'review', delivery_state = 'none',
+                      error = %(err)s, lease_until = NULL, updated_at = NOW()
+                WHERE id = %(id)s""",
+            dict(err=error, id=queue_id))
+    return 'recorded'
 
 
 def cancel_for_member(tx, person_id: int, reason: str) -> int:

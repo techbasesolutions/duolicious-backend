@@ -108,7 +108,9 @@ def test_cron_can_list_claim_and_complete(client, make_person):
     claimed = client.post('/admin/growth/queue/claim', json={'max': 5}, headers=H).get_json()
     mine = [r for r in claimed if r['request_key'] == rk]
     assert len(mine) == 2 and all(r['status'] == 'processing' for r in mine)
-    r = client.post(f"/admin/growth/queue/{mine[0]['id']}/complete", json={'status': 'published', 'external_post_id': '123'}, headers=H)
+    r = client.post(f"/admin/growth/queue/{mine[0]['id']}/complete",
+                    json={'status': 'published', 'external_post_id': '123', 'lease_token': mine[0]['lease_token']},
+                    headers=H)
     assert r.status_code == 200
     rows = client.get('/admin/growth/queue', headers=H).get_json()
     assert any(x['id'] == mine[0]['id'] and x['status'] == 'published' and x['external_post_id'] == '123' for x in rows)
