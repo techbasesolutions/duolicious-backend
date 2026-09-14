@@ -76,6 +76,10 @@ services:
       AHAVAH_XMPP_DOMAIN: ahavah.app
       AHAVAH_PRODUCT_NAME: Ahavah
       AHAVAH_EMAIL_DOMAIN: ahavah.app
+
+      # Shared secret the spotlight scheduler sends as X-Growth-Cron (see
+      # service/api/cron_auth.py). Blank disables cron access (fails closed).
+      AHAVAH_GROWTH_CRON_SECRET: ${AHAVAH_GROWTH_CRON_SECRET:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s

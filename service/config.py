@@ -104,3 +104,11 @@ SIGNUP_ALLOWED_DOMAINS: frozenset = frozenset(
     for d in os.environ.get("AHAVAH_SIGNUP_ALLOWED_DOMAINS", "").split(",")
     if d.strip()
 )
+
+
+# Growth cron shared secret. The spotlight scheduler (an external cron
+# worker) calls the admin-or-cron /admin/growth/* endpoints with this value
+# in the `X-Growth-Cron` header instead of an admin bearer session. Empty by
+# default and `service.api.cron_auth.is_cron_request` fails closed when
+# unset, so an env that forgets it simply has no cron access at all.
+GROWTH_CRON_SECRET: str = os.environ.get("AHAVAH_GROWTH_CRON_SECRET", "")

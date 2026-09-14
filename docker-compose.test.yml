@@ -59,6 +59,10 @@ services:
       # this compose file.
       SESSION_TOKEN_SECRET: test-only-session-token-secret-do-not-use-in-prod
 
+      # Shared secret the spotlight scheduler sends as X-Growth-Cron (see
+      # service/api/cron_auth.py). Test-only value; tests send this literal.
+      AHAVAH_GROWTH_CRON_SECRET: test-cron-secret
+
       DUO_R2_BUCKET_NAME: s3-mock-bucket
       DUO_R2_AUDIO_BUCKET_NAME: s3-mock-audio-bucket
       DUO_R2_ACCT_ID: unused-in-dev-env

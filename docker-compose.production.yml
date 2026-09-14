@@ -129,6 +129,9 @@ services:
       TWILIO_VERIFY_SERVICE_SID: ${TWILIO_VERIFY_SERVICE_SID}
       # Session secret (used by service code that signs/verifies)
       SESSION_TOKEN_SECRET: ${SESSION_TOKEN_SECRET:?SESSION_TOKEN_SECRET must be set in .env.production}
+      # Shared secret the spotlight scheduler sends as X-Growth-Cron.
+      # Blank disables cron access entirely (fails closed).
+      AHAVAH_GROWTH_CRON_SECRET: ${AHAVAH_GROWTH_CRON_SECRET:-}
 
   chat:
     volumes: !reset []

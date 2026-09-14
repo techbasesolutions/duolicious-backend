@@ -1209,3 +1209,6 @@ import service.api.admin.moderation_routes as _admin_mod_routes  # noqa: E402,F4
 import service.api.admin.system_routes  # noqa: E402,F401
 import service.api.admin.audit_routes  # noqa: E402,F401
 import service.api.admin.growth_routes  # noqa: E402,F401
+# Community Spotlight publishing queue (2026-09-13) -- admin-or-cron
+# /admin/growth/* queue, settings, candidates and token health (spec 3.6).
+import service.api.admin.spotlight_routes  # noqa: E402,F401

@@ -16,6 +16,10 @@ TRANSITIONS = {
 }
 MAX_ATTEMPTS = 3
 _SETTING_KEYS = ('scheduler_enabled', 'auto_welcome', 'auto_roundup')
+# Keys whose value is not a 'true'/'false' flag. The page-token health probe
+# writes an ISO timestamp and a validity flag here, so these two accept any
+# string value; every other key stays a strict boolean.
+_FREE_KEYS = ('token_expires_at', 'token_valid')
 
 
 def create_candidate(tx, *, kind: str, subject_person_id: Optional[int], caption: str, created_by: str, platforms=PLATFORMS) -> str:
@@ -112,7 +116,12 @@ def settings(tx) -> dict:
 
 
 def set_setting(tx, key: str, value: str) -> None:
-    if key not in _SETTING_KEYS or value not in ('true', 'false'):
+    if key in _FREE_KEYS:
+        if value is None:
+            value = ''
+        if not isinstance(value, str):
+            raise ValueError('bad_setting')
+    elif key not in _SETTING_KEYS or value not in ('true', 'false'):
         raise ValueError('bad_setting')
     tx.execute("INSERT INTO spotlight_setting (key, value, updated_at) VALUES (%(k)s, %(v)s, NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
                dict(k=key, v=value))
