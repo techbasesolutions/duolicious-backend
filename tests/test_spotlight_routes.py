@@ -108,6 +108,50 @@ def test_claim_returns_nothing_when_scheduler_disabled(client):
     assert client.post('/admin/growth/queue/claim', json={'max': 5}, headers={'X-Growth-Cron': 'test-cron-secret'}).get_json() == []
 
 
+def test_claim_reaps_expired_leases(client, make_person):
+    """A `processing` row whose lease expired 20 minutes ago moves to
+    `review` with error `lease_expired` and is never returned as claimed --
+    an interrupted publish may actually have succeeded, so it must not be
+    auto-retried (spec 5)."""
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        qid = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1", dict(rk=rk)).fetchone()['id']
+        tx.execute("""UPDATE publishing_queue SET status = 'processing',
+                             lease_until = NOW() - interval '20 minutes'
+                       WHERE id = %(id)s""", dict(id=qid))
+    H = {'X-Growth-Cron': 'test-cron-secret'}
+    r = client.post('/admin/growth/queue/claim', json={'max': 5, 'shape': 'v2'}, headers=H)
+    body = r.get_json()
+    assert isinstance(body, dict) and 'claimed' in body and 'reaped' in body
+    assert body['reaped'] >= 1
+    assert not any(row['id'] == str(qid) for row in body['claimed'])
+    with api_tx('read committed') as tx:
+        row = tx.execute("SELECT status, error, lease_until FROM publishing_queue WHERE id = %(id)s", dict(id=qid)).fetchone()
+    assert row['status'] == 'review' and row['error'] == 'lease_expired' and row['lease_until'] is None
+    # The default (no shape key) shape is still a bare array, unchanged for
+    # the existing admin worker contract.
+    plain = client.post('/admin/growth/queue/claim', json={'max': 5}, headers=H).get_json()
+    assert isinstance(plain, list)
+
+
+def test_queue_due_filter(client, make_person):
+    with api_tx() as tx:
+        rk_due = create_candidate(tx, kind='roundup', subject_person_id=None, caption='due', created_by='t')
+        for r in tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk_due)).fetchall():
+            attach_image(tx, rk_due, 'k', 'https://cdn/k.png')
+            set_status(tx, r['id'], 'scheduled')
+        tx.execute("UPDATE publishing_queue SET scheduled_for = NOW() - interval '1 minute' WHERE request_key = %(rk)s", dict(rk=rk_due))
+        rk_future = create_candidate(tx, kind='roundup', subject_person_id=None, caption='future', created_by='t')
+        for r in tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk_future)).fetchall():
+            attach_image(tx, rk_future, 'k2', 'https://cdn/k2.png')
+            set_status(tx, r['id'], 'scheduled')
+        tx.execute("UPDATE publishing_queue SET scheduled_for = NOW() + interval '1 day' WHERE request_key = %(rk)s", dict(rk=rk_future))
+    H = {'X-Growth-Cron': 'test-cron-secret'}
+    rows = client.get('/admin/growth/queue?status=scheduled&due=1', headers=H).get_json()
+    keys = {r['request_key'] for r in rows}
+    assert rk_due in keys and rk_future not in keys
+
+
 def test_image_upload_attaches_and_moves_to_review(client, monkeypatch, make_person):
     import base64
     calls = []
@@ -210,6 +254,28 @@ def test_removals_listed_and_marked_done(client, make_person):
     assert done_at is not None
     assert not any(r['id'] == task['id']
                    for r in client.get('/admin/growth/removals?pending=1', headers=H).get_json())
+
+
+def test_removal_done_deletes_stored_image(client, make_person, monkeypatch):
+    import service.api.admin.spotlight_routes as sr
+    deleted = []
+    monkeypatch.setattr(sr, 'delete_images', lambda keys: deleted.extend(keys) or len(keys))
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute("""UPDATE publishing_queue
+                         SET status = 'published', external_post_id = 'ig-2',
+                             image_key = 'spotlight/removed.png', image_url = 'https://cdn/removed.png'
+                       WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk))
+        set_spotlight_opt_in(tx, p['id'], False)
+    H = {'X-Growth-Cron': 'test-cron-secret'}
+    task = [r for r in client.get('/admin/growth/removals?pending=1', headers=H).get_json() if r['request_key'] == rk][0]
+    assert client.post(f"/admin/growth/removals/{task['id']}/done", json={}, headers=H).status_code == 200
+    assert deleted == ['spotlight/removed.png']
+    with api_tx('read committed') as tx:
+        row = tx.execute("""SELECT image_key, image_url FROM publishing_queue
+                             WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk)).fetchone()
+    assert row['image_key'] is None and row['image_url'] is None
 
 
 def test_candidates_and_welcome(client, make_person, monkeypatch):

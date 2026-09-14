@@ -40,7 +40,9 @@ from service.api.decorators import aget, apost, get, post, Q_GET_SESSION
 from service.config import USER_IMAGES_BASE_URL
 from service.spotlight.eligibility import eligibility, primary_photo_uuid, photo_url
 from service.spotlight.queue import (create_candidate, expire_member_approvals, attach_image,
-                                     set_status, settings, set_setting, stamp_featured, PLATFORMS)
+                                     set_status, settings, set_setting, stamp_featured,
+                                     reap_expired_leases, PLATFORMS)
+from service.spotlight.storage import _bucket, delete_images
 
 _PNG_SIG = b'\x89PNG\r\n\x1a\n'
 
@@ -170,11 +172,10 @@ def _default_slot(now: Optional[datetime] = None) -> datetime:
 # ---------------------------------------------------------------------------
 
 def _put_png(key: str, data: bytes) -> None:
-    """Upload one rendered card. `bucket` is the module-level Spaces bucket
-    that `service.person.put_image_in_object_store` writes through; reusing it
-    keeps one set of credentials and one endpoint override."""
-    from service.person import bucket
-    bucket.put_object(Key=key, Body=data, ACL='public-read', ContentType='image/png')
+    """Upload one rendered card through the same bucket resolver
+    `service.spotlight.storage.delete_images` uses, so upload and delete
+    share one set of credentials and one endpoint override."""
+    _bucket().put_object(Key=key, Body=data, ACL='public-read', ContentType='image/png')
 
 
 def _send_card_ready(person_id: int, request_key: str) -> None:
@@ -237,6 +238,7 @@ _Q_ROWS = """
       FROM publishing_queue q
       LEFT JOIN person p ON p.id = q.subject_person_id
      WHERE (%(status)s::text IS NULL OR q.status = %(status)s::text)
+       AND (%(due)s::bool IS NOT TRUE OR q.scheduled_for <= NOW())
      ORDER BY q.created_at DESC
      LIMIT 200
 """
@@ -340,27 +342,43 @@ def _queue_row(r) -> dict:
 def get_growth_queue():
     _gate()
     status = request.args.get('status') or None
+    due = request.args.get('due') in ('1', 'true', 'yes')
     with api_tx('read committed') as tx:
-        rows = tx.execute(_Q_ROWS, dict(status=status)).fetchall()
+        rows = tx.execute(_Q_ROWS, dict(status=status, due=due)).fetchall()
     return jsonify([_queue_row(r) for r in rows])
 
 
 @post('/admin/growth/queue/claim')
 def post_growth_queue_claim():
     s = _gate()
+    body = _body()
     try:
-        requested = int(_body().get('max') or 2)
+        requested = int(body.get('max') or 2)
     except (TypeError, ValueError):
         abort(400)
     requested = max(1, min(requested, 50))
+    # Opt-in response shape. The admin worker (ahavah-admin growth-server.ts
+    # `claim`) still expects a bare array and has no `shape` key in its
+    # request body, so the default stays backward compatible; a caller that
+    # wants the reaped count sends {"shape": "v2"} and gets the object.
+    v2 = body.get('shape') == 'v2'
     with api_tx() as tx:
+        # Reaping runs on every call, scheduler on or off: an interrupted
+        # publish can leave a lease to expire regardless of the kill switch,
+        # and reaping only ever moves a row to 'review' -- it never
+        # publishes anything itself.
+        reaped = reap_expired_leases(tx)
         # The kill switch. With the scheduler off nothing is leased, so a cron
         # worker left running cannot publish.
         if settings(tx).get('scheduler_enabled') != 'true':
-            return jsonify([])
-        rows = tx.execute("SELECT * FROM claim_spotlight_posts(%(m)s)", dict(m=requested)).fetchall()
-        _audit(tx, s, 'growth.queue.claim', claimed=len(rows))
-    return jsonify([_row(r) for r in rows])
+            rows = []
+        else:
+            rows = tx.execute("SELECT * FROM claim_spotlight_posts(%(m)s)", dict(m=requested)).fetchall()
+        _audit(tx, s, 'growth.queue.claim', claimed=len(rows), reaped=reaped)
+    claimed = [_row(r) for r in rows]
+    if v2:
+        return jsonify({'claimed': claimed, 'reaped': reaped})
+    return jsonify(claimed)
 
 
 @post('/admin/growth/queue/<qid>/complete')
@@ -553,10 +571,24 @@ def get_growth_removals():
 def post_growth_removal_done(removal_id: int):
     s = _gate()
     with api_tx() as tx:
+        row = tx.execute(
+            """SELECT q.image_key FROM spotlight_removal_task t
+                 JOIN publishing_queue q ON q.id = t.queue_id
+                WHERE t.id = %(i)s""",
+            dict(i=removal_id)).fetchone()
         updated = tx.execute(
             "UPDATE spotlight_removal_task SET done_at = NOW() WHERE id = %(i)s AND done_at IS NULL",
             dict(i=removal_id)).rowcount
+        if updated and row and row['image_key']:
+            tx.execute(
+                """UPDATE publishing_queue SET image_key = NULL, image_url = NULL
+                    WHERE id = (SELECT queue_id FROM spotlight_removal_task WHERE id = %(i)s)""",
+                dict(i=removal_id))
         _audit(tx, s, 'growth.removal.done', removal_id=removal_id)
+    # Storage is best-effort and outside the transaction's success/failure:
+    # a Spaces error here must never undo the removal task being marked done.
+    if updated and row and row['image_key']:
+        delete_images([row['image_key']])
     return dict(ok=True, updated=updated)
 
 

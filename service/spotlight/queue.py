@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 from service.spotlight.eligibility import eligibility
+from service.spotlight.storage import delete_images
 
 KINDS = ('welcome', 'roundup', 'member_of_week', 'highlight')
 PLATFORMS = ('facebook', 'instagram')
@@ -104,10 +105,34 @@ def cancel_for_member(tx, person_id: int, reason: str) -> int:
                VALUES (%(q)s, %(pl)s, %(ext)s, %(reason)s)""",
             dict(q=r['id'], pl=r['platform'], ext=r['external_post_id'],
                  reason='delete_via_api' if r['platform'] == 'facebook' else 'manual_instagram'))
+    # Published rows keep their card until the retention sweep or a removal
+    # task marks the platform post done -- only non-published rows' images
+    # are deleted here, since those never got (and now never will get) a
+    # public post to point at.
+    keys = [r['image_key'] for r in tx.execute(
+        """SELECT image_key FROM publishing_queue
+            WHERE subject_person_id = %(pid)s AND image_key IS NOT NULL
+              AND status NOT IN ('published')""",
+        dict(pid=person_id)).fetchall()]
     cur = tx.execute(
         """UPDATE publishing_queue SET status = 'cancelled', error = %(reason)s, updated_at = NOW()
             WHERE subject_person_id = %(pid)s AND status NOT IN ('published', 'cancelled')""",
         dict(pid=person_id, reason=reason))
+    # Storage is best-effort and outside the transaction's success/failure:
+    # a Spaces error here must never roll back the cancellation above.
+    delete_images(keys)
+    return cur.rowcount
+
+
+def reap_expired_leases(tx) -> int:
+    """An interrupted publish (worker crash, deploy, network partition) may
+    have actually succeeded on the platform before the lease expired, so
+    this never auto-retries (never moves back to 'scheduled') -- it lands in
+    'review' for a human to check (spec 5)."""
+    cur = tx.execute(
+        """UPDATE publishing_queue SET status = 'review', error = 'lease_expired',
+                  lease_until = NULL, updated_at = NOW()
+            WHERE status = 'processing' AND lease_until < NOW()""")
     return cur.rowcount
 
 

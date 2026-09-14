@@ -180,6 +180,8 @@ services:
 
       DUO_CRON_GARBAGE_RECORDS_POLL_SECONDS: '1'
 
+      DUO_CRON_SPOTLIGHT_RETENTION_POLL_SECONDS: '1'
+
       DUO_CRON_MAX_RANDOM_START_DELAY: '0'
 
       # Ahavah branding (see service/config.py). Mirrors the api container.

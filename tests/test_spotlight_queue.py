@@ -105,6 +105,22 @@ def test_cancel_for_member_creates_removal_tasks(make_person):
         assert [(t['platform'], t['reason']) for t in tasks] == [('instagram', 'manual_instagram')]
 
 
+def test_cancel_for_member_deletes_stored_images(make_person, monkeypatch):
+    import service.spotlight.queue as q
+    deleted = []
+    monkeypatch.setattr(q, 'delete_images', lambda keys: deleted.extend(keys) or len(keys))
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute("""UPDATE publishing_queue SET status = 'published', external_post_id = '123',
+                             image_key = 'spotlight/published.png'
+                       WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk))
+        tx.execute("""UPDATE publishing_queue SET status = 'scheduled', image_key = 'spotlight/scheduled.png'
+                       WHERE request_key = %(rk)s AND platform = 'facebook'""", dict(rk=rk))
+        cancel_for_member(tx, p['id'], 'opt_out')
+    assert deleted == ['spotlight/scheduled.png']
+
+
 def test_opt_out_cancels(make_person):
     p = _make_eligible(make_person)
     with api_tx() as tx:
