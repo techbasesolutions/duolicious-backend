@@ -83,9 +83,12 @@ def create_candidate(tx, *, kind: str, subject_person_id: Optional[int], caption
     # immutable revision, and every queue row of the key points at it -- a
     # welcome/member_of_week card's chosen photo is its subject's primary
     # approved photo; a roundup carries no photo of its own. Participants
-    # stay empty (count-only) unless roundup_tiles_enabled is on, which
-    # Task 8 formalises properly -- the setting is seeded false, so that
-    # branch is dormant today.
+    # stay empty (count-only) unless roundup_tiles_enabled is on, matching
+    # roundup_snapshot's own gate on the same setting (Task 8) -- the
+    # setting is seeded false, so this branch only fires once it is turned
+    # on. `post_growth_spotlight_roundup` replaces this revision with a
+    # richer one (first_name/photo_url per participant) whenever tiles are
+    # non-empty, so this initial revision is the count-only steady state.
     photo_uuid = primary_photo_uuid(tx, subject_person_id) if subject_person_id is not None else None
     participants: list = []
     if kind == 'roundup' and settings(tx).get('roundup_tiles_enabled') == 'true':

@@ -4,20 +4,25 @@ on purpose -- test files in this suite do not import from each other."""
 from __future__ import annotations
 
 from database import api_tx
-from service.spotlight.queue import create_candidate
+from service.spotlight.queue import create_candidate, set_setting
+from service.spotlight.revisions import current_revision, record_consent
 from service.spotlight.roundup import roundup_snapshot
 
 
 def _stamp_member_approval(tx, request_key, photo_uuid):
     """set_member_approval (removed in Task 2, replaced by revision-bound
-    approve_card) used to stamp these two columns; roundup_snapshot's
-    candidate query still reads them as-is (Task 8 rewires the roundup path
-    onto revisions), so this stamps them directly to keep exercising the
-    tile-snapshot path this task does not touch."""
-    tx.execute(
-        """UPDATE publishing_queue SET approved_photo_uuid = %(u)s::uuid, member_approved_at = NOW()
-            WHERE request_key = %(rk)s""",
-        dict(u=photo_uuid, rk=request_key))
+    approve_card) used to stamp approved_photo_uuid/member_approved_at
+    directly; roundup_snapshot's candidate query now reads a consent row on
+    the welcome request's current revision instead (Task 8), so this
+    records the same subject consent approve_card would have left. The
+    `photo_uuid` argument is kept for call-site compatibility -- the
+    revision already carries the subject's primary approved photo from
+    create_candidate."""
+    subject = tx.execute(
+        "SELECT subject_person_id FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
+        dict(rk=request_key)).fetchone()
+    rev = current_revision(tx, request_key)
+    record_consent(tx, rev['id'], subject['subject_person_id'], 'subject')
 
 
 def _make_eligible(make_person, name='Elig', gender='Woman'):
@@ -46,7 +51,12 @@ def test_snapshot_lists_only_approved_newcomers(make_person):
         create_candidate(tx, kind='welcome', subject_person_id=b['id'], caption='c', created_by='t')
         tx.execute("UPDATE person SET country = 'GB' WHERE id = %(id)s", dict(id=a['id']))
         tx.execute("UPDATE person SET country = 'US' WHERE id = %(id)s", dict(id=b['id']))
-        snap = roundup_snapshot(tx, days=7)
+        # Task 8: roundup_snapshot only ever tiles when the flag is on.
+        set_setting(tx, 'roundup_tiles_enabled', 'true')
+        try:
+            snap = roundup_snapshot(tx, days=7)
+        finally:
+            set_setting(tx, 'roundup_tiles_enabled', 'false')
     names = [t['first_name'] for t in snap['tiles']]
     assert 'Approved' in names and 'NotApproved' not in names
     assert snap['count'] >= 2 and snap['countries'] >= 2
@@ -65,4 +75,32 @@ def test_snapshot_caps_tiles_at_four(make_person):
             rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
             photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
             _stamp_member_approval(tx, rk, photo)
-        assert len(roundup_snapshot(tx, days=7)['tiles']) <= 4
+        set_setting(tx, 'roundup_tiles_enabled', 'true')
+        try:
+            assert len(roundup_snapshot(tx, days=7)['tiles']) <= 4
+        finally:
+            set_setting(tx, 'roundup_tiles_enabled', 'false')
+
+
+def test_snapshot_is_count_only_by_default(make_person):
+    a = _make_eligible(make_person, name='CountOnly', gender='Woman')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=a['id'], caption='c', created_by='t')
+        photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=a['id'])).fetchone()['u']
+        _stamp_member_approval(tx, rk, photo)
+        set_setting(tx, 'roundup_tiles_enabled', 'false')
+        snap = roundup_snapshot(tx)
+        assert snap['tiles'] == [] and snap['count'] >= 1
+
+
+def test_snapshot_tiles_only_when_enabled(make_person):
+    a = _make_eligible(make_person, name='TileWhenOn', gender='Woman')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=a['id'], caption='c', created_by='t')
+        photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=a['id'])).fetchone()['u']
+        _stamp_member_approval(tx, rk, photo)
+        set_setting(tx, 'roundup_tiles_enabled', 'true')
+        try:
+            assert len(roundup_snapshot(tx)['tiles']) >= 1
+        finally:
+            set_setting(tx, 'roundup_tiles_enabled', 'false')

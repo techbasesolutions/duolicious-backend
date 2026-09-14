@@ -15,7 +15,7 @@ import pytest
 from database import api_tx
 from service.spotlight import set_spotlight_opt_in
 from service.spotlight.queue import create_candidate, set_status, set_setting
-from service.spotlight.revisions import current_revision, attach_render, create_revision, record_consent
+from service.spotlight.revisions import current_revision, attach_render, create_revision, record_consent, consent_complete
 
 
 def _session_for(p, signed_in: bool = True) -> str:
@@ -433,32 +433,68 @@ def test_roundup_route_stores_and_serves_tile_payload(client, make_person):
     """POST /spotlight/roundup (Task 11) computes and stores the tile
     snapshot as `payload` on both platform rows; GET /queue merges it back
     into `tiles`/`count`/`countries` on the roundup rows only -- a welcome
-    row from the same request run must not carry those keys."""
+    row from the same request run must not carry those keys. Tiles only
+    populate with roundup_tiles_enabled on (Task 8); this exercises that
+    path, not the count-only default covered separately below."""
     a = _make_eligible(make_person, name='RoundupTile', gender='Woman')
     with api_tx() as tx:
         rk_w = create_candidate(tx, kind='welcome', subject_person_id=a['id'], caption='c', created_by='t')
-        photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=a['id'])).fetchone()['u']
-        # set_member_approval (removed in Task 2, replaced by revision-bound
-        # approve_card) used to stamp these two columns; roundup_snapshot's
-        # candidate query still reads them as-is (Task 8 rewires the roundup
-        # path onto revisions), so the test stamps them directly to keep
-        # exercising the tile-snapshot path this task does not touch.
-        tx.execute(
-            """UPDATE publishing_queue SET approved_photo_uuid = %(u)s::uuid, member_approved_at = NOW()
-                WHERE request_key = %(rk)s""",
-            dict(u=photo, rk=rk_w))
+        # approve_card records subject consent on the welcome request's
+        # current revision; roundup_snapshot's candidate query reads that
+        # consent row (Task 8), not the dead approved_photo_uuid/
+        # member_approved_at columns.
+        rev_w = current_revision(tx, rk_w)
+        record_consent(tx, rev_w['id'], a['id'], 'subject')
+        set_setting(tx, 'roundup_tiles_enabled', 'true')
     H = {'X-Growth-Cron': 'test-cron-secret'}
-    r = client.post('/admin/growth/spotlight/roundup', json={}, headers=H)
-    assert r.status_code == 200
+    try:
+        r = client.post('/admin/growth/spotlight/roundup', json={}, headers=H)
+        assert r.status_code == 200
+        rk = r.get_json()['request_key']
+        rows = client.get('/admin/growth/queue', headers=H).get_json()
+        roundup_rows = [x for x in rows if x['request_key'] == rk]
+        assert len(roundup_rows) == 2
+        for row in roundup_rows:
+            assert 'tiles' in row and 'count' in row and 'countries' in row
+            assert any(t['person_id'] == a['id'] for t in row['tiles'])
+        welcome_row = next(x for x in rows if x['request_key'] == rk_w)
+        assert 'tiles' not in welcome_row and 'count' not in welcome_row and 'countries' not in welcome_row
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'roundup_tiles_enabled', 'false')
+
+
+def test_roundup_route_count_only_revision(client):
+    """Task 8: the owner-decision default. With roundup_tiles_enabled off
+    (its seeded value), the roundup revision created by create_candidate
+    stands untouched -- empty participants, complete by definition."""
+    r = client.post('/admin/growth/spotlight/roundup', json={}, headers={'X-Growth-Cron': 'test-cron-secret'})
     rk = r.get_json()['request_key']
-    rows = client.get('/admin/growth/queue', headers=H).get_json()
-    roundup_rows = [x for x in rows if x['request_key'] == rk]
-    assert len(roundup_rows) == 2
-    for row in roundup_rows:
-        assert 'tiles' in row and 'count' in row and 'countries' in row
-        assert any(t['person_id'] == a['id'] for t in row['tiles'])
-    welcome_row = next(x for x in rows if x['request_key'] == rk_w)
-    assert 'tiles' not in welcome_row and 'count' not in welcome_row and 'countries' not in welcome_row
+    with api_tx() as tx:
+        rev = current_revision(tx, rk)
+        assert rev['participants'] == [] and consent_complete(tx, rev['id']) is True
+
+
+def test_roundup_route_with_tiles_needs_every_participant(make_person, client):
+    """Task 8: with roundup_tiles_enabled on, the route records every tiled
+    member as a participant on the revision, and dispatch's fail-closed
+    consent check refuses the card until each one consents."""
+    a = _make_eligible(make_person, name='TileParticipant', gender='Woman')
+    with api_tx() as tx:
+        rk_w = create_candidate(tx, kind='welcome', subject_person_id=a['id'], caption='c', created_by='t')
+        rev_w = current_revision(tx, rk_w)
+        record_consent(tx, rev_w['id'], a['id'], 'subject')
+        set_setting(tx, 'roundup_tiles_enabled', 'true')
+    try:
+        r = client.post('/admin/growth/spotlight/roundup', json={}, headers={'X-Growth-Cron': 'test-cron-secret'})
+        rk = r.get_json()['request_key']
+        with api_tx() as tx:
+            rev = current_revision(tx, rk)
+            assert [t['person_id'] for t in rev['participants']] == [a['id']]
+            assert consent_complete(tx, rev['id']) is False
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'roundup_tiles_enabled', 'false')
 
 
 def test_cron_header_never_resolves_a_session(client, monkeypatch):

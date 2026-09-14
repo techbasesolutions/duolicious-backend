@@ -47,7 +47,7 @@ from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      set_status, settings, set_setting,
                                      reap_expired_leases, record_receipt, OUTCOMES,
                                      OUTCOME_DELIVERY_STATE, PLATFORMS)
-from service.spotlight.revisions import attach_render, consent_complete, edit_caption
+from service.spotlight.revisions import attach_render, consent_complete, create_revision, edit_caption
 from service.spotlight.roundup import roundup_snapshot
 from service.spotlight.storage import _bucket, delete_images
 
@@ -713,8 +713,24 @@ def post_growth_spotlight_roundup():
         tx.execute(
             "UPDATE publishing_queue SET payload = %(p)s::jsonb WHERE request_key = %(rk)s",
             dict(p=json.dumps(snapshot), rk=rk))
+        # Owner decision (Task 8): count-only unless roundup_tiles_enabled is
+        # on. `roundup_snapshot` already returns `tiles=[]` in that case, so
+        # revision 1 from create_candidate (empty participants) stands --
+        # nothing else to do. With tiles, a fresh revision records every
+        # tiled member as a participant, so the fail-closed dispatch check
+        # (consent_complete) refuses the card until each one consents.
+        count_only = not snapshot['tiles']
+        if not count_only:
+            rows = tx.execute(
+                "SELECT caption, platform FROM publishing_queue WHERE request_key = %(rk)s",
+                dict(rk=rk)).fetchall()
+            create_revision(
+                tx, rk, caption=rows[0]['caption'], photo_uuid=None,
+                participants=[dict(person_id=tile['person_id'], first_name=tile['first_name'],
+                                   photo_url=tile['photo_url']) for tile in snapshot['tiles']],
+                channels=[row['platform'] for row in rows], created_by=_actor(s))
         _audit(tx, s, 'growth.queue.roundup', request_key=rk,
-               tiles=len(snapshot['tiles']), count=snapshot['count'])
+               tiles=len(snapshot['tiles']), count=snapshot['count'], count_only=count_only)
     return dict(request_key=rk)
 
 
