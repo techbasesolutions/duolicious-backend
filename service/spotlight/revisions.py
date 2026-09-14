@@ -48,11 +48,20 @@ def create_revision(tx, request_key: str, *, caption: str, photo_uuid: Optional[
     because its sibling already published. Set only by
     `service.spotlight.withdrawal.withdraw_member`'s re-issue step, which
     has already confirmed (via its own status-scoped query) that the row it
-    is actually re-issuing is not itself terminal; the published/cancelled
-    sibling's own status, external_post_id and image_key are separate
-    `publishing_queue` columns this function never touches, so it is
-    unaffected either way. `edit_caption`/`approve_card` never pass this,
-    so admin-driven edits keep the original whole-request guard."""
+    is actually re-issuing is not itself terminal.
+
+    Fix round 2: when this flag is set, the current_revision_id repoint
+    below is ALSO scoped away from published/cancelled rows -- a published
+    row must keep pointing at the exact revision that was published
+    (Task 2's invariant: `current_revision_id` is what `current_revision`,
+    dispatch checks and the removals/admin views all read back as "what
+    this row shows"). Repointing it to a revision that dropped a member it
+    already went out with would be a lie about what is actually live. The
+    published/cancelled sibling's own status, external_post_id and
+    image_key are separate `publishing_queue` columns this function never
+    touches regardless. `edit_caption`/`approve_card` never pass this flag,
+    so admin-driven edits keep the original whole-request guard AND the
+    original whole-request repoint."""
     statuses = _statuses(tx, request_key)
     if statuses & set(IN_FLIGHT):
         raise ValueError('in_flight')
@@ -71,10 +80,18 @@ def create_revision(tx, request_key: str, *, caption: str, photo_uuid: Optional[
     revision_id = row['id']
     # Every row of the request_key shares one current revision; a roundup and
     # a welcome card never share a request_key, so this UPDATE never crosses
-    # kinds.
-    tx.execute(
-        "UPDATE publishing_queue SET current_revision_id = %(rid)s, updated_at = NOW() WHERE request_key = %(rk)s",
-        dict(rid=revision_id, rk=request_key))
+    # kinds. Scoped away from published/cancelled rows only when
+    # ignore_terminal_siblings is set (see docstring); the default path
+    # keeps the whole-key repoint exactly as it always has.
+    if ignore_terminal_siblings:
+        tx.execute(
+            """UPDATE publishing_queue SET current_revision_id = %(rid)s, updated_at = NOW()
+                WHERE request_key = %(rk)s AND status NOT IN ('published', 'cancelled')""",
+            dict(rid=revision_id, rk=request_key))
+    else:
+        tx.execute(
+            "UPDATE publishing_queue SET current_revision_id = %(rid)s, updated_at = NOW() WHERE request_key = %(rk)s",
+            dict(rid=revision_id, rk=request_key))
     return revision_id
 
 

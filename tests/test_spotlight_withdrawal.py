@@ -180,12 +180,19 @@ def test_reissue_leaves_a_published_sibling_row_untouched(make_person):
     its own status, external_post_id and image_key (it was already handled
     by step 2's removal-task filing), and re-issuing the pending row must
     not raise despite the published sibling (`create_revision`'s terminal
-    guard, `ignore_terminal_siblings=True`)."""
+    guard, `ignore_terminal_siblings=True`).
+
+    Fix round 2 (ruling 2): the published row must also keep pointing at
+    the revision it was actually published with -- `create_revision`'s
+    current_revision_id repoint is scoped away from published/cancelled
+    rows when `ignore_terminal_siblings=True` -- while the re-issued row
+    points at the brand new revision."""
     a = _make_eligible(make_person, name='A')
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='r', created_by='t')
         rev = current_revision(tx, rk)
         create_revision(tx, rk, caption='r', photo_uuid=None, participants=[dict(person_id=a['id'])], channels=rev['channels'], created_by='t')
+        rev2 = current_revision(tx, rk)
         tx.execute("""UPDATE publishing_queue SET status = 'published', external_post_id = 'fb-1',
                              image_key = 'spotlight/live.png', image_url = 'https://cdn/live.png', delivery_state = 'published'
                        WHERE request_key = %(rk)s AND platform = 'facebook'""", dict(rk=rk))
@@ -196,13 +203,15 @@ def test_reissue_leaves_a_published_sibling_row_untouched(make_person):
         assert out['roundups_reissued'] == 1
         assert out['cancelled'] == 0
         rows = {r['platform']: r for r in tx.execute(
-            "SELECT platform, status, external_post_id, image_key FROM publishing_queue WHERE request_key = %(rk)s",
+            "SELECT platform, status, external_post_id, image_key, current_revision_id FROM publishing_queue WHERE request_key = %(rk)s",
             dict(rk=rk)).fetchall()}
         assert rows['facebook']['status'] == 'published'
         assert rows['facebook']['external_post_id'] == 'fb-1'
         assert rows['facebook']['image_key'] == 'spotlight/live.png'
+        assert rows['facebook']['current_revision_id'] == rev2['id']
         assert rows['instagram']['status'] == 'awaiting_render'
         assert rows['instagram']['image_key'] is None
+        assert rows['instagram']['current_revision_id'] != rev2['id']
         tasks = tx.execute("SELECT platform, external_post_id FROM spotlight_removal_task WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()
         assert [(t['platform'], t['external_post_id']) for t in tasks] == [('facebook', 'fb-1')]
 

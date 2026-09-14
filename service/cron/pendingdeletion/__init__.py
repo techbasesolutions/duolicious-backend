@@ -1,5 +1,5 @@
 """
-pendingdeletion — hard-deletes person rows whose 7-day grace expired.
+pendingdeletion: hard-deletes person rows whose 7-day grace expired.
 
 Soft-delete flow (Phase W cutover, migration 0008):
   1. User taps Delete on /settings/account
@@ -83,10 +83,10 @@ async def hard_delete_expired_once():
     rows where the deleter was author/owner. Tables WITHOUT a cascading
     FK (audit Privacy #1, #2) are cleaned manually inside the same tx:
 
-      - `inbox`      — XMPP message-receipt store keyed on `luser` JID-name
+      - `inbox`      : XMPP message-receipt store keyed on `luser` JID-name
                        (= person.uuid). Stores last-message bodies + peer
                        JIDs; orphan rows survived hard-delete previously.
-      - `waitlist_signup` — pre-signup demographic row keyed on email.
+      - `waitlist_signup`: pre-signup demographic row keyed on email.
                        Survived hard-delete because no FK / no cleanup.
 
     F11: photo/audio rows themselves DO cascade off `person_id`, but the
@@ -113,7 +113,7 @@ async def hard_delete_expired_once():
     async with api_tx() as tx:
         candidates = await (await tx.execute(_Q_EXPIRED, dict(days=GRACE_PERIOD_DAYS))).fetchall()
 
-    withdrawn = await asyncio.to_thread(_withdraw_all, [r['id'] for r in candidates]) if candidates else []
+    withdrawn = set(await asyncio.to_thread(_withdraw_all, [r['id'] for r in candidates])) if candidates else set()
 
     async with api_tx() as tx:
         # Re-selected rather than trusting the candidates list above: the
