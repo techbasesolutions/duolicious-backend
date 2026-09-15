@@ -10,15 +10,20 @@ from service.spotlight.attribution import attribute_signup
 from service.growth.queries import post_stats
 
 
-def test_attribute_stamps_person_and_latest_human_click(make_person):
+# Wave 3b, task 3 rewrote this test. It used to assert that a bare campaign
+# key credited the LATEST unmatched human click, which is the F10 defect
+# itself: the key is shared by everyone who saw the post, so "latest" picked
+# whoever happened to click last. Credit now follows the receipt.
+
+def test_attribute_stamps_person_and_credits_that_receipts_own_click(make_person):
     joiner = make_person(name='Joiner')
     rk = uuid.uuid4().hex
     with api_tx() as tx:
         url = make_campaign_link(tx, f'post:{rk}', f'{WEB_BASE_URL}/discover', None)
         key = url.rsplit('/', 1)[1]
-        record_click(tx, key, 'facebookexternalhit/1.1')   # bot
-        record_click(tx, key, 'Mozilla/5.0 (iPhone)')      # human
-        assert attribute_signup(tx, joiner['id'], key) is True
+        record_click(tx, key, 'facebookexternalhit/1.1')        # bot, no receipt
+        _, receipt = record_click(tx, key, 'Mozilla/5.0 (iPhone)')  # human
+        assert attribute_signup(tx, joiner['id'], receipt) is True
         row = tx.execute("SELECT spotlight_ref FROM person WHERE id = %(id)s", dict(id=joiner['id'])).fetchone()
         assert row['spotlight_ref'] == key
         stamped = tx.execute("SELECT ua_class FROM campaign_click WHERE link_key = %(k)s AND signup_person_id = %(pid)s", dict(k=key, pid=joiner['id'])).fetchall()
@@ -28,6 +33,9 @@ def test_attribute_stamps_person_and_latest_human_click(make_person):
         assert attribute_signup(tx, joiner['id'], None) is False
 
 
+# Rides the legacy campaign-key branch on purpose (removed in task 7); the
+# first-touch rule itself is re-proved on receipts in
+# test_first_touch_wins_and_does_not_consume_the_second_receipt below.
 def test_attribute_does_not_overwrite(make_person):
     p = make_person(name='Twice')
     rk_a = uuid.uuid4().hex
@@ -110,3 +118,91 @@ def test_receipt_length_is_within_the_wire_limit():
     # assert the actual token length rather than trusting the library.
     import secrets
     assert len(secrets.token_urlsafe(24)) == 32
+
+
+# ---------------------------------------------------------------------------
+# Wave 3b, task 3: only a valid, unconsumed receipt earns credit (F10).
+# One test per acceptance criterion the adversarial review named: no click,
+# expired, single use, another visitor's receipt, a bot's receipt, first
+# touch, and the legacy campaign key.
+#
+# `make_person` returns the whole person row, so every test below takes
+# `['id']` from it; the brief's sketch wrote `pid = make_person()`.
+# ---------------------------------------------------------------------------
+
+def test_no_click_gets_no_credit(make_campaign_link, make_person):
+    make_campaign_link()   # minted, never clicked
+    pid = make_person()['id']
+    with api_tx() as tx:
+        # A receipt-shaped value that was never minted earns nothing.
+        assert attribute_signup(tx, pid, 'not-a-real-receipt-value') is False
+        assert tx.execute("SELECT spotlight_ref FROM person WHERE id = %(p)s", dict(p=pid)).fetchone()['spotlight_ref'] is None
+
+
+def test_an_expired_receipt_gets_no_credit(make_campaign_link, make_person):
+    key = make_campaign_link(); pid = make_person()['id']
+    with api_tx() as tx:
+        _, r = record_click(tx, key, 'Mozilla/5.0 (iPhone)')
+        tx.execute("UPDATE campaign_click SET clicked_at = NOW() - interval '8 days' WHERE receipt = %(r)s", dict(r=r))
+    with api_tx() as tx:
+        assert attribute_signup(tx, pid, r) is False
+
+
+def test_a_receipt_is_single_use(make_campaign_link, make_person):
+    key = make_campaign_link(); a, b = make_person()['id'], make_person()['id']
+    with api_tx() as tx:
+        _, r = record_click(tx, key, 'Mozilla/5.0 (iPhone)')
+    with api_tx() as tx:
+        assert attribute_signup(tx, a, r) is True
+    with api_tx() as tx:
+        assert attribute_signup(tx, b, r) is False
+        assert tx.execute("SELECT spotlight_ref FROM person WHERE id = %(p)s", dict(p=b)).fetchone()['spotlight_ref'] is None
+
+
+def test_one_visitors_receipt_cannot_be_claimed_by_another(make_campaign_link, make_person):
+    # Two visitors click the same link. Each receipt credits only its own click row.
+    key = make_campaign_link(); a, b = make_person()['id'], make_person()['id']
+    with api_tx() as tx:
+        _, ra = record_click(tx, key, 'Mozilla/5.0 (iPhone)')
+        _, rb = record_click(tx, key, 'Mozilla/5.0 (Android)')
+    with api_tx() as tx:
+        assert attribute_signup(tx, a, ra) is True
+    with api_tx() as tx:
+        assert attribute_signup(tx, b, rb) is True
+    with api_tx() as tx:
+        rows = tx.execute("SELECT receipt, signup_person_id FROM campaign_click WHERE link_key = %(k)s ORDER BY id", dict(k=key)).fetchall()
+    assert {r['receipt']: r['signup_person_id'] for r in rows} == {ra: a, rb: b}
+
+
+def test_a_bot_receipt_does_not_exist_to_be_claimed(make_campaign_link, make_person):
+    key = make_campaign_link(); pid = make_person()['id']
+    with api_tx() as tx:
+        _, r = record_click(tx, key, 'facebookexternalhit/1.1')
+    assert r is None
+    with api_tx() as tx:
+        assert attribute_signup(tx, pid, 'anything') is False
+
+
+def test_first_touch_wins_and_does_not_consume_the_second_receipt(make_campaign_link, make_person):
+    k1, k2 = make_campaign_link(), make_campaign_link(); pid = make_person()['id']
+    with api_tx() as tx:
+        _, r1 = record_click(tx, k1, 'Mozilla/5.0 (iPhone)')
+        _, r2 = record_click(tx, k2, 'Mozilla/5.0 (iPhone)')
+    with api_tx() as tx:
+        assert attribute_signup(tx, pid, r1) is True
+    with api_tx() as tx:
+        assert attribute_signup(tx, pid, r2) is False
+        row = tx.execute("SELECT signup_person_id, consumed_at FROM campaign_click WHERE receipt = %(r)s", dict(r=r2)).fetchone()
+    assert row['signup_person_id'] is None and row['consumed_at'] is None
+
+
+def test_the_legacy_campaign_key_still_stamps_but_credits_nothing(make_campaign_link, make_person):
+    # Compatibility window only: an old web build sends the shared key.
+    key = make_campaign_link(); pid = make_person()['id']
+    with api_tx() as tx:
+        record_click(tx, key, 'Mozilla/5.0 (iPhone)')
+    with api_tx() as tx:
+        assert attribute_signup(tx, pid, key) is True
+        assert tx.execute("SELECT spotlight_ref FROM person WHERE id = %(p)s", dict(p=pid)).fetchone()['spotlight_ref'] == key
+        credited = tx.execute("SELECT count(*) AS n FROM campaign_click WHERE link_key = %(k)s AND signup_person_id IS NOT NULL", dict(k=key)).fetchone()['n']
+    assert credited == 0
