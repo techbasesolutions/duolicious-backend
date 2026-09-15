@@ -100,7 +100,10 @@ def test_invites_gate_candidates_and_creation(client, make_person):
     try:
         with api_tx() as tx: _set(tx, invites_enabled='false')
         body = client.get('/admin/growth/candidates', headers=H).get_json()
-        assert body == dict(welcomes=[], roundup_due=False, invites_enabled=False, invites_pending=0)
+        # Wave 3b, task 7: invites_pending_oldest_days rides alongside the
+        # count, None here since invites are paused and nothing is computed.
+        assert body == dict(welcomes=[], roundup_due=False, invites_enabled=False, invites_pending=0,
+                            invites_pending_oldest_days=None)
         r = client.post('/admin/growth/spotlight/welcome', json=dict(person_id=p['id']), headers=H)
         assert r.status_code == 409 and r.get_json() == dict(error='invites_paused')
         assert client.post('/admin/growth/spotlight/roundup', json={}, headers=H).status_code == 409

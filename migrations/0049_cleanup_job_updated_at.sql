@@ -1,0 +1,12 @@
+-- migrations/0049_cleanup_job_updated_at.sql
+-- Wave 3b, task 7. abandoned_job_rows() surfaces stuck cleanup jobs to an
+-- operator so an object key stuck in the bucket can be found without a
+-- database client; "when did this job last do anything" is part of that
+-- (a job abandoned five minutes ago and one abandoned five days ago read
+-- very differently). Nothing on this table currently tracks that: `created_at`
+-- is fixed at enqueue time and `next_attempt_at` is a future schedule, not a
+-- history of the job's own activity.
+--
+-- Idempotent. NOT NULL DEFAULT NOW() backfills every existing row in the
+-- same statement, so there is nothing left to update afterwards.
+ALTER TABLE cleanup_job ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT NOW();

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 import duotypes as t
-from flask import abort, request
+from flask import abort, jsonify, request
 
 from database import api_tx
 from service.admin import require_admin, record_audit
@@ -114,3 +114,15 @@ def get_admin_growth_email_status(s: t.SessionInfo, campaign: str, campaign_id: 
     from service.campaigns import outbox
     with api_tx('read committed') as tx:
         return outbox.status(tx, campaign, campaign_id)
+
+
+@aget('/admin/growth/emails/unknown')
+def get_admin_growth_emails_unknown(s: t.SessionInfo):
+    """Task 7 (Wave 3b): the cross-campaign view of F08's acceptance_unknown
+    mail. The status endpoint above answers the same question for one run,
+    but only for a campaign_id the operator already knows to ask about; this
+    lists every run that has at least one row genuinely stuck, without that."""
+    require_admin(s)
+    from service.campaigns import outbox
+    with api_tx('read committed') as tx:
+        return jsonify(outbox.unknown_summary(tx))

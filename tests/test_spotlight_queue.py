@@ -198,7 +198,16 @@ def test_create_candidate_appends_a_campaign_link_to_the_caption(make_person):
         assert link['kind'] == f'post:{rk}'
 
         record_click(tx, key, 'Mozilla/5.0 (iPhone)')
-        assert post_stats(tx, rk) == {'clicks': 1, 'signups': 0}
+        # Wave 3b, task 4: post_stats also splits by platform now; this click
+        # carried no `?p=` param, so it lands under 'unknown'.
+        assert post_stats(tx, rk) == {
+            'clicks': 1, 'signups': 0,
+            'by_platform': {
+                'facebook': {'clicks': 0, 'signups': 0},
+                'instagram': {'clicks': 0, 'signups': 0},
+                'unknown': {'clicks': 1, 'signups': 0},
+            },
+        }
 
 
 def _tile_payload(person_id, first_name):

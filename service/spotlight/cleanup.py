@@ -113,7 +113,7 @@ _Q_ENQUEUE = """
 # is blind to every other test's jobs and the suite is order-independent.
 _Q_DUE = """
     UPDATE cleanup_job
-       SET attempts = attempts + 1
+       SET attempts = attempts + 1, updated_at = NOW()
      WHERE id IN (
         SELECT id FROM cleanup_job
          WHERE state = 'pending' AND next_attempt_at <= NOW()
@@ -129,18 +129,18 @@ _Q_DUE = """
 # what a later reader needs to understand why a job was skipped or allowed.
 _Q_DONE = """
     UPDATE cleanup_job
-       SET state = 'done', done_at = NOW(), last_error = NULL,
+       SET state = 'done', done_at = NOW(), updated_at = NOW(), last_error = NULL,
            evidence = evidence || %(e)s::jsonb
      WHERE id = %(id)s
 """
 
 _Q_ABANDON = """
-    UPDATE cleanup_job SET state = 'abandoned', last_error = %(e)s WHERE id = %(id)s
+    UPDATE cleanup_job SET state = 'abandoned', updated_at = NOW(), last_error = %(e)s WHERE id = %(id)s
 """
 
 _Q_RETRY = """
     UPDATE cleanup_job
-       SET next_attempt_at = NOW() + make_interval(secs => %(s)s), last_error = %(e)s
+       SET next_attempt_at = NOW() + make_interval(secs => %(s)s), updated_at = NOW(), last_error = %(e)s
      WHERE id = %(id)s
 """
 
@@ -170,6 +170,20 @@ _Q_CLEAR_REVISION_KEY = """
 _Q_OUTSTANDING = "SELECT count(*) AS n FROM cleanup_job WHERE state = 'pending'"
 
 _Q_ABANDONED = "SELECT count(*) AS n FROM cleanup_job WHERE state = 'abandoned'"
+
+# Task 7 (Wave 3b): the count above says something is stuck; this is what
+# says WHICH object key, without an operator opening a database client to
+# find out. `updated_at` (migration 0049) is the last time anything actually
+# happened to the job -- a reservation bump, a retry, or the abandonment
+# itself -- so "newest first" here means "most recently gave up", not merely
+# "most recently created".
+_Q_ABANDONED_ROWS = """
+    SELECT id, kind, target, attempts, last_error, updated_at
+      FROM cleanup_job
+     WHERE state = 'abandoned'
+     ORDER BY updated_at DESC
+     LIMIT %(lim)s
+"""
 
 _Q_OVERDUE_REMOVALS = """
     SELECT count(*) AS n FROM spotlight_removal_task
@@ -278,6 +292,13 @@ def abandoned_jobs(tx) -> int:
     object that may still be sitting in the bucket with nothing in the
     database naming it as live."""
     return int(tx.execute(_Q_ABANDONED).fetchone()['n'])
+
+
+def abandoned_job_rows(tx, limit: int = 50) -> list[dict]:
+    """The rows behind `abandoned_jobs`'s count, newest-abandoned first, so
+    an operator can see which stored object keys are stuck without a
+    database client."""
+    return [dict(r) for r in tx.execute(_Q_ABANDONED_ROWS, dict(lim=limit)).fetchall()]
 
 
 def overdue_removals(tx) -> int:

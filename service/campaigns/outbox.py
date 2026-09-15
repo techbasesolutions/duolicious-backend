@@ -125,6 +125,20 @@ _Q_STATUS = """
      GROUP BY state
 """
 
+# Task 7 (Wave 3b): the cross-campaign view `status()` above cannot give,
+# since it requires the caller to already know the (campaign, campaign_id)
+# they are asking about. A row genuinely stuck in `acceptance_unknown` (F08)
+# needs a human either way; this is what lets one be found in the first
+# place. Grouped by run, not by campaign alone, since two different runs of
+# the same campaign are two different things to look at.
+_Q_UNKNOWN_SUMMARY = """
+    SELECT campaign, campaign_id, count(*) AS n
+      FROM email_outbox
+     WHERE state = 'acceptance_unknown'
+     GROUP BY campaign, campaign_id
+     ORDER BY max(reserved_at) DESC
+"""
+
 
 def enqueue(tx, *, campaign: str, campaign_id: str, person_id: int, email: str,
             subject: str, html: str, from_addr: str, unsub_scope: str,
@@ -341,3 +355,13 @@ def status(tx, campaign: str, campaign_id: str) -> dict[str, Any]:
         else:
             out['other'] = out.get('other', 0) + int(r['n'])
     return out
+
+
+def unknown_summary(tx) -> list[dict]:
+    """Every (campaign, campaign_id) run with at least one row genuinely
+    stuck in `acceptance_unknown`, newest first. `status()` above answers
+    the same question for one run, but only for a campaign_id the caller
+    already knows; this is the index that lets an operator find it without
+    that."""
+    return [dict(campaign=r['campaign'], campaign_id=r['campaign_id'], n=int(r['n']))
+            for r in tx.execute(_Q_UNKNOWN_SUMMARY).fetchall()]

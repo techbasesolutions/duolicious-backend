@@ -720,6 +720,47 @@ def test_candidates_and_welcome(client, make_person, monkeypatch):
     assert not any(w['person_id'] == p['id'] for w in c['welcomes'])
 
 
+def test_welcome_candidates_reoffers_after_cancellation_but_not_while_live(client, make_person):
+    """Task 7 (the write/read gap). `post_growth_spotlight_welcome`'s own
+    duplicate guard already lets a member whose welcome was cancelled be
+    offered a fresh one (fix wave item 5), but `_Q_WELCOME_CANDIDATES` still
+    filtered on kind alone, so that member never resurfaced in the /candidates
+    list an admin actually works from -- the write-side fix was unreachable.
+    A member whose welcome is still live (any non-cancelled status) must stay
+    hidden, exactly as before."""
+    cancelled = _make_eligible(make_person, name='ReofferAfterCancel', gender='Woman')
+    live = _make_eligible(make_person, name='StillLiveWelcome', gender='Woman')
+    with api_tx() as tx:
+        create_candidate(tx, kind='welcome', subject_person_id=cancelled['id'], caption='c', created_by='t')
+        tx.execute("UPDATE publishing_queue SET status = 'cancelled' WHERE subject_person_id = %(p)s",
+                   dict(p=cancelled['id']))
+        create_candidate(tx, kind='welcome', subject_person_id=live['id'], caption='c', created_by='t')
+    c = client.get('/admin/growth/candidates', headers=H).get_json()
+    ids = {w['person_id'] for w in c['welcomes']}
+    assert cancelled['id'] in ids
+    assert live['id'] not in ids
+
+
+def test_invites_pending_reports_the_oldest_backlog_age(client, make_person, monkeypatch):
+    """Task 7: `invites_pending` was a bare count; an operator had no way to
+    tell a one-day-old backlog from one that has been quietly ageing for
+    weeks. `invites_pending_oldest_days` is computed from the oldest still
+    withheld invite's `created_at` -- nothing is auto-cancelled, the age is
+    just made visible."""
+    import service.api.admin.spotlight_routes as sr
+    monkeypatch.setattr(sr, '_enqueue_card_ready', lambda tx, pid, rk: None)
+    p = _make_eligible(make_person, name='StalePendingInvite')
+    r = client.post('/admin/growth/spotlight/welcome', json={'person_id': p['id']}, headers=H)
+    assert r.status_code == 200
+    rk = r.get_json()['request_key']
+    with api_tx() as tx:
+        tx.execute("UPDATE publishing_queue SET created_at = NOW() - interval '5 days' WHERE request_key = %(rk)s",
+                   dict(rk=rk))
+    c = client.get('/admin/growth/candidates', headers=H).get_json()
+    assert c['invites_pending'] >= 1
+    assert c['invites_pending_oldest_days'] >= 5
+
+
 def test_settings_and_token_health(client, make_person):
     admin = _make_admin(make_person); tok = _session_for(admin)
     A = {'Authorization': f'Bearer {tok}'}; H = {'X-Growth-Cron': 'test-cron-secret'}

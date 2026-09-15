@@ -315,6 +315,51 @@ def test_suppressed_domain_reduces_e1_recipient_count(make_person):
 # endpoint reads via getattr(mod, 'CAP_DAYS', 7).
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Task 7: the cross-campaign view of F08's acceptance_unknown mail. The
+# per-run status endpoint above requires the operator to already know the
+# campaign_id they are looking for; this is the index that lets them find it.
+# ---------------------------------------------------------------------------
+
+def test_unknown_mail_summary_lists_every_run_with_acceptance_unknown_rows(client, admin, make_person):
+    p = make_person(name='UnknownMailTarget')
+    email = _sendable_email(p['id'], 'unknown-mail')
+    cid = f'e1-unknown-{uuid.uuid4().hex[:8]}'
+    with api_tx() as tx:
+        tx.execute(
+            """INSERT INTO email_outbox (campaign, campaign_id, person_id, email, payload,
+                                          unsub_scope, state, reserved_at)
+               VALUES ('e1', %(cid)s, %(pid)s, %(email)s, '{}'::jsonb, 'notifications',
+                       'acceptance_unknown', NOW())""",
+            dict(cid=cid, pid=p['id'], email=email))
+    r = client.get('/admin/growth/emails/unknown', headers=admin['headers'])
+    assert r.status_code == 200
+    rows = r.get_json()
+    mine = next((row for row in rows if row['campaign_id'] == cid), None)
+    assert mine is not None
+    assert mine['campaign'] == 'e1'
+    assert mine['n'] == 1
+
+
+def test_unknown_mail_summary_omits_runs_with_no_unknown_rows(client, admin, make_person):
+    p = make_person(name='ResolvedMailTarget')
+    email = _sendable_email(p['id'], 'resolved-mail')
+    cid = f'e1-resolved-{uuid.uuid4().hex[:8]}'
+    with api_tx() as tx:
+        tx.execute(
+            """INSERT INTO email_outbox (campaign, campaign_id, person_id, email, payload,
+                                          unsub_scope, state, sent_at)
+               VALUES ('e1', %(cid)s, %(pid)s, %(email)s, '{}'::jsonb, 'notifications',
+                       'accepted', NOW())""",
+            dict(cid=cid, pid=p['id'], email=email))
+    rows = client.get('/admin/growth/emails/unknown', headers=admin['headers']).get_json()
+    assert not any(row['campaign_id'] == cid for row in rows)
+
+
+def test_unknown_mail_summary_requires_admin(client, member):
+    assert client.get('/admin/growth/emails/unknown', headers=member['headers']).status_code == 403
+
+
 def test_e2_dry_run_send_endpoint_respects_the_six_day_cap(client, admin, make_person, monkeypatch):
     """Through the real admin send endpoint (not run_campaign() directly):
     a member mailed 6.5 days ago is due again under the 6-day weekly cap,

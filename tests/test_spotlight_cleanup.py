@@ -407,6 +407,46 @@ def test_abandoned_jobs_are_counted_on_the_removals_surface(client):
     assert after['abandoned_cleanup'] == before['abandoned_cleanup'] + 1
 
 
+def test_abandoned_job_rows_are_listed_on_the_removals_endpoint(client):
+    """Task 7. The count alone told an operator something was stuck without
+    saying what -- finding the object key meant opening a database client.
+    `abandoned_job_rows` (surfaced here as `abandoned`) answers that."""
+    key = _pfx() + 'abandoned-instagram.png'
+    with api_tx() as tx:
+        row = tx.execute(
+            """INSERT INTO cleanup_job (kind, target, state, attempts, last_error)
+               VALUES ('asset_delete', %(k)s, 'abandoned', 10, 'deletion not confirmed by storage')
+               RETURNING id""",
+            dict(k=key)).fetchone()
+        job_id = row['id']
+    body = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
+    assert 'abandoned' in body
+    mine = next((r for r in body['abandoned'] if r['id'] == job_id), None)
+    assert mine is not None
+    assert mine['kind'] == 'asset_delete'
+    assert mine['target'] == key
+    assert mine['attempts'] == 10
+    assert mine['last_error'] == 'deletion not confirmed by storage'
+    assert 'updated_at' in mine and mine['updated_at']
+
+
+def test_abandoned_job_rows_helper_orders_newest_first():
+    """Direct unit coverage of the helper the route above wraps."""
+    from service.spotlight import cleanup as cl
+    k1, k2 = _pfx() + 'older.png', _pfx() + 'newer.png'
+    with api_tx() as tx:
+        tx.execute("INSERT INTO cleanup_job (kind, target, state, last_error) "
+                   "VALUES ('asset_delete', %(k)s, 'abandoned', 'x')", dict(k=k1))
+        tx.execute("INSERT INTO cleanup_job (kind, target, state, last_error) "
+                   "VALUES ('asset_delete', %(k)s, 'abandoned', 'y')", dict(k=k2))
+        tx.execute("UPDATE cleanup_job SET updated_at = NOW() - interval '1 hour' WHERE target = %(k)s",
+                   dict(k=k1))
+    with api_tx('read committed') as tx:
+        rows = cl.abandoned_job_rows(tx, limit=200)
+    targets = [r['target'] for r in rows if r['target'] in (k1, k2)]
+    assert targets == [k2, k1]
+
+
 def test_withdrawal_enqueues_cancelled_keys_instead_of_deleting(make_person):
     p = _make_eligible(make_person)
     with api_tx() as tx:

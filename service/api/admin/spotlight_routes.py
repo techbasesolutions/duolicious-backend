@@ -52,8 +52,8 @@ from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      SETTING_KEYS, FREE_KEYS)
 from service.spotlight.assets import asset_key, attach_platform_image, complete_render_if_ready
 from service.spotlight import cleanup
-from service.spotlight.cleanup import (abandoned_jobs, enqueue_asset_delete, is_referenced,
-                                       outstanding_jobs, overdue_removals)
+from service.spotlight.cleanup import (abandoned_job_rows, abandoned_jobs, enqueue_asset_delete,
+                                       is_referenced, outstanding_jobs, overdue_removals)
 from service.spotlight.revisions import consent_complete, create_revision, edit_caption
 from service.spotlight.roundup import roundup_snapshot
 from service.spotlight.storage import InvalidImage
@@ -354,13 +354,22 @@ _Q_ROWS = f"""
 # Task 9 (F12): the welcome cohort is defined by sign-up time, not opt-in
 # time -- opt-in can happen long after signing up (or be re-toggled), so
 # ordering by it let a member who opted in years ago resurface as "new".
+#
+# Task 7 (Wave 3b): `q.status <> 'cancelled'` matches the guard
+# post_growth_spotlight_welcome's own duplicate check already applies (fix
+# wave item 5). A cancelled request is a request that did not happen, so a
+# member whose welcome was cancelled is not a duplicate -- without this
+# clause the write side would let them be offered a fresh welcome, but this
+# read side (what the admin's /candidates list is actually built from) hid
+# them forever, making that fix unreachable from the admin.
 _Q_WELCOME_CANDIDATES = """
     SELECT p.id, p.name
       FROM person p
      WHERE p.sign_up_time > NOW() - interval '14 days'
        AND p.spotlight_opt_in IS TRUE
        AND NOT EXISTS (SELECT 1 FROM publishing_queue q
-                        WHERE q.subject_person_id = p.id AND q.kind = 'welcome')
+                        WHERE q.subject_person_id = p.id AND q.kind = 'welcome'
+                          AND q.status <> 'cancelled')
      ORDER BY p.sign_up_time
      LIMIT 50
 """
@@ -389,6 +398,16 @@ _Q_INVITES_PENDING_PREDICATE = """
 
 _Q_INVITES_PENDING_COUNT = f"""
     SELECT count(DISTINCT q.request_key) AS n FROM publishing_queue q WHERE {_Q_INVITES_PENDING_PREDICATE}
+"""
+
+# Task 7 (Wave 3b): the count alone cannot tell a one-day-old backlog from a
+# two-week-old one. Computed in SQL (not by reading `created_at` back into
+# Python and subtracting) so a null oldest (nothing pending) answers None
+# without a separate branch. Nothing here cancels anything -- the backlog is
+# only made visible, not swept.
+_Q_INVITES_PENDING_OLDEST_DAYS = f"""
+    SELECT floor(extract(epoch FROM NOW() - MIN(q.created_at)) / 86400)::int AS days
+      FROM publishing_queue q WHERE {_Q_INVITES_PENDING_PREDICATE}
 """
 
 _Q_INVITES_PENDING_ROWS = f"""
@@ -847,7 +866,8 @@ def get_growth_candidates():
         # Task 9 (F12): invites off means no new welcome or roundup should
         # even be suggested, not just refused on creation.
         if settings(tx).get('invites_enabled') != 'true':
-            return dict(welcomes=[], roundup_due=False, invites_enabled=False, invites_pending=0)
+            return dict(welcomes=[], roundup_due=False, invites_enabled=False, invites_pending=0,
+                        invites_pending_oldest_days=None)
         rows = tx.execute(_Q_WELCOME_CANDIDATES).fetchall()
         welcomes = []
         for r in rows:
@@ -859,10 +879,12 @@ def get_growth_candidates():
         # invite-pending will drain once they open, so the tick (and a human
         # on the Growth tab) can see the backlog building before that.
         invites_pending = int(tx.execute(_Q_INVITES_PENDING_COUNT).fetchone()['n'])
+        # Task 7 (Wave 3b): the backlog's age, not just its size.
+        invites_pending_oldest_days = tx.execute(_Q_INVITES_PENDING_OLDEST_DAYS).fetchone()['days']
     # Monday is weekday() == 0.
     roundup_due = datetime.now(timezone.utc).weekday() == 0 and not recent_roundup
     return dict(welcomes=welcomes, roundup_due=roundup_due, invites_enabled=True,
-                invites_pending=invites_pending)
+                invites_pending=invites_pending, invites_pending_oldest_days=invites_pending_oldest_days)
 
 
 @post('/admin/growth/spotlight/welcome', limiter=growth_limit)
@@ -1088,6 +1110,11 @@ def get_growth_removals():
         # either, so this count is the only thing that surfaces it. Read under
         # the stop for the same reason as the two above.
         abandoned_cleanup = abandoned_jobs(tx)
+        # Task 7 (Wave 3b): the rows behind that count -- which object keys
+        # are stuck, not just how many -- so an operator does not need a
+        # database client to find one. Read under the same stop, for the
+        # same reason as the count.
+        abandoned = abandoned_job_rows(tx)
         # Fix round 1 ruling 2: same reasoning -- a render stuck behind a
         # parked sibling is exactly the kind of backlog that must stay
         # visible under the stop, not disappear along with the task list.
@@ -1095,6 +1122,7 @@ def get_growth_removals():
     return jsonify({'tasks': [_row(r) for r in rows], 'halted': halted,
                     'overdue': overdue, 'outstanding_cleanup': outstanding_cleanup,
                     'abandoned_cleanup': abandoned_cleanup,
+                    'abandoned': [_row(r) for r in abandoned],
                     'render_blocked': render_blocked})
 
 
