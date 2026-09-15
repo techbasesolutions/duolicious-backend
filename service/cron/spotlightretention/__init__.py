@@ -46,7 +46,7 @@ def retention_sweep(tx) -> int:
     confirmed = delete_images(keys)
     print(f'spotlight_retention: confirmed {len(confirmed)}/{len(keys)} image(s) deleted from storage')
     tx.execute(
-        """UPDATE publishing_queue SET image_key = NULL, image_url = NULL
+        """UPDATE publishing_queue SET image_key = NULL, image_url = NULL, image_sha256 = NULL
             WHERE id = ANY(%(ids)s::uuid[])""",
         dict(ids=[str(r['id']) for r in rows]))
     return len(rows)

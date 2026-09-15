@@ -15,13 +15,15 @@ def test_retention_sweeps_old_published_rows(monkeypatch):
         # this suite, unlike e.g. make_person's uuid4-per-row emails), so a
         # literal request_key must be cleaned up first to stay rerunnable.
         tx.execute("DELETE FROM publishing_queue WHERE request_key IN ('old1', 'new1')")
-        tx.execute("""INSERT INTO publishing_queue (request_key, kind, platform, status, image_key, image_url, updated_at)
-                      VALUES ('old1', 'roundup', 'facebook', 'published', 'spotlight/old1-facebook.png', 'https://cdn/old1', NOW() - interval '100 days'),
-                             ('new1', 'roundup', 'facebook', 'published', 'spotlight/new1-facebook.png', 'https://cdn/new1', NOW() - interval '10 days')""")
+        tx.execute("""INSERT INTO publishing_queue (request_key, kind, platform, status, image_key, image_url, image_sha256, updated_at)
+                      VALUES ('old1', 'roundup', 'facebook', 'published', 'spotlight/old1-facebook.png', 'https://cdn/old1', 'oldsha', NOW() - interval '100 days'),
+                             ('new1', 'roundup', 'facebook', 'published', 'spotlight/new1-facebook.png', 'https://cdn/new1', 'newsha', NOW() - interval '10 days')""")
         n = retention_sweep(tx)
-        rows = {r['request_key']: r for r in tx.execute("SELECT request_key, image_key FROM publishing_queue WHERE request_key IN ('old1','new1')").fetchall()}
+        rows = {r['request_key']: r for r in tx.execute("SELECT request_key, image_key, image_sha256 FROM publishing_queue WHERE request_key IN ('old1','new1')").fetchall()}
     assert n >= 1 and 'spotlight/old1-facebook.png' in deleted and 'spotlight/new1-facebook.png' not in deleted
     assert rows['old1']['image_key'] is None and rows['new1']['image_key'] is not None
+    # Fix round 1 (ruling 2): image_sha256 is cleared wherever image_key is.
+    assert rows['old1']['image_sha256'] is None and rows['new1']['image_sha256'] == 'newsha'
     assert RETENTION_DAYS == 90
 
 

@@ -257,7 +257,7 @@ def withdraw_member(tx, person_id: int, reason: str) -> dict:
         # rather than a single queue-row action.
         tx.execute(
             f"""UPDATE publishing_queue SET status = 'awaiting_render', image_key = NULL, image_url = NULL,
-                      updated_at = NOW()
+                      image_sha256 = NULL, updated_at = NOW()
                 WHERE request_key = %(rk)s AND {_REISSUABLE.format(q='')}""",
             dict(rk=request_key))
         # Task 5 moves this onto the cleanup job; for now the confirmed

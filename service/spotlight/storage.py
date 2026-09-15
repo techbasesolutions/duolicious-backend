@@ -15,11 +15,14 @@ an already-uploaded object over once approval lands. `presign` hands out a
 short-lived read URL for a private object (an admin preview, or a member's
 own approval screen) without ever making the object itself public.
 
-Unlike deletion, every write here (`put_png`, `make_public`, `presign`)
-fails loudly -- `RuntimeError('storage_unconfigured')` -- when the object
-store is unconfigured, rather than silently no-op'ing: a dropped upload or
-ACL change would let a card's row believe it has a reachable image when it
-does not, which deletion's silent skip never risks.
+Unlike deletion, the two actual writes here (`put_png`, `make_public`) fail
+loudly -- `RuntimeError('storage_unconfigured')` -- when the object store is
+unconfigured, rather than silently no-op'ing: a dropped upload or ACL
+change would let a card's row believe it has a reachable image when it does
+not, which deletion's silent skip never risks. `presign` is not a write --
+it is a local, purely computed signature, safe to call from inside a
+transaction -- so it degrades to returning None instead (fix round 1,
+ruling 5).
 """
 from __future__ import annotations
 
@@ -141,17 +144,21 @@ def make_public(key: str) -> None:
     _bucket().Object(key).put_object_acl(ACL='public-read')
 
 
-def presign(key: str, seconds: int = 900) -> str:
+def presign(key: str, seconds: int = 900) -> str | None:
     """A short-lived signed read URL for a private object -- an admin
     preview, or a member's own approval screen -- without ever making the
     object itself public.
 
-    Fix round 1: raises `RuntimeError('storage_unconfigured')` up front,
-    before ever touching `_bucket()`, when the object store is unconfigured
-    -- a URL minted against nothing would not actually resolve, so failing
-    loudly here is the same call as `put_png` and `make_public`."""
+    Fix round 1 (ruling 5): unlike `put_png` and `make_public`, an
+    unconfigured store returns None here rather than raising. Signing a URL
+    is a local, purely computed operation (boto3 builds and signs it against
+    the credentials it already holds; nothing crosses the network to do it),
+    so it is safe to call from inside a transaction -- `card_state` does,
+    every time it reads a rendered card. Raising here would abort that
+    transaction just to render a preview link; returning None lets the
+    caller degrade to no preview instead."""
     if not _configured():
-        raise RuntimeError('storage_unconfigured')
+        return None
     bucket = _bucket()
     return bucket.meta.client.generate_presigned_url(
         'get_object', Params={'Bucket': bucket.name, 'Key': key}, ExpiresIn=seconds)

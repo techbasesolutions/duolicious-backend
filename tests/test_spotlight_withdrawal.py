@@ -216,6 +216,97 @@ def test_reissue_leaves_a_published_sibling_row_untouched(make_person):
         assert [(t['platform'], t['external_post_id']) for t in tasks] == [('facebook', 'fb-1')]
 
 
+def test_reissue_clears_sha256_so_a_partial_reupload_does_not_complete(make_person):
+    """Fix round 1 (ruling 2): image_sha256 is cleared everywhere image_key
+    is, including this re-issue reset -- otherwise a stale image_sha256
+    surviving the reset could let a platform that was never re-rendered
+    (its image_key genuinely NULL, but a leftover hash from the old
+    revision) silently look complete once the other platform's fresh
+    upload lands. Re-issuing after a full render, then uploading only
+    facebook, must leave the set NOT ready: instagram stays
+    awaiting_render with no image_sha256, and the revision's asset_hash
+    stays NULL."""
+    from service.spotlight.assets import asset_key, attach_platform_image, complete_render_if_ready
+    a = _make_eligible(make_person, name='A'); b = _make_eligible(make_person, name='B', gender='Man')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='r', created_by='t')
+        rev = current_revision(tx, rk)
+        create_revision(tx, rk, caption='r', photo_uuid=None,
+                        participants=[dict(person_id=a['id']), dict(person_id=b['id'])],
+                        channels=rev['channels'], created_by='t')
+        rev2 = current_revision(tx, rk)
+        fb_key = asset_key(rk, rev2['id'], 'oldsha', 'facebook')
+        ig_key = asset_key(rk, rev2['id'], 'oldsha', 'instagram')
+        assert attach_platform_image(tx, rk, 'facebook', rev2['id'], fb_key, 'https://cdn/fb.png', 'oldsha') == 'attached'
+        assert attach_platform_image(tx, rk, 'instagram', rev2['id'], ig_key, 'https://cdn/ig.png', 'oldsha') == 'attached'
+        assert complete_render_if_ready(tx, rk, rev2['id']) is True
+
+        withdraw_member(tx, a['id'], 'account_deletion')
+        new_rev = current_revision(tx, rk)
+        assert new_rev['id'] != rev2['id'] and new_rev['asset_hash'] is None
+        rows = {r['platform']: r for r in tx.execute(
+            "SELECT platform, image_key, image_sha256 FROM publishing_queue WHERE request_key = %(rk)s",
+            dict(rk=rk)).fetchall()}
+        assert rows['facebook']['image_key'] is None and rows['facebook']['image_sha256'] is None
+        assert rows['instagram']['image_key'] is None and rows['instagram']['image_sha256'] is None
+
+        # Upload facebook only -- the set must not read as ready.
+        fb_key2 = asset_key(rk, new_rev['id'], 'newsha', 'facebook')
+        assert attach_platform_image(tx, rk, 'facebook', new_rev['id'], fb_key2, 'https://cdn/fb2.png', 'newsha') == 'attached'
+        assert complete_render_if_ready(tx, rk, new_rev['id']) is False
+        rows2 = {r['platform']: r for r in tx.execute(
+            "SELECT platform, status, image_sha256 FROM publishing_queue WHERE request_key = %(rk)s",
+            dict(rk=rk)).fetchall()}
+        assert rows2['instagram']['status'] == 'awaiting_render' and rows2['instagram']['image_sha256'] is None
+        assert current_revision(tx, rk)['asset_hash'] is None
+
+
+def test_reissued_row_completes_render_ignoring_published_sibling(make_person):
+    """Fix round 1 (ruling 3): complete_render_if_ready only considers rows
+    still in an uploadable status (awaiting_member/awaiting_render/review).
+    Continues test_reissue_leaves_a_published_sibling_row_untouched's setup:
+    facebook is published on the OLD revision, instagram was re-issued onto
+    a brand new one. Uploading instagram must complete the set and attach
+    the render to the NEW revision, without the published facebook sibling
+    (a different revision entirely) blocking it or being pinned into it."""
+    from service.spotlight.assets import asset_key, attach_platform_image, complete_render_if_ready
+    a = _make_eligible(make_person, name='A')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='r', created_by='t')
+        rev = current_revision(tx, rk)
+        create_revision(tx, rk, caption='r', photo_uuid=None, participants=[dict(person_id=a['id'])], channels=rev['channels'], created_by='t')
+        rev2 = current_revision(tx, rk)
+        tx.execute("""UPDATE publishing_queue SET status = 'published', external_post_id = 'fb-1',
+                             image_key = 'spotlight/live.png', image_url = 'https://cdn/live.png', delivery_state = 'published'
+                       WHERE request_key = %(rk)s AND platform = 'facebook'""", dict(rk=rk))
+        tx.execute("""UPDATE publishing_queue SET status = 'review', image_key = 'spotlight/pending.png',
+                             image_url = 'https://cdn/pending.png'
+                       WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk))
+        withdraw_member(tx, a['id'], 'account_deletion')
+        # current_revision(tx, rk) is ambiguous once the two platform rows
+        # point at DIFFERENT revisions on purpose (the published sibling
+        # keeps its own, older one) -- it has no ORDER BY and either row
+        # could win, so the instagram row's own current_revision_id is read
+        # directly instead.
+        ig_row = tx.execute(
+            "SELECT current_revision_id FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'instagram'",
+            dict(rk=rk)).fetchone()
+        new_rev_id = ig_row['current_revision_id']
+        assert new_rev_id != rev2['id']
+
+        ig_key = asset_key(rk, new_rev_id, 'igsha', 'instagram')
+        assert attach_platform_image(tx, rk, 'instagram', new_rev_id, ig_key, 'https://cdn/ig.png', 'igsha') == 'attached'
+        assert complete_render_if_ready(tx, rk, new_rev_id) is True
+
+        attached = tx.execute("SELECT asset_hash, image_key FROM spotlight_revision WHERE id = %(id)s",
+                              dict(id=new_rev_id)).fetchone()
+        assert attached['asset_hash'] == 'igsha' and attached['image_key'] == ig_key
+        fb = tx.execute("SELECT status, image_key, current_revision_id FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
+                        dict(rk=rk)).fetchone()
+        assert fb['status'] == 'published' and fb['image_key'] == 'spotlight/live.png'
+        assert fb['current_revision_id'] == rev2['id']
+
+
 def test_published_roundup_participant_files_removal_task(make_person):
     a = _make_eligible(make_person, name='A')
     with api_tx() as tx:

@@ -822,7 +822,7 @@ def post_growth_removal_done(removal_id: int):
             dict(i=removal_id)).rowcount
         if updated and row and row['image_key']:
             tx.execute(
-                """UPDATE publishing_queue SET image_key = NULL, image_url = NULL
+                """UPDATE publishing_queue SET image_key = NULL, image_url = NULL, image_sha256 = NULL
                     WHERE id = (SELECT queue_id FROM spotlight_removal_task WHERE id = %(i)s)""",
                 dict(i=removal_id))
         _audit(tx, s, 'growth.removal.done', removal_id=removal_id)
@@ -882,11 +882,18 @@ def post_growth_queue_approve(s: t.SessionInfo, qid: str):
     own call, when it in turn is ready). The object behind this row's own
     image_key is private until this point (Wave 2 F09); it is only made
     public here, AFTER the status/scheduling transaction commits, so a
-    Spaces call never runs inside a transaction. A storage failure at that
-    point answers 503 and reverts this row alone back to `review` in a
-    second, short transaction -- the scheduling decision that already
-    committed is undone rather than left to lie about what is actually
-    reachable."""
+    Spaces call never runs inside a transaction.
+
+    Fix round 1 (ruling 1): a storage failure at that point reverts this row
+    alone back to `review` in a second, short transaction -- but ONLY when
+    it is still sitting where this call left it (`status = 'scheduled'`).
+    The upload/make_public round trip is a real gap in time; the row can be
+    claimed into `processing` (or, rarely, already `published`) by the
+    worker in between. Reverting THAT row to `review` would rewrite a
+    status the worker itself now owns, out from under it. When the revert's
+    own WHERE matches zero rows, nothing is touched, the answer carries
+    `in_flight: true`, and the audit action says so (`...storage_failed_in_flight`)
+    instead of `...reverted`."""
     require_admin(s)
     queue_id = _qid(qid)
     requested = _parse_dt(_body().get('scheduled_for'))
@@ -912,11 +919,16 @@ def post_growth_queue_approve(s: t.SessionInfo, qid: str):
             st.make_public(row['image_key'])
         except Exception:
             with api_tx() as tx:
-                tx.execute(
-                    "UPDATE publishing_queue SET status = 'review', updated_at = NOW() WHERE id = %(id)s",
+                cur = tx.execute(
+                    """UPDATE publishing_queue SET status = 'review', scheduled_for = NULL, updated_at = NOW()
+                        WHERE id = %(id)s AND status = 'scheduled'""",
                     dict(id=queue_id))
-                _audit(tx, s, 'growth.queue.approve.reverted', queue_id=str(queue_id))
-            return dict(error='storage_unavailable'), 503
+                in_flight = not cur.rowcount
+                if in_flight:
+                    _audit(tx, s, 'growth.queue.approve.storage_failed_in_flight', queue_id=str(queue_id))
+                else:
+                    _audit(tx, s, 'growth.queue.approve.reverted', queue_id=str(queue_id))
+            return dict(error='storage_unavailable', in_flight=in_flight), 503
     return dict(status='scheduled', scheduled_for=when.isoformat())
 
 

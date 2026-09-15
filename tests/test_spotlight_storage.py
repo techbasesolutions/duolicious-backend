@@ -142,13 +142,17 @@ def test_make_public_unconfigured_raises(monkeypatch):
         st.make_public('k')
 
 
-def test_presign_unconfigured_raises(monkeypatch):
-    """Fix round 1. `_bucket` is made to raise if it is ever called, to
-    prove the failure happens before any network attempt."""
+def test_presign_returns_none_when_unconfigured(monkeypatch):
+    """Fix round 1 (ruling 5): unlike put_png/make_public, an unconfigured
+    store degrades presign to None rather than raising -- it is a local,
+    purely computed signature (no network call), safe to call from inside a
+    transaction the way card_state does, and a raise there would abort that
+    transaction just to render a preview link. `_bucket` is made to raise if
+    it is ever called, to prove the None answer happens before any network
+    attempt."""
     monkeypatch.setattr(st, '_configured', lambda: False)
     monkeypatch.setattr(st, '_bucket', lambda: (_ for _ in ()).throw(AssertionError('_bucket must not be called')))
-    with pytest.raises(RuntimeError, match='storage_unconfigured'):
-        st.presign('k')
+    assert st.presign('k') is None
 
 
 def test_delete_images_swallows_errors(monkeypatch):

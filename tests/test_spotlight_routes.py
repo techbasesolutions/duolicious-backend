@@ -428,10 +428,47 @@ def test_approve_makes_the_row_image_public_after_commit(client, make_person, mo
         qid2 = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'instagram'",
                           dict(rk=rk)).fetchone()['id']
     r = client.post(f'/admin/growth/queue/{qid2}/approve', json={}, headers=A)
-    assert r.status_code == 503 and r.get_json() == dict(error='storage_unavailable')
+    assert r.status_code == 503 and r.get_json() == dict(error='storage_unavailable', in_flight=False)
     with api_tx('read committed') as tx:
         assert tx.execute("SELECT status FROM publishing_queue WHERE id = %(id)s",
                           dict(id=qid2)).fetchone()['status'] == 'review'
+
+
+def test_approve_revert_is_skipped_when_the_row_moved_before_storage_failed(client, make_person, monkeypatch):
+    """Fix round 1 (ruling 1): make_public's network round trip is a real
+    gap in time. If the row is claimed into `processing` (or otherwise moved
+    off `scheduled`) before the failure is even caught, the revert's own
+    WHERE must not match -- rewriting a status the worker now owns would be
+    a lie, not a fix. The response says so (`in_flight: true`) and the row
+    is left exactly where the race left it, scheduled_for included."""
+    import service.spotlight.storage as st
+    admin = _make_admin(make_person)
+    A = {'Authorization': f'Bearer {_session_for(admin)}'}
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        _render(tx, rk, key=f'spotlight/{rk}/1-abc-facebook.png')
+        record_consent(tx, current_revision(tx, rk)['id'], p['id'], 'subject')
+        qid = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
+                         dict(rk=rk)).fetchone()['id']
+
+    def boom_after_claim(key):
+        # Stands in for the worker claiming the lease while make_public's
+        # own network round trip is in flight. Safe to open a transaction
+        # here: the route holds none while make_public runs.
+        with api_tx() as tx:
+            tx.execute(
+                "UPDATE publishing_queue SET status = 'processing', lease_until = NOW() + interval '5 minutes' WHERE id = %(id)s",
+                dict(id=qid))
+        raise RuntimeError('spaces down')
+
+    monkeypatch.setattr(st, 'make_public', boom_after_claim)
+    r = client.post(f'/admin/growth/queue/{qid}/approve', json={}, headers=A)
+    assert r.status_code == 503 and r.get_json() == dict(error='storage_unavailable', in_flight=True)
+    with api_tx('read committed') as tx:
+        row = tx.execute("SELECT status, scheduled_for FROM publishing_queue WHERE id = %(id)s",
+                         dict(id=qid)).fetchone()
+    assert row['status'] == 'processing' and row['scheduled_for'] is not None
 
 
 def test_admin_approve_default_slot_and_purge(client, make_person, monkeypatch):
@@ -526,7 +563,8 @@ def test_removal_done_deletes_stored_image(client, make_person, monkeypatch):
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         tx.execute("""UPDATE publishing_queue
                          SET status = 'published', external_post_id = 'ig-2',
-                             image_key = 'spotlight/removed.png', image_url = 'https://cdn/removed.png'
+                             image_key = 'spotlight/removed.png', image_url = 'https://cdn/removed.png',
+                             image_sha256 = 'removedsha'
                        WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk))
         set_spotlight_opt_in(tx, p['id'], False)
     H = {'X-Growth-Cron': 'test-cron-secret'}
@@ -534,9 +572,11 @@ def test_removal_done_deletes_stored_image(client, make_person, monkeypatch):
     assert client.post(f"/admin/growth/removals/{task['id']}/done", json={}, headers=H).status_code == 200
     assert deleted == ['spotlight/removed.png']
     with api_tx('read committed') as tx:
-        row = tx.execute("""SELECT image_key, image_url FROM publishing_queue
+        row = tx.execute("""SELECT image_key, image_url, image_sha256 FROM publishing_queue
                              WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk)).fetchone()
     assert row['image_key'] is None and row['image_url'] is None
+    # Fix round 1 (ruling 2): image_sha256 is cleared wherever image_key is.
+    assert row['image_sha256'] is None
 
 
 def test_candidates_and_welcome(client, make_person, monkeypatch):

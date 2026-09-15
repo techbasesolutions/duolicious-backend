@@ -139,7 +139,10 @@ def card_state(tx, request_key: str) -> dict | None:
         # the member's own preview link is a short-lived presigned read, not
         # the (not yet public) stored URL -- minted fresh on every GET rather
         # than cached, since a 15-minute link handed out on an earlier read
-        # could already be expired by the time this one is served.
+        # could already be expired by the time this one is served. `presign`
+        # is a local, purely computed signature (fix round 1, ruling 5), so
+        # calling it from inside this function's own transaction is safe; an
+        # unconfigured store degrades to None here rather than raising.
         image_url=(st.presign(rev['image_key']) if rev and rev['image_key'] else None),
         consented=consented,
     )
