@@ -306,6 +306,9 @@ _Q_ROWS = f"""
            q.status,
            q.caption,
            q.image_url,
+           q.image_key,
+           q.post_url,
+           q.delivery_state,
            q.scheduled_for,
            q.attempts,
            q.external_post_id,
@@ -527,6 +530,13 @@ def _queue_row(r, consent_ok: Optional[bool] = None) -> dict:
         status=r['status'],
         caption=r['caption'],
         image_url=r['image_url'],
+        # `preview_url` defaults to the public `image_url`; the caller
+        # (get_growth_queue) overwrites it with a presigned URL once the
+        # transaction that produced these rows has closed, since storage
+        # calls must never run inside an open api_tx.
+        preview_url=r['image_url'],
+        post_url=r['post_url'],
+        delivery_state=r['delivery_state'],
         scheduled_for=_plain(r['scheduled_for']),
         attempts=r['attempts'],
         external_post_id=r['external_post_id'],
@@ -574,6 +584,14 @@ def get_growth_queue():
             if rid is not None and rid not in cache:
                 cache[rid] = consent_complete(tx, rid)
             out.append(_queue_row(r, cache.get(rid)))
+    # Presigning talks to storage (an outbound call), which must never run
+    # inside an open api_tx (the api connection lock is not reentrant), so
+    # this runs after the block above rather than inside _queue_row.
+    from service.spotlight import storage
+    for r, row in zip(rows, out):
+        key = r['image_key']
+        if key:
+            row['preview_url'] = storage.presign(key) or row['image_url']
     return jsonify(out)
 
 
@@ -1493,6 +1511,7 @@ def get_growth_spotlight_suggest(s: t.SessionInfo):
                 country=r['country'],
                 photo_url=photo_url(uuid_value) if uuid_value else None,
                 reason=_suggest_reason(r['spotlight_last_featured_at']),
+                suggested_caption=_member_of_week_caption(r['first_name'], r['age'], r['country']),
             ))
             if len(out) == 3:
                 break

@@ -1365,3 +1365,44 @@ def test_e4_enqueue_failure_takes_the_candidate_with_it(client, make_person, mon
     finally:
         with api_tx() as tx:
             set_setting(tx, 'approvals_enabled', 'false')
+
+
+# ---------------------------------------------------------------------------
+# Growth tab read-side fields (Wave 3, Task 1)
+# ---------------------------------------------------------------------------
+
+def test_queue_row_carries_preview_post_url_and_delivery_state(client, make_person, monkeypatch):
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, 'presign', lambda key, seconds=900: f'https://signed.test/{key}')
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute(
+            "UPDATE publishing_queue SET image_key = 'spotlight/k/1-abc-facebook.png', "
+            "post_url = 'https://www.facebook.com/1', delivery_state = 'published' "
+            "WHERE request_key = %(rk)s", dict(rk=rk))
+    rows = client.get('/admin/growth/queue', headers=H).get_json()
+    row = next(r for r in rows if r['request_key'] == rk)
+    assert row['preview_url'] == 'https://signed.test/spotlight/k/1-abc-facebook.png'
+    assert row['post_url'] == 'https://www.facebook.com/1'
+    assert row['delivery_state'] == 'published'
+
+
+def test_queue_row_preview_falls_back_to_image_url_without_key(client, make_person):
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute(
+            "UPDATE publishing_queue SET image_url = 'https://cdn/no-key.png' "
+            "WHERE request_key = %(rk)s", dict(rk=rk))
+    rows = client.get('/admin/growth/queue', headers=H).get_json()
+    row = next(r for r in rows if r['request_key'] == rk)
+    assert row['preview_url'] == row['image_url'] == 'https://cdn/no-key.png'
+
+
+def test_suggest_carries_a_default_caption(client, make_person):
+    admin = _make_admin(make_person); tok = _session_for(admin)
+    _make_eligible(make_person, name='Suggestee', gender='Woman')
+    items = client.get('/admin/growth/spotlight/suggest',
+                        headers={'Authorization': f'Bearer {tok}'}).get_json()
+    assert items and items[0]['suggested_caption'].startswith('Member of the week: ')

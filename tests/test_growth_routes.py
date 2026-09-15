@@ -225,14 +225,32 @@ def test_send_endpoint_is_idempotent_and_status_reports_the_run(client, admin, m
 # I6: the index must count recipients, not materialise them.
 # ---------------------------------------------------------------------------
 
-def test_emails_index_lists_three_campaigns_with_integer_counts(client, admin):
+def test_emails_index_lists_five_campaigns_with_integer_counts(client, admin):
     r = client.get('/admin/growth/emails', headers=admin['headers'])
     assert r.status_code == 200
     campaigns = r.get_json()['campaigns']
-    assert {c['campaign'] for c in campaigns} == {'e1', 'e2', 'e3'}
+    assert {c['campaign'] for c in campaigns} == {'e1', 'e2', 'e3', 'e4', 'e5'}
     for c in campaigns:
         assert isinstance(c['recipients'], int)
         assert c['recipients'] >= 0
+
+
+def test_emails_index_lists_system_sent_campaigns(client, admin, make_person):
+    """e4 (the member invite) and e5 (the card-went-live receipt) are sent
+    by the platform itself, not run from this admin screen: they carry
+    system=True and their recipient count comes straight from
+    email_send_log rather than a campaign module's recipients()."""
+    p = make_person(name='SystemCampaignTarget')
+    with api_tx() as tx:
+        tx.execute(
+            "INSERT INTO email_send_log (person_id, campaign, campaign_id, sent_at) "
+            "VALUES (%(p)s, 'e4', 'e4-rk1', NOW())", dict(p=p['id']))
+    out = client.get('/admin/growth/emails', headers=admin['headers']).get_json()['campaigns']
+    keys = [c['campaign'] for c in out]
+    assert keys == ['e1', 'e2', 'e3', 'e4', 'e5']
+    e4 = next(c for c in out if c['campaign'] == 'e4')
+    assert e4['system'] is True and e4['recipients'] == 1 and e4['last_campaign_id'] == 'e4-rk1'
+    assert next(c for c in out if c['campaign'] == 'e1')['system'] is False
 
 
 def test_recipient_count_agrees_with_the_recipient_list(make_person):

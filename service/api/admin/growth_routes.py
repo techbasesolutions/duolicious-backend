@@ -28,7 +28,8 @@ _EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
 _Q_LAST_SENT = """
     SELECT campaign, max(sent_at) AS at,
-           (array_agg(campaign_id ORDER BY sent_at DESC))[1] AS cid
+           (array_agg(campaign_id ORDER BY sent_at DESC))[1] AS cid,
+           count(*) AS n
       FROM email_send_log GROUP BY campaign
 """
 
@@ -45,7 +46,18 @@ def get_admin_growth_emails(s: t.SessionInfo):
         last = last_sent.get(key)
         out.append(dict(campaign=key, recipients=mod.recipient_count(),
                         last_sent_at=last['at'].isoformat() if last and last['at'] else None,
-                        last_campaign_id=last['cid'] if last else None))
+                        last_campaign_id=last['cid'] if last else None, system=False))
+    # e4 (the member invite) and e5 (the card-went-live receipt) are sent by
+    # the platform itself, not run from this admin screen: they have no
+    # recipients()/recipient_count() module to ask, so their count comes
+    # straight from the email_send_log rows the query above already grouped,
+    # and they carry system=True so the Growth tab can tell them apart from
+    # the three admin-run campaigns above.
+    for key in ('e4', 'e5'):
+        last = last_sent.get(key)
+        out.append(dict(campaign=key, recipients=int(last['n']) if last else 0,
+                        last_sent_at=last['at'].isoformat() if last and last['at'] else None,
+                        last_campaign_id=last['cid'] if last else None, system=True))
     return dict(campaigns=out)
 
 @apost('/admin/growth/emails/<campaign>/preview')
