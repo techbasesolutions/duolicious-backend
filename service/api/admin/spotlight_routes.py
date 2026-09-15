@@ -51,6 +51,7 @@ from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      OUTCOME_DELIVERY_STATE, PLATFORMS,
                                      SETTING_KEYS, FREE_KEYS)
 from service.spotlight.assets import asset_key, attach_platform_image, complete_render_if_ready
+from service.spotlight import cleanup
 from service.spotlight.cleanup import (enqueue_asset_delete, is_referenced,
                                        outstanding_jobs, overdue_removals)
 from service.spotlight.revisions import consent_complete, create_revision, edit_caption
@@ -240,9 +241,9 @@ def _default_slot(now: Optional[datetime] = None) -> datetime:
 _E5_SAVEPOINT = 'e5_enqueue'
 
 
-def _enqueue_card_ready(tx, person_id: int, request_key: str) -> None:
+def _enqueue_card_ready(tx, person_id: int, request_key: str) -> Optional[int]:
     from emails.spotlight_card_ready import enqueue_card_ready
-    enqueue_card_ready(tx, person_id, request_key)
+    return enqueue_card_ready(tx, person_id, request_key)
 
 
 def _enqueue_card_live(tx, person_id: int, request_key: str, external_post_id: str, platform: str,
@@ -346,6 +347,32 @@ _Q_ROUNDUP_THIS_WEEK = """
     SELECT EXISTS (SELECT 1 FROM publishing_queue WHERE request_key = %(rk)s) AS recent
 """
 
+# Task 7 (the Wave 1 gap): a request is "invite pending" when its member-facing
+# card exists but E4 was withheld -- created while approvals were off, per
+# post_growth_spotlight_welcome/member_of_week's invite_sent guard. The
+# predicate is shared by the count on GET /candidates and the rows the
+# invite-pending route drains, so the two never disagree about what counts.
+_Q_INVITES_PENDING_PREDICATE = """
+    q.kind IN ('welcome', 'member_of_week')
+      AND q.status = 'awaiting_member'
+      AND q.cancellation_requested_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM email_outbox e
+                       WHERE e.campaign = 'e4' AND e.campaign_id = 'e4-' || q.request_key)
+"""
+
+_Q_INVITES_PENDING_COUNT = f"""
+    SELECT count(DISTINCT q.request_key) AS n FROM publishing_queue q WHERE {_Q_INVITES_PENDING_PREDICATE}
+"""
+
+_Q_INVITES_PENDING_ROWS = f"""
+    SELECT q.request_key, q.subject_person_id, MIN(q.created_at) AS created_at
+      FROM publishing_queue q
+     WHERE {_Q_INVITES_PENDING_PREDICATE}
+     GROUP BY q.request_key, q.subject_person_id
+     ORDER BY MIN(q.created_at)
+     LIMIT 50
+"""
+
 
 def _week_key() -> str:
     y, w, _ = datetime.now(timezone.utc).isocalendar()
@@ -390,6 +417,11 @@ _Q_SUGGEST = """
      LIMIT 50
 """
 
+# Task 6 (F09 part 3): `pending=1` is the worker's own drain -- only tasks
+# that are actually due (`next_attempt_at <= NOW()`) and still actionable
+# (never `needs_attention`, which a human has to clear). `attention=1` is the
+# Growth tab's separate view of exactly the tasks `pending` withholds for that
+# reason. Neither flag set returns every task, done or not, as before.
 _Q_REMOVALS = """
     SELECT t.id,
            t.queue_id::text AS queue_id,
@@ -403,7 +435,11 @@ _Q_REMOVALS = """
            q.caption
       FROM spotlight_removal_task t
       LEFT JOIN publishing_queue q ON q.id = t.queue_id
-     WHERE (%(pending)s::bool IS NOT TRUE OR t.done_at IS NULL)
+     WHERE (%(pending)s::bool IS NOT TRUE
+            OR (t.done_at IS NULL AND t.next_attempt_at <= NOW()
+                AND t.reason IN ('delete_via_api', 'manual_instagram', 'investigate')))
+       AND (%(attention)s::bool IS NOT TRUE
+            OR (t.done_at IS NULL AND t.reason = 'needs_attention'))
      ORDER BY t.created_at DESC
      LIMIT 200
 """
@@ -725,9 +761,14 @@ def get_growth_candidates():
             if ok:
                 welcomes.append(dict(person_id=r['id'], first_name=(r['name'] or '').split(' ')[0]))
         recent_roundup = tx.execute(_Q_ROUNDUP_THIS_WEEK, dict(rk=_week_key())).fetchone()['recent']
+        # Task 7: reported even while approvals are off -- it is exactly what
+        # invite-pending will drain once they open, so the tick (and a human
+        # on the Growth tab) can see the backlog building before that.
+        invites_pending = int(tx.execute(_Q_INVITES_PENDING_COUNT).fetchone()['n'])
     # Monday is weekday() == 0.
     roundup_due = datetime.now(timezone.utc).weekday() == 0 and not recent_roundup
-    return dict(welcomes=welcomes, roundup_due=roundup_due, invites_enabled=True)
+    return dict(welcomes=welcomes, roundup_due=roundup_due, invites_enabled=True,
+                invites_pending=invites_pending)
 
 
 @post('/admin/growth/spotlight/welcome', limiter=growth_limit)
@@ -820,6 +861,40 @@ def post_growth_spotlight_roundup():
     return dict(request_key=rk)
 
 
+@post('/admin/growth/spotlight/invite-pending', limiter=growth_limit)
+def post_growth_spotlight_invite_pending():
+    """Task 7 (the Wave 1 gap): sends the E4 invites that were withheld while
+    approvals were paused. `post_growth_spotlight_welcome` and
+    `post_growth_spotlight_member_of_week` both create the candidate but skip
+    E4 when approvals are off, so nothing ever comes back and asks the member
+    to act -- this is what drains that backlog once approvals resume, and the
+    tick calls it every run `candidates.invites_pending` is above zero."""
+    s = _gate()
+    with api_tx('read committed') as tx:
+        cfg = settings(tx)
+        if cfg.get('approvals_enabled') != 'true':
+            return dict(error='approvals_paused'), 409
+        if cfg.get('invites_enabled') != 'true':
+            return dict(error='invites_paused'), 409
+        rows = tx.execute(_Q_INVITES_PENDING_ROWS).fetchall()
+    queued = skipped = 0
+    for r in rows:
+        # One transaction per request (the brief's rule): the eligibility
+        # re-check and the enqueue either both land or neither does, and one
+        # ineligible or already-sent request never blocks the rest of the
+        # batch.
+        with api_tx() as tx:
+            ok, _reason = eligibility(tx, r['subject_person_id']) if r['subject_person_id'] else (False, None)
+            oid = _enqueue_card_ready(tx, r['subject_person_id'], r['request_key']) if ok else None
+        if oid is not None:
+            queued += 1
+        else:
+            skipped += 1
+    with api_tx() as tx:
+        _audit(tx, s, 'growth.invite_pending', queued=queued, skipped=skipped)
+    return dict(queued=queued, skipped=skipped)
+
+
 @post('/admin/growth/queue/expire-approvals', limiter=growth_limit)
 def post_growth_queue_expire_approvals():
     s = _gate()
@@ -850,13 +925,14 @@ def get_growth_settings():
 def get_growth_removals():
     _gate()
     pending = request.args.get('pending') in ('1', 'true', 'yes')
+    attention = request.args.get('attention') in ('1', 'true', 'yes')
     with api_tx('read committed') as tx:
         # Task 9 (F12): external_access_enabled is the emergency stop for
         # every outbound platform call, removals (deletions) included -- the
         # tasks stay pending in the database for later, this just refuses to
         # hand them to the worker while the stop is engaged.
         halted = settings(tx).get('external_access_enabled') != 'true'
-        rows = [] if halted else tx.execute(_Q_REMOVALS, dict(pending=pending)).fetchall()
+        rows = [] if halted else tx.execute(_Q_REMOVALS, dict(pending=pending, attention=attention)).fetchall()
         # Both counts are read even under the stop, and deliberately: they
         # are plain database reads, and a stop that has been engaged for a
         # while is exactly when a growing removal backlog or a pile of
@@ -866,6 +942,52 @@ def get_growth_removals():
         outstanding_cleanup = outstanding_jobs(tx)
     return jsonify({'tasks': [_row(r) for r in rows], 'halted': halted,
                     'overdue': overdue, 'outstanding_cleanup': outstanding_cleanup})
+
+
+@post('/admin/growth/removals/<int:removal_id>/failed', limiter=growth_limit)
+def post_growth_removal_failed(removal_id: int):
+    """Task 6 (F09 part 3): the worker reports a removal attempt it could not
+    complete, other than the documented missing-target pair (that case still
+    goes to /done -- the target is already gone). Every report backs the task
+    off (`cleanup.BACKOFF_SECONDS`, indexed by the attempt just recorded) and
+    appends to its evidence trail; a permission failure additionally flips the
+    reason so the worker stops retrying it and a human sees it instead
+    (`?attention=1`)."""
+    s = _gate()
+    body = _body()
+    error = body.get('error')
+    code = body.get('code')
+    subcode = body.get('subcode')
+    permission = bool(body.get('permission'))
+    with api_tx() as tx:
+        row = tx.execute(
+            "SELECT attempts, reason FROM spotlight_removal_task WHERE id = %(i)s AND done_at IS NULL",
+            dict(i=removal_id)).fetchone()
+        if not row:
+            abort(404)
+        attempts = row['attempts'] + 1
+        backoff = cleanup.BACKOFF_SECONDS[min(attempts, len(cleanup.BACKOFF_SECONDS)) - 1]
+        reason = 'needs_attention' if permission else row['reason']
+        updated = tx.execute(
+            """UPDATE spotlight_removal_task
+                  SET attempts = %(attempts)s,
+                      last_error = %(error)s,
+                      -- The migration's default `{}` is not an array; the first
+                      -- write to a task's evidence starts the trail fresh.
+                      evidence = (CASE WHEN jsonb_typeof(evidence) = 'array' THEN evidence ELSE '[]'::jsonb END)
+                                 || jsonb_build_array(jsonb_build_object(
+                                        'at', NOW(), 'code', %(code)s::int, 'subcode', %(subcode)s::int,
+                                        'error', %(error)s::text)),
+                      next_attempt_at = NOW() + make_interval(secs => %(backoff)s),
+                      reason = %(reason)s
+                WHERE id = %(i)s
+              RETURNING attempts, next_attempt_at, reason""",
+            dict(i=removal_id, attempts=attempts, error=error, code=code, subcode=subcode,
+                 backoff=backoff, reason=reason)).fetchone()
+        _audit(tx, s, 'growth.removal.failed', removal_id=removal_id, attempts=updated['attempts'],
+               reason=updated['reason'], permission=permission)
+    return dict(ok=True, attempts=updated['attempts'], next_attempt_at=_plain(updated['next_attempt_at']),
+                reason=updated['reason'])
 
 
 @post('/admin/growth/removals/<int:removal_id>/done', limiter=growth_limit)

@@ -634,6 +634,42 @@ def test_removal_done_queues_the_stored_image_and_keeps_the_key(client, make_per
     assert row['image_sha256'] == 'removedsha'
 
 
+def _open_task(make_person):
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute("UPDATE publishing_queue SET status = 'published', external_post_id = '9' WHERE request_key = %(rk)s", dict(rk=rk))
+        from service.spotlight.withdrawal import withdraw_member
+        withdraw_member(tx, p['id'], 'opt_out')
+        return tx.execute("SELECT id FROM spotlight_removal_task WHERE request_key = %(rk)s AND platform = 'facebook'", dict(rk=rk)).fetchone()['id']
+
+
+def test_removal_failed_records_evidence_and_backs_off(client, make_person):
+    tid = _open_task(make_person)
+    r = client.post(f'/admin/growth/removals/{tid}/failed', json=dict(error='rate limited', code=4, subcode=None, permission=False), headers=H)
+    assert r.status_code == 200 and r.get_json()['attempts'] == 1 and r.get_json()['reason'] == 'delete_via_api'
+    with api_tx('read committed') as tx:
+        t = tx.execute("SELECT attempts, last_error, evidence, next_attempt_at > NOW() AS later, deadline_at FROM spotlight_removal_task WHERE id = %(i)s", dict(i=tid)).fetchone()
+    assert t['attempts'] == 1 and t['last_error'] == 'rate limited' and t['later'] is True and t['deadline_at'] is not None
+    assert t['evidence'][0]['code'] == 4 and t['evidence'][0]['error'] == 'rate limited'
+    body = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
+    assert all(x['id'] != tid for x in body['tasks'])                 # not due yet, so not listed
+
+
+def test_removal_failed_permission_needs_attention(client, make_person):
+    tid = _open_task(make_person)
+    r = client.post(f'/admin/growth/removals/{tid}/failed', json=dict(error='(#10) permission', code=10, subcode=None, permission=True), headers=H)
+    assert r.status_code == 200 and r.get_json()['reason'] == 'needs_attention'
+    assert all(x['id'] != tid for x in client.get('/admin/growth/removals?pending=1', headers=H).get_json()['tasks'])
+    assert any(x['id'] == tid for x in client.get('/admin/growth/removals?attention=1', headers=H).get_json()['tasks'])
+
+
+def test_removal_failed_on_done_task_is_404(client, make_person):
+    tid = _open_task(make_person)
+    assert client.post(f'/admin/growth/removals/{tid}/done', json={}, headers=H).status_code == 200
+    assert client.post(f'/admin/growth/removals/{tid}/failed', json=dict(error='x', permission=False), headers=H).status_code == 404
+
+
 def test_candidates_and_welcome(client, make_person, monkeypatch):
     import service.api.admin.spotlight_routes as sr
     monkeypatch.setattr(sr, '_enqueue_card_ready', lambda tx, pid, rk: None)

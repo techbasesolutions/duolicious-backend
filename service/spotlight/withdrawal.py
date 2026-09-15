@@ -23,6 +23,13 @@ from service.spotlight.revisions import TERMINAL, create_revision, current_revis
 
 REASONS = ('opt_out', 'account_deletion', 'admin_delete', 'ban', 'hard_delete', 'moderation')
 
+# Wave 2 Task 6 (F09 part 3): every removal task carries a deadline from the
+# moment it is filed, so an overdue one (cleanup.overdue_removals) is a
+# promise the platform post is still up past this many hours after the
+# member asked for it to come down. Task 8 reconciles this number with the
+# spec's stated removal promise and records the ruling.
+REMOVAL_DEADLINE_HOURS = 72
+
 # Containment against the stored tile snapshot: a tile object carries
 # first_name and photo_url as well, so `@>` with just the person_id matches
 # the whole tile without having to reproduce the rest of it. Moved here from
@@ -173,12 +180,14 @@ def _file_removal_tasks(tx, rows, person_id: Optional[int], reason: Optional[str
                    AND %(reason)s <> 'investigate'""",
             dict(q=r['id'], ext=r['external_post_id'], reason=task_reason)).rowcount
         cur = tx.execute(
-            """INSERT INTO spotlight_removal_task (queue_id, platform, external_post_id, reason, person_id, request_key)
-               SELECT %(q)s, %(pl)s, %(ext)s, %(reason)s, %(pid)s, %(rk)s
+            """INSERT INTO spotlight_removal_task
+                          (queue_id, platform, external_post_id, reason, person_id, request_key, deadline_at)
+               SELECT %(q)s, %(pl)s, %(ext)s, %(reason)s, %(pid)s, %(rk)s,
+                      NOW() + make_interval(hours => %(h)s)
                 WHERE NOT EXISTS (SELECT 1 FROM spotlight_removal_task t
                                    WHERE t.queue_id = %(q)s AND t.done_at IS NULL)""",
             dict(q=r['id'], pl=r['platform'], ext=r['external_post_id'], pid=person_id, rk=r['request_key'],
-                 reason=task_reason))
+                 reason=task_reason, h=REMOVAL_DEADLINE_HOURS))
         n += cur.rowcount + upgraded
     return n
 

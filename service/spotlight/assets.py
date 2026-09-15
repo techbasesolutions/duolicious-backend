@@ -38,13 +38,20 @@ def attach_platform_image(tx, request_key: str, platform: str, revision_id: int,
     uploading (a real network round trip in between); the second to reach
     this UPDATE would otherwise silently overwrite the row behind an
     already-rendered revision with different bytes than the ones the
-    revision's own image columns point at."""
+    revision's own image columns point at.
+
+    Task 5 residual (re-review): also refuses a row parked with its
+    delivery unresolved (`delivery_state` `attempting` or
+    `delivery_unknown`) -- the same rows `create_revision`'s un-render step
+    leaves untouched because a live post may be behind them. Attaching a
+    fresh upload there would overwrite the artwork that post shows."""
     cur = tx.execute(
         """UPDATE publishing_queue
                SET image_key = %(k)s, image_url = %(u)s, image_sha256 = %(h)s, updated_at = NOW()
              WHERE request_key = %(rk)s AND platform = %(pl)s
                AND current_revision_id = %(rev)s
                AND status IN ('awaiting_member', 'awaiting_render', 'review')
+               AND (delivery_state IS NULL OR delivery_state NOT IN ('attempting', 'delivery_unknown'))
                AND NOT EXISTS (
                      SELECT 1 FROM spotlight_revision r
                       WHERE r.id = publishing_queue.current_revision_id AND r.asset_hash IS NOT NULL)""",
@@ -76,15 +83,28 @@ def complete_render_if_ready(tx, request_key: str, revision_id: int) -> bool:
     was never re-rendered for) -- both stamped together by
     `attach_platform_image` above, one call per platform row. Returns True
     only when this call is the one that attaches the render; a set that is
-    not yet complete, or has no considered rows at all, answers False."""
+    not yet complete, or has no considered rows at all, answers False.
+
+    Task 5 residual (re-review): a row parked with its delivery unresolved
+    (`delivery_state` `attempting` or `delivery_unknown`) keeps its old
+    artwork on purpose and cannot be re-rendered until an operator resolves
+    it (see `create_revision`'s un-render scope), yet its `current_revision_id`
+    still moves with every re-point -- so it can carry a STALE image_key/sha256
+    that happens to match a brand-new revision id. Such a row is excluded from
+    the considered set for the per-row match below AND from the facebook pin,
+    and its mere presence refuses the whole completion outright: a roundup's
+    combined preview must never go out consistent-looking while one of its
+    platforms is in a state nobody can yet explain."""
     rows = tx.execute(
-        """SELECT platform, image_key, image_url, image_sha256, current_revision_id
+        """SELECT platform, image_key, image_url, image_sha256, current_revision_id, delivery_state
              FROM publishing_queue
             WHERE request_key = %(rk)s
               AND status IN ('awaiting_member', 'awaiting_render', 'review')""",
         dict(rk=request_key)).fetchall()
-    if not rows or any(r['current_revision_id'] != revision_id or not r['image_key'] or not r['image_sha256']
-                        for r in rows):
+    if not rows or any(r['delivery_state'] in ('attempting', 'delivery_unknown') for r in rows):
+        return False
+    if any(r['current_revision_id'] != revision_id or not r['image_key'] or not r['image_sha256']
+           for r in rows):
         return False
     pinned = next((r for r in rows if r['platform'] == 'facebook'), rows[0])
     try:

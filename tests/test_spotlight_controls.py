@@ -207,3 +207,24 @@ def test_welcome_creates_candidate_without_invite_when_approvals_disabled(client
         assert audited == [('growth.queue.welcome', dict(person_id=p['id'], request_key=rk, invite_sent=False))]
     finally:
         with api_tx() as tx: _restore_defaults(tx)
+
+
+def test_invites_withheld_during_pause_are_sent_when_approvals_open(client, make_person):
+    a = _make_eligible(make_person, name='A'); b = _make_eligible(make_person, name='B', gender='Man')
+    with api_tx() as tx: _set(tx, approvals_enabled='false', invites_enabled='true')
+    try:
+        for p in (a, b):
+            assert client.post('/admin/growth/spotlight/welcome', json=dict(person_id=p['id']), headers=H).status_code == 200
+        with api_tx('read committed') as tx:
+            assert tx.execute("SELECT count(*) AS n FROM email_outbox WHERE campaign = 'e4' AND person_id = ANY(%(ids)s)", dict(ids=[a['id'], b['id']])).fetchone()['n'] == 0
+        assert client.get('/admin/growth/candidates', headers=H).get_json()['invites_pending'] >= 2
+        r = client.post('/admin/growth/spotlight/invite-pending', json={}, headers=H)
+        assert r.status_code == 409 and r.get_json() == dict(error='approvals_paused')
+        with api_tx() as tx: _set(tx, approvals_enabled='true')
+        first = client.post('/admin/growth/spotlight/invite-pending', json={}, headers=H).get_json()
+        second = client.post('/admin/growth/spotlight/invite-pending', json={}, headers=H).get_json()
+        assert first['queued'] >= 2 and second['queued'] == 0
+        with api_tx('read committed') as tx:
+            assert tx.execute("SELECT count(*) AS n FROM email_outbox WHERE campaign = 'e4' AND person_id = ANY(%(ids)s) AND state = 'queued'", dict(ids=[a['id'], b['id']])).fetchone()['n'] == 2
+    finally:
+        with api_tx() as tx: _restore_defaults(tx)
