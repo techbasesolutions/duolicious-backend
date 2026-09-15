@@ -93,8 +93,6 @@ def validate_png(data: bytes, *, size=(1080, 1080), max_bytes=5_000_000) -> str:
         img = Image.open(io.BytesIO(data))
         width, height = img.size
         fmt = img.format
-    except InvalidImage:
-        raise
     except Exception as e:
         raise InvalidImage('not_png') from e
     if fmt != 'PNG':
