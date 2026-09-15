@@ -228,3 +228,66 @@ At the time this section was written, task 9 (the control model above) had been 
 ### Activation stance
 
 Nothing from Wave 1 is merged and nothing is pushed; the phase A, phase B and Wave 1 branches all stay local. No live post happens until the review's own acceptance matrix (Consent, Lifecycle, Delivery, Storage, Mail, Controls) passes in a staging environment. Wave 1 closes the Consent, Lifecycle, Delivery and Controls rows; Storage and Mail wait on Wave 2, so the matrix cannot pass end to end until that work lands too.
+
+## 12. Wave 2 (2026-09-15): immutable storage and a durable mail outbox
+
+Wave 2 closes F06 (a rejected upload could overwrite bytes a member had already approved), F07 and F08 (mail dedupe was not durable and E4 ran on a fire-and-forget thread), and the remainder of F09 (cleanup lost its own retry information and removals had no visible deadline). It also closes the welcome-during-pause gap the Wave 1 evidence document flagged as open: a candidate created while approvals were paused now receives its invite once approvals reopen, drained by a new route rather than lost.
+
+### Branches and heads
+
+| Repo | Branch | Base | Head |
+| --- | --- | --- | --- |
+| ahavah-api | spotlight-wave-2 | cdc6b2c (production, `ahavah/main`) | d369dc4 |
+| ahavah-admin | spotlight-wave-2 | 842ebe5 (Wave 1 fix-wave head, `master`) | 1b9479d |
+
+Neither branch is merged or pushed. Web is untouched in Wave 2.
+
+### Commits
+
+API (`git log --oneline ahavah/main..HEAD`, oldest first):
+
+1. `d66bf08` docs(spotlight): wave 2 plan (immutable storage, email outbox, cleanup jobs)
+2. `0b32493` feat(db): email outbox, cleanup jobs, removal deadlines, image hashes (0046)
+3. `ec83c70` feat(spotlight): validated private uploads and confirmed deletions in the storage client
+4. `05ea94f` refactor(spotlight): drop unreachable except clause in validate_png
+5. `d5b8923` feat(spotlight): content-hashed immutable image keys, compare-and-set attach, private previews
+6. `081c8d4` fix(spotlight): storage writes fail loudly when the object store is unconfigured
+7. `61f42b7` fix(spotlight): guarded approve revert, sha cleared with the key, readiness ignores terminal siblings, CAS re-checks the render
+8. `3fbd059` feat(mail): durable email outbox with at-least-once delivery and visible uncertainty; E4 and E5 enqueued with their triggers
+9. `42dda71` feat(spotlight): cleanup jobs confirm deletions before clearing keys; retention and removals enqueue; overdue removals visible
+10. `e59b337` fix(mail): reserve one row at a time; E5 enqueue failures never roll back a receipt
+11. `000bc0e` fix(spotlight): cleanup jobs re-check references, partial unique on pending jobs, repoint spares unresolved deliveries
+12. `d369dc4` feat(spotlight): removal attempts with evidence and deadlines; invites withheld during an approvals pause are queued once approvals open
+
+Admin (`git log --oneline master..HEAD`, oldest first):
+
+1. `60eb84b` feat(admin): removals report failures with evidence and exact missing-target codes; tick queues withheld invites
+2. `1b9479d` fix(admin): tick marks invites paused only on a 409
+
+### Test totals
+
+- API (disposable Docker stack, `tests -q`): 590 passed at `d369dc4` (up from the 509 baseline at the start of Wave 2), 9 known deprecation warnings.
+- Admin (`node --test tests/*.test.mjs`): 59 passed at `1b9479d` (up from the 51 baseline); `npx tsc --noEmit` clean; `npx next build` clean.
+
+The review of the API halves of Tasks 6 and 7 (`d369dc4`) was still running when this docs task was dispatched. It has since completed: needs fixes (two important findings, invite-pending has no terminal state for a permanently ineligible request, and the strict readiness block on an unresolved sibling is an operator-gated dead end with no surface, plus six minors). Fix round 1 is ruled in the ledger and queued behind this docs commit; `d369dc4` remains the correct head above until that round lands. Every other Wave 2 task was complete per the ledger, and this task (the spec, ledger and handoff amendments) and the acceptance run were dispatched together.
+
+### Findings F06 to F09
+
+| Finding | Status | Resolved by | Notes |
+| --- | --- | --- | --- |
+| F06 rejected upload can overwrite approved bytes | Resolved in Wave 2 | Task 2 (`ec83c70`, fix `081c8d4`); Task 3 (`d5b8923`, fix `61f42b7`) | Object keys are content-hashed and immutable; attaching an upload is compare-and-set against the exact revision it was rendered for, and refuses once that revision already has a render or sits on an unresolved delivery. A superseded upload is queued for cleanup instead of being deleted inline or left orphaned. |
+| F07 mail dedupe not durable | Resolved in Wave 2 | Task 4 (`3fbd059`, fix `e59b337`) | `email_outbox` makes the unique key (campaign, campaign_id, person_id) the idempotency point; reservation uses `FOR UPDATE SKIP LOCKED` so two drains never double send. |
+| F08 E4 on a daemon thread | Resolved in Wave 2 | Task 4 (as above); Task 7 (`d369dc4`) for the withheld-invite gap | E4 and E5 enqueue inside the same transaction as the event that triggers them and survive an api restart; a welcome candidate created while approvals were paused is drained by `POST /admin/growth/spotlight/invite-pending` once approvals reopen. |
+| F09 cleanup loses retry info; removals paused with the scheduler | Resolved in Wave 2, Task 6's own review needs a fix round | Task 5 (`42dda71`, fix `000bc0e`); Task 6 (`d369dc4`) | `cleanup_job` retries with backoff and only clears a stored key once deletion is confirmed; a superseded key's uniqueness is scoped to pending jobs only, so a key can be queued again in its next lifetime; a removal task carries a 72-hour operational deadline and each reported failure records evidence and backs off; an overdue task is counted and surfaced to the operator. Task 6's review found the readiness block on an unresolved sibling to be an operator-gated dead end with no surface; fix round 1 (above) adds that surface. |
+
+F10 (attribution) and the remainder of F12 (idempotent-tick work beyond the weekly key, any auto mode) stay deferred to Wave 3 per the triage sequencing; the acceptance-matrix staging run is Wave 4.
+
+### Where the record lives
+
+Wave 2 briefs, task reports, review packages and the ledger, both api and admin sides, live in one place: `ahavah-api/.superpowers/sdd/2026-09-15-spotlight-wave-2/` (`progress.md` is the ledger; `task-N-brief.md` and `task-N-report.md` per task; `task-6-7-api-report.md` and `task-6-7-admin-report.md` for the split task; `review-<base>..<head>.diff` and `review-admin-<base>..<head>.diff` are the exact diffs each reviewer read). Unlike Wave 1, the admin repo has no separate Wave 2 workspace of its own.
+
+The Wave 2 plan: `ahavah-api/docs/superpowers/plans/2026-09-15-spotlight-wave-2.md`. Acceptance evidence: `ahavah-api/docs/superpowers/plans/2026-09-15-spotlight-wave-2-evidence.md`.
+
+### Activation stance (updated)
+
+Nothing from Wave 2 is merged and nothing is pushed; every branch above stays local. Wave 1 closed Consent, Lifecycle, Delivery and Controls; Wave 2 closes Storage and Mail. All six acceptance-matrix rows now have Wave 1 or Wave 2 evidence behind them, though Task 6/7's own review needs a fix round first (above). The matrix has not yet been run end to end against a staging environment, which stays the gate for the first live post (Wave 4 per the triage sequencing).
