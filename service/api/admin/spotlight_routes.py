@@ -219,9 +219,25 @@ def _default_slot(now: Optional[datetime] = None) -> datetime:
 # an `email_outbox` row that commits with whatever decided to send it, and
 # the `emailoutbox` cron does the actual SMTP (F07). They replace the old
 # fire-and-forget daemon threads, which lost the email on any api restart and
-# could not be retried. Queuing failures are swallowed the same way the old
-# thread swallowed send failures -- the candidate, or the publish receipt,
-# matters more than the email that accompanies it.
+# could not be retried.
+#
+# ENQUEUE-FAILURE POLICY, and it is deliberately different for the two:
+#
+#   E4 (card ready) PROPAGATES. The invite is the whole reason the candidate
+#   exists: a member who is queued for a Spotlight card but has no record of
+#   ever being asked is worse than no candidate at all, so a failure here
+#   rolls the candidate back with it and the admin sees the error.
+#
+#   E5 (card live) is CAUGHT. By the time it runs the post is already live on
+#   the platform and the receipt that proves it is in this transaction.
+#   Losing that receipt over a failed email would orphan a real post that
+#   nothing would then reconcile or remove. The failure is contained in a
+#   savepoint (so a half-built message, e.g. its /s/ campaign link row, is
+#   rolled back rather than committed as a stray) and reported back to the
+#   caller, which audits it as `growth.email.enqueue_failed`.
+
+_E5_SAVEPOINT = 'e5_enqueue'
+
 
 def _enqueue_card_ready(tx, person_id: int, request_key: str) -> None:
     from emails.spotlight_card_ready import enqueue_card_ready
@@ -229,9 +245,22 @@ def _enqueue_card_ready(tx, person_id: int, request_key: str) -> None:
 
 
 def _enqueue_card_live(tx, person_id: int, request_key: str, external_post_id: str, platform: str,
-                       post_url: Optional[str] = None) -> None:
+                       post_url: Optional[str] = None) -> Optional[str]:
+    """Returns None on success (including the ordinary "nothing to send"
+    answers), or the error message when queuing E5 failed. The caller's
+    transaction is left usable either way: a failure is rolled back to the
+    savepoint, which also clears the aborted-transaction state a failed
+    statement would otherwise leave behind."""
     from emails.spotlight_card_live import enqueue_card_live
-    enqueue_card_live(tx, person_id, request_key, external_post_id, platform, post_url)
+    tx.execute(f'SAVEPOINT {_E5_SAVEPOINT}')
+    try:
+        enqueue_card_live(tx, person_id, request_key, external_post_id, platform, post_url)
+    except Exception as e:      # noqa: BLE001 -- see the policy note above
+        tx.execute(f'ROLLBACK TO SAVEPOINT {_E5_SAVEPOINT}')
+        print(f'E5 enqueue failed for request {request_key}: {e}')
+        return str(e)
+    tx.execute(f'RELEASE SAVEPOINT {_E5_SAVEPOINT}')
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -541,10 +570,15 @@ def post_growth_queue_complete(qid: str):
                     and row['cancellation_requested_at'] is None):
                 live = (row['subject_person_id'], row['request_key'],
                         external_post_id or '', row['platform'], post_url)
-                # Inside the transaction on purpose (F07): the email is now a
-                # queued row, and it must commit with the receipt that earned
-                # it or not at all.
-                _enqueue_card_live(tx, *live)
+                # Inside the transaction on purpose (F07): the email is a
+                # queued row that commits with the receipt that earned it. A
+                # failure to queue it never takes the receipt down with it
+                # (see the enqueue-failure policy above); it is audited so the
+                # member can be mailed by hand.
+                enqueue_error = _enqueue_card_live(tx, *live)
+                if enqueue_error is not None:
+                    _audit(tx, s, 'growth.email.enqueue_failed', campaign='e5',
+                           request_key=row['request_key'], error=enqueue_error)
         # A duplicate ('already') receipt changed nothing -- record_receipt's
         # own no-writes guarantee -- so it earns no audit row either; only a
         # receipt that actually moved the row is logged.
@@ -726,7 +760,9 @@ def post_growth_spotlight_welcome():
         invite_sent = cfg.get('approvals_enabled') == 'true'
         if invite_sent:
             # Inside the transaction on purpose (F07): the candidate and the
-            # invite that announces it either both land or neither does.
+            # invite that announces it either both land or neither does. A
+            # failure here is NOT caught (unlike E5 on the receipt routes):
+            # no candidate without its invite record.
             _enqueue_card_ready(tx, person_id, rk)
         _audit(tx, s, 'growth.queue.welcome', person_id=person_id, request_key=rk, invite_sent=invite_sent)
     return dict(request_key=rk)
@@ -1068,8 +1104,13 @@ def post_growth_queue_reconcile(s: t.SessionInfo, qid: str):
             live = (row['subject_person_id'], row['request_key'], external_post_id,
                     row['platform'], post_url)
             # Inside the transaction on purpose (F07), same as the complete
-            # route: the queued email commits with the reconciliation.
-            _enqueue_card_live(tx, *live)
+            # route: the queued email commits with the reconciliation, and a
+            # failure to queue it is audited rather than allowed to undo the
+            # operator's reconciliation of a post that is genuinely live.
+            enqueue_error = _enqueue_card_live(tx, *live)
+            if enqueue_error is not None:
+                _audit(tx, s, 'growth.email.enqueue_failed', campaign='e5',
+                       request_key=row['request_key'], error=enqueue_error)
         _audit(tx, s, 'growth.queue.reconcile', queue_id=str(queue_id),
                external_post_id=external_post_id, occurrences=occurrences,
                first_confirmation=first_confirmation)
@@ -1146,7 +1187,7 @@ def post_growth_spotlight_member_of_week(s: t.SessionInfo):
         invite_sent = settings(tx).get('approvals_enabled') == 'true'
         if invite_sent:
             # Inside the transaction on purpose (F07), same as the welcome
-            # route above.
+            # route above, and a failure propagates for the same reason.
             _enqueue_card_ready(tx, person_id, rk)
         _audit(tx, s, 'growth.queue.member_of_week', person_id=person_id, request_key=rk,
                invite_sent=invite_sent)

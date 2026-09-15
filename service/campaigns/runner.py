@@ -73,7 +73,13 @@ def run_campaign(tx_factory, campaign: str, campaign_id: str, recipients: list[d
                     exempt=exempt, cap_days=cap_days, post_send=post_send)
             if queued_id is not None:
                 queued += 1
-            print(f"queued {campaign} for {mask_email(email)}")
+                print(f"queued {campaign} for {mask_email(email)}")
+            else:
+                # Already in the outbox for this campaign_id: a re-run of the
+                # same campaign, which is exactly what enqueue's unique key is
+                # there to absorb. Saying "queued" here would make a repeat
+                # run's log look like a second send.
+                print(f"already queued {campaign} for {mask_email(email)}")
         else:
             print(f"DRY RUN {campaign} {mask_email(email)}")
     return dict(queued=queued, built=built, skipped_cap=skipped_cap,

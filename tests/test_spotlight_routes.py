@@ -1171,3 +1171,41 @@ def test_member_of_week_withholds_the_invite_while_approvals_are_paused(client, 
     finally:
         with api_tx() as tx:
             set_setting(tx, 'approvals_enabled', 'false')
+
+
+def test_e4_enqueue_failure_takes_the_candidate_with_it(client, make_person, monkeypatch):
+    """Fix round 1, ruling 2, the other half. E4 is the whole reason the
+    candidate exists: a member queued for a Spotlight card with no record of
+    ever having been asked is worse than no candidate at all, so a failure to
+    queue the invite propagates and the candidate rolls back with it.
+
+    Contrast with E5 on the complete route (tests/test_spotlight_delivery.py),
+    where the post is already live and the receipt must survive."""
+    import emails.spotlight_card_ready as card_ready_mod
+
+    def _boom(*a, **kw):
+        raise RuntimeError('template exploded')
+
+    monkeypatch.setattr(card_ready_mod, 'card_ready_html', _boom)
+    p = _make_eligible(make_person, name='E4Boom')
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s",
+                   dict(e=f'e4-boom-{p["id"]}@ahavah-test.invalid', id=p['id']))
+        set_setting(tx, 'approvals_enabled', 'true')
+    try:
+        with pytest.raises(RuntimeError, match='template exploded'):
+            client.post('/admin/growth/spotlight/welcome', json={'person_id': p['id']},
+                        headers={'X-Growth-Cron': 'test-cron-secret'})
+        with api_tx('read committed') as tx:
+            candidates = tx.execute(
+                """SELECT count(*) AS n FROM publishing_queue
+                    WHERE subject_person_id = %(p)s AND kind = 'welcome'""",
+                dict(p=p['id'])).fetchone()
+            queued = tx.execute(
+                "SELECT count(*) AS n FROM email_outbox WHERE person_id = %(p)s AND campaign = 'e4'",
+                dict(p=p['id'])).fetchone()
+        assert candidates['n'] == 0     # no candidate without its invite record
+        assert queued['n'] == 0
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')

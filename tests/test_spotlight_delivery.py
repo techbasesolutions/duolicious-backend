@@ -397,3 +397,62 @@ def test_reap_after_processing_withdrawal_files_investigate_task(make_person):
             "SELECT reason, external_post_id FROM spotlight_removal_task WHERE queue_id = %(id)s",
             dict(id=q['id'])).fetchall()
         assert [(t['reason'], t['external_post_id']) for t in tasks] == [('investigate', None)]
+
+
+def test_e5_enqueue_failure_never_rolls_back_the_receipt(make_person, client, monkeypatch):
+    """Fix round 1, ruling 2. By the time E5 runs the post is already live on
+    the platform and the receipt proving it is in this transaction. Losing
+    that receipt because the email could not be built would orphan a real
+    post that nothing would then reconcile or remove, so the failure is
+    contained in a savepoint, audited, and the receipt commits regardless.
+
+    The savepoint matters as much as the catch: `enqueue_card_live` mints the
+    /s/ campaign link BEFORE it builds the html, so without the rollback a
+    failed message would leave a stray link row behind."""
+    import emails.spotlight_card_live as card_live_mod
+
+    def _boom(*a, **kw):
+        raise RuntimeError('template exploded')
+
+    monkeypatch.setattr(card_live_mod, 'card_live_html', _boom)
+    p = _make_eligible(make_person, name='E5Boom')
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s",
+                   dict(e=f'e5-boom-{p["id"]}@ahavah-test.invalid', id=p['id']))
+        rk, rows = _claimed(tx, p['id'])
+        tx.execute("UPDATE publishing_queue SET image_url = %(u)s WHERE request_key = %(rk)s",
+                   dict(u='https://cdn.ahavah.app/spotlight/x.png', rk=rk))
+        fb = rows[0]
+        qid, lease = str(fb['id']), fb['lease_token']
+
+    r = client.post(f'/admin/growth/queue/{qid}/complete',
+                    json=dict(status='published', external_post_id='1_9', lease_token=lease,
+                              post_url='https://www.facebook.com/1_9'),
+                    headers={'X-Growth-Cron': 'test-cron-secret'})
+    assert r.status_code == 200 and r.get_json() == dict(ok=True, status='published', already=False)
+
+    with api_tx('read committed') as tx:
+        queue_row = tx.execute(
+            "SELECT status, delivery_state, external_post_id FROM publishing_queue WHERE id = %(id)s",
+            dict(id=qid)).fetchone()
+        outbox_rows = tx.execute(
+            "SELECT count(*) AS n FROM email_outbox WHERE person_id = %(p)s AND campaign = 'e5'",
+            dict(p=p['id'])).fetchone()
+        # Only E5's link targets the Facebook sharer dialog; create_candidate
+        # mints its own `post:<rk>` link at the web base URL for the caption,
+        # which is unrelated and must survive.
+        links = tx.execute(
+            """SELECT count(*) AS n FROM campaign_link
+                WHERE kind = %(k)s AND strpos(target_url, 'sharer.php') > 0""",
+            dict(k=f'post:{rk}')).fetchone()
+        occurrences = tx.execute(
+            "SELECT count(*) AS n FROM spotlight_occurrence WHERE request_key = %(rk)s",
+            dict(rk=rk)).fetchone()
+    # The receipt landed in full: status, delivery state, external id, occurrence.
+    assert (queue_row['status'], queue_row['delivery_state'], queue_row['external_post_id']) == (
+        'published', 'published', '1_9')
+    assert occurrences['n'] == 1
+    # And nothing of the failed email survived: no outbox row, and the /s/
+    # link the half-built message had already minted was rolled back.
+    assert outbox_rows['n'] == 0
+    assert links['n'] == 0

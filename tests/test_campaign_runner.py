@@ -216,3 +216,19 @@ def test_the_six_day_cap_survives_the_drains_own_recheck(make_person, outbox_dra
     assert res['queued'] == 1
     sent = outbox_drain(due['id'])
     assert len(sent) == 1 and sent[0]['to_addr'] == due_email
+
+
+def test_a_rerun_logs_already_queued_not_queued(make_person, capsys):
+    """Fix round 1, ruling 3. A second run of the same campaign_id adds no
+    rows -- that is the point of enqueue's unique key -- so its log must not
+    read like a second send went out."""
+    p = make_person(name='LogOnce')
+    email = f"log-once-{p['id']}@ahavah-test.invalid"
+    rows = [dict(person_id=p['id'], email=email, name='LogOnce')]
+    kwargs = dict(send=True, from_addr='support@ahavah.app', unsub_scope='notifications')
+    run_campaign(api_tx, 'e1', 'log-once-1', rows, lambda row: ('S', '<p>x</p>'), **kwargs)
+    first = capsys.readouterr().out
+    run_campaign(api_tx, 'e1', 'log-once-1', rows, lambda row: ('S', '<p>x</p>'), **kwargs)
+    second = capsys.readouterr().out
+    assert 'queued e1' in first and 'already queued e1' not in first
+    assert 'already queued e1' in second

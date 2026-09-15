@@ -233,21 +233,37 @@ def _refusal(tx, row: dict) -> Optional[str]:
 
 
 def drain(tx_factory, smtp, limit: int = BATCH) -> dict:
-    """Send one batch. Returns dict(reserved, accepted, skipped, failed,
-    unknown_reaped).
+    """Send up to `limit` messages. Returns dict(reserved, accepted, skipped,
+    failed, unknown_reaped).
 
-    Transaction shape, which is the whole point of this function: ONE
-    transaction reaps and reserves; then, per row, a short transaction for
-    the re-checks, the SMTP call with NO transaction open, and a short
-    transaction for the outcome. `smtp.send` must never run inside a
-    transaction -- it is a network round trip to a third party, and holding
-    row locks across it is how a mail outage becomes a database outage."""
+    Transaction shape, which is the whole point of this function: the reaper
+    runs once, in its own transaction, at the start. Then each message gets
+    FOUR short transactions of its own -- reserve it, re-check it, (SMTP with
+    no transaction open), record the outcome -- and only then is the next one
+    reserved.
+
+    Reserving ONE row per iteration rather than the whole batch up front is
+    deliberate. A drain that dies part way through (deploy, OOM, container
+    kill) leaves every row it had already claimed stuck in 'reserved' until
+    the reaper times them out, and every one of those is a message whose fate
+    nobody can be sure of. Claiming them one at a time means at most the
+    single message actually in flight is stranded; everything else is still
+    'queued' and the next drain simply picks it up.
+
+    `smtp.send` must never run inside a transaction -- it is a network round
+    trip to a third party, and holding row locks across it is how a mail
+    outage becomes a database outage."""
     with tx_factory() as tx:
         unknown_reaped = reap_reserved(tx)
-        rows = reserve(tx, limit)
 
-    accepted = skipped = failed = 0
-    for row in rows:
+    reserved = accepted = skipped = failed = 0
+    while reserved < limit:
+        with tx_factory() as tx:
+            claimed = reserve(tx, limit=1)
+        if not claimed:
+            break
+        row = claimed[0]
+        reserved += 1
         payload = row['payload'] or {}
         with tx_factory() as tx:
             reason = _refusal(tx, row)
@@ -272,15 +288,24 @@ def drain(tx_factory, smtp, limit: int = BATCH) -> dict:
         accepted += 1
         print(f"email_outbox: sent {row['campaign']} to {mask_email(row['email'])}")
 
-    return dict(reserved=len(rows), accepted=accepted, skipped=skipped, failed=failed,
+    return dict(reserved=reserved, accepted=accepted, skipped=skipped, failed=failed,
                 unknown_reaped=unknown_reaped)
 
 
 def status(tx, campaign: str, campaign_id: str) -> dict[str, Any]:
     """Counts per state for one run, every state present even at zero so the
     admin dashboard never has to guess whether a missing key means zero or a
-    state it does not know about."""
-    out = {s: 0 for s in STATES}
+    state it does not know about.
+
+    A state this build has never heard of (a row written by a newer deploy
+    during a rollout, say) is bucketed under `other` rather than raising: the
+    dashboard losing the label is a far smaller problem than the dashboard
+    500ing. The `other` key only appears when there is something in it, so
+    the normal shape stays the six states above."""
+    out: dict[str, Any] = {s: 0 for s in STATES}
     for r in tx.execute(_Q_STATUS, dict(c=campaign, cid=campaign_id)).fetchall():
-        out[r['state']] = int(r['n'])
+        if r['state'] in out:
+            out[r['state']] = int(r['n'])
+        else:
+            out['other'] = out.get('other', 0) + int(r['n'])
     return out

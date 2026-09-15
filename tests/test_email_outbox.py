@@ -290,3 +290,124 @@ def test_list_unsubscribe_and_from_addr_ride_the_payload(make_person):
     outbox.drain(api_tx, smtp)
     assert smtp.sent[0]['from_addr'] == 'support@ahavah.app'
     assert smtp.sent[0]['list_unsubscribe'] == '<https://ahavah.app/u/notifications.abc>'
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1, ruling 1: a drain reserves ONE row at a time. A batch
+# reservation meant a process that died mid-batch stranded every row it had
+# claimed; reserving per iteration strands at most the one actually in flight.
+# ---------------------------------------------------------------------------
+
+class _Abort(BaseException):
+    """Not an Exception: `drain`'s own `except Exception` (the retryable-SMTP
+    path) must not catch this, so it stands in for the process genuinely
+    going away mid-send."""
+
+
+class _AbortingSmtp:
+    def __init__(self, abort_on: int):
+        self.sent: list[dict] = []
+        self.abort_on = abort_on
+
+    def send(self, **kw):
+        self.sent.append(kw)
+        if len(self.sent) == self.abort_on:
+            raise _Abort('process died mid-send')
+        return 'mid-' + str(len(self.sent))
+
+
+def _states(person_ids):
+    with api_tx('read committed') as tx:
+        return {r['person_id']: r['state'] for r in tx.execute(
+            """SELECT person_id, state FROM email_outbox
+                WHERE person_id = ANY(%(ids)s) ORDER BY id""",
+            dict(ids=list(person_ids))).fetchall()}
+
+
+def test_a_drain_that_dies_mid_send_strands_exactly_one_row(make_person):
+    addrs = [_addr('strand1'), _addr('strand2'), _addr('strand3')]
+    people = [make_person(name=f'Strand{i}', email=a) for i, a in enumerate(addrs)]
+    for person, addr in zip(people, addrs):
+        _enqueue(person['id'], addr, cid='strand')
+    ids = [p['id'] for p in people]
+    _only(*ids)
+    smtp = _AbortingSmtp(abort_on=2)
+    try:
+        outbox.drain(api_tx, smtp)
+    except _Abort:
+        pass
+    else:
+        raise AssertionError('the stub should have aborted the drain')
+    states = _states(ids)
+    assert states[ids[0]] == 'accepted'      # already finished, unaffected
+    assert states[ids[1]] == 'reserved'      # the one genuinely in flight
+    assert states[ids[2]] == 'queued'        # never claimed, free for the next drain
+    assert len(smtp.sent) == 2
+
+
+def test_the_next_drain_picks_up_where_a_dead_one_stopped(make_person):
+    """The rows a dead drain never claimed are still 'queued', so the very
+    next drain sends them without waiting out the reservation timeout."""
+    addrs = [_addr('resume1'), _addr('resume2')]
+    people = [make_person(name=f'Resume{i}', email=a) for i, a in enumerate(addrs)]
+    for person, addr in zip(people, addrs):
+        _enqueue(person['id'], addr, cid='resume')
+    ids = [p['id'] for p in people]
+    _only(*ids)
+    try:
+        outbox.drain(api_tx, _AbortingSmtp(abort_on=1))
+    except _Abort:
+        pass
+    assert _states(ids)[ids[1]] == 'queued'
+    smtp = _Smtp()
+    out = outbox.drain(api_tx, smtp)
+    assert out['reserved'] == 1 and len(smtp.sent) == 1
+    assert _states(ids)[ids[1]] == 'accepted'
+
+
+def test_a_send_that_was_never_recorded_is_never_sent_again(make_person):
+    """Crash window (b): SMTP accepted the message but the process died
+    before `mark_accepted` committed. Nobody knows whether it arrived, so the
+    reaper marks it `acceptance_unknown` and NO second send is attempted."""
+    email = _addr('unrecorded')
+    p = make_person(name='Unrecorded', email=email)
+    _enqueue(p['id'], email, cid='unrecorded-1')
+    _only(p['id'])
+
+    first = _Smtp()
+    with api_tx() as tx:
+        rows = outbox.reserve(tx, limit=1)
+    assert len(rows) == 1
+    payload = rows[0]['payload']
+    first.send(subject=payload['subject'], body=payload['html'], to_addr=rows[0]['email'],
+               from_addr=payload['from_addr'], list_unsubscribe=payload['list_unsubscribe'])
+    # mark_accepted deliberately NOT called: this is the crash.
+    with api_tx() as tx:
+        tx.execute("UPDATE email_outbox SET reserved_at = NOW() - interval '11 minutes' WHERE id = %(i)s",
+                   dict(i=rows[0]['id']))
+
+    second = _Smtp()
+    out = outbox.drain(api_tx, second)
+    assert out['unknown_reaped'] == 1 and out['reserved'] == 0
+    assert second.sent == []
+    assert len(first.sent) == 1
+    assert _row(p['id'])['state'] == 'acceptance_unknown'
+
+
+def test_status_buckets_a_state_it_does_not_know(make_person):
+    """Forward compatibility: a row written by a newer deploy, in a state
+    this one has never heard of, must not blow up the admin dashboard."""
+    email = _addr('unknownstate')
+    p = make_person(name='UnknownState', email=email)
+    row_id = _enqueue(p['id'], email, cid='unknown-state-1')
+    with api_tx() as tx:
+        tx.execute("ALTER TABLE email_outbox DROP CONSTRAINT email_outbox_state_check")
+        try:
+            tx.execute("UPDATE email_outbox SET state = 'quarantined' WHERE id = %(i)s", dict(i=row_id))
+            counts = outbox.status(tx, 'e1', 'unknown-state-1')
+        finally:
+            tx.execute("UPDATE email_outbox SET state = 'queued' WHERE id = %(i)s", dict(i=row_id))
+            tx.execute("""ALTER TABLE email_outbox ADD CONSTRAINT email_outbox_state_check
+                          CHECK (state IN ('queued','reserved','accepted','acceptance_unknown','failed','skipped'))""")
+    assert counts['other'] == 1
+    assert counts['queued'] == 0 and counts['accepted'] == 0

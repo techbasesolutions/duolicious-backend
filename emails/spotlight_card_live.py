@@ -31,7 +31,8 @@ AHAVAH_IG_HANDLE = "ahavah.app"
 # `activated AND spotlight_opt_in` is part of the recipient query itself: by
 # the time a receipt lands the member may have withdrawn or been deactivated,
 # and "your card is live" is the one email that must never reach someone who
-# has left Community Spotlight. No row means no send (see `send_card_live`).
+# has left Community Spotlight. No row means nothing is even queued (see
+# `enqueue_card_live`).
 _Q_PERSON = """
     SELECT email, split_part(name, ' ', 1) AS first_name
       FROM person WHERE id = %(id)s AND activated AND spotlight_opt_in
