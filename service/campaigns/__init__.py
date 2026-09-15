@@ -150,11 +150,35 @@ def _ua_class(ua: str) -> str:
         return 'mobile'
     return 'desktop' if u else 'unknown'
 
-def record_click(tx, key: str, user_agent: str) -> Optional[str]:
+# Named platforms a Spotlight click's `?p=` query param may claim (F10).
+# Anything else is stored as null rather than trusted verbatim into the
+# column -- the platform is metadata for reporting, not something that
+# should silently grow new values just because a URL was crafted with one.
+PLATFORMS = ('facebook', 'instagram')
+
+def record_click(tx, key: str, user_agent: str,
+                 platform: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+    """Record a click on `/s/<key>` and, for a non-bot click, mint the
+    per-click receipt a later task will use as the sole basis for sign-up
+    attribution (F10). Returns `(target_url, receipt)`; both are None when
+    the key is unknown, and `receipt` alone is None for a bot click -- the
+    row is still recorded (so post_stats keeps counting it) but no receipt
+    is ever handed to a crawler.
+
+    `receipt = secrets.token_urlsafe(24)` is exactly 32 characters, the
+    same wire limit duotypes.PostFinishOnboarding.spotlight_ref and
+    service.spotlight.attribution.MAX_REF_LEN both enforce."""
     row = tx.execute("SELECT target_url FROM campaign_link WHERE key = %(k)s",
                      dict(k=key)).fetchone()
     if not row:
-        return None
-    tx.execute("INSERT INTO campaign_click (link_key, ua_class) VALUES (%(k)s, %(u)s)",
-               dict(k=key, u=_ua_class(user_agent)))
-    return row['target_url']
+        return None, None
+    ua_class = _ua_class(user_agent)
+    receipt = None if ua_class == 'bot' else secrets.token_urlsafe(24)
+    stored_platform = platform if platform in PLATFORMS else None
+    tx.execute(
+        """
+        INSERT INTO campaign_click (link_key, ua_class, receipt, platform)
+        VALUES (%(k)s, %(u)s, %(r)s, %(p)s)
+        """,
+        dict(k=key, u=ua_class, r=receipt, p=stored_platform))
+    return row['target_url'], receipt

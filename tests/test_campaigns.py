@@ -25,10 +25,11 @@ def test_campaign_link_roundtrip(make_person):
     with api_tx() as tx:
         url = make_campaign_link(tx, 'e3', f'{WEB_BASE_URL}/discover', p['id'])
         key = url.rsplit('/', 1)[1]
-        assert record_click(tx, key, 'Mozilla/5.0') == f'{WEB_BASE_URL}/discover'
+        target, receipt = record_click(tx, key, 'Mozilla/5.0')
+        assert target == f'{WEB_BASE_URL}/discover' and receipt
         n = tx.execute("SELECT count(*) AS n FROM campaign_click WHERE link_key = %(k)s", dict(k=key)).fetchone()['n']
         assert n == 1
-        assert record_click(tx, 'nope', 'x') is None
+        assert record_click(tx, 'nope', 'x') == (None, None)
 
 def test_click_route_redirects(client, make_person):
     p = make_person(name='Route')
@@ -38,6 +39,35 @@ def test_click_route_redirects(client, make_person):
     r = client.get(f'/s/{key}')
     assert r.status_code == 302 and r.headers['Location'] == f'{WEB_BASE_URL}/discover'
     assert client.get('/s/doesnotexist').status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Wave 3b, task 2: the route hands the click's receipt back to the web
+# forwarder as a response header (never a cookie -- the web app owns that),
+# and forwards `?p=` into `record_click`'s platform argument. A bot never
+# gets a header at all, so a crawler can never carry a usable receipt.
+# ---------------------------------------------------------------------------
+
+def test_click_route_sets_receipt_header_and_forwards_platform(client, make_person):
+    p = make_person(name='Receipt')
+    with api_tx() as tx:
+        url = make_campaign_link(tx, 'e1', f'{WEB_BASE_URL}/discover', p['id'])
+    key = url.rsplit('/', 1)[1]
+    r = client.get(f'/s/{key}?p=instagram', headers={'User-Agent': 'Mozilla/5.0 (iPhone)'})
+    assert r.status_code == 302 and 'X-Spotlight-Receipt' in r.headers
+    receipt = r.headers['X-Spotlight-Receipt']
+    with api_tx() as tx:
+        row = tx.execute("SELECT platform FROM campaign_click WHERE receipt = %(r)s", dict(r=receipt)).fetchone()
+    assert row['platform'] == 'instagram'
+
+
+def test_click_route_omits_receipt_header_for_a_bot(client, make_person):
+    p = make_person(name='BotRoute')
+    with api_tx() as tx:
+        url = make_campaign_link(tx, 'e1', f'{WEB_BASE_URL}/discover', p['id'])
+    key = url.rsplit('/', 1)[1]
+    r = client.get(f'/s/{key}', headers={'User-Agent': 'facebookexternalhit/1.1'})
+    assert r.status_code == 302 and 'X-Spotlight-Receipt' not in r.headers
 
 
 # ---------------------------------------------------------------------------

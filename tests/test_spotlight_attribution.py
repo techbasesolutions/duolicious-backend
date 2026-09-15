@@ -56,3 +56,57 @@ def test_post_finish_onboarding_model_validates_spotlight_ref():
     assert PostFinishOnboarding(spotlight_ref='abc123').spotlight_ref == 'abc123'
     with pytest.raises(ValidationError):
         PostFinishOnboarding(spotlight_ref='x' * 40)
+
+
+# ---------------------------------------------------------------------------
+# Wave 3b, task 2: record_click mints a per-click receipt (F10). The shared
+# campaign_link.key cannot prove a particular visitor clicked; the receipt
+# minted here is what a later task will make the only thing that earns
+# credit.
+# ---------------------------------------------------------------------------
+
+def test_record_click_mints_a_receipt(make_campaign_link):
+    key = make_campaign_link()
+    with api_tx() as tx:
+        target, receipt = record_click(tx, key, 'Mozilla/5.0 (iPhone)')
+    assert target and receipt and len(receipt) <= 32
+    with api_tx() as tx:
+        row = tx.execute("SELECT receipt, ua_class FROM campaign_click WHERE receipt = %(r)s", dict(r=receipt)).fetchone()
+    assert row['ua_class'] == 'mobile'
+
+def test_a_bot_click_is_recorded_but_carries_no_receipt(make_campaign_link):
+    key = make_campaign_link()
+    with api_tx() as tx:
+        target, receipt = record_click(tx, key, 'facebookexternalhit/1.1')
+    assert target and receipt is None
+    with api_tx() as tx:
+        n = tx.execute("SELECT count(*) AS n FROM campaign_click WHERE link_key = %(k)s AND receipt IS NULL", dict(k=key)).fetchone()['n']
+    assert n == 1
+
+def test_two_clicks_mint_different_receipts(make_campaign_link):
+    key = make_campaign_link()
+    with api_tx() as tx:
+        _, a = record_click(tx, key, 'Mozilla/5.0 (iPhone)')
+        _, b = record_click(tx, key, 'Mozilla/5.0 (iPhone)')
+    assert a != b
+
+def test_platform_is_stored_when_named(make_campaign_link):
+    key = make_campaign_link()
+    with api_tx() as tx:
+        _, r = record_click(tx, key, 'Mozilla/5.0 (iPhone)', platform='instagram')
+    with api_tx() as tx:
+        assert tx.execute("SELECT platform FROM campaign_click WHERE receipt = %(r)s", dict(r=r)).fetchone()['platform'] == 'instagram'
+
+def test_an_unknown_platform_is_stored_as_null(make_campaign_link):
+    key = make_campaign_link()
+    with api_tx() as tx:
+        _, r = record_click(tx, key, 'Mozilla/5.0 (iPhone)', platform='myspace')
+    with api_tx() as tx:
+        assert tx.execute("SELECT platform FROM campaign_click WHERE receipt = %(r)s", dict(r=r)).fetchone()['platform'] is None
+
+def test_receipt_length_is_within_the_wire_limit():
+    # duotypes.PostFinishOnboarding.spotlight_ref and
+    # service.spotlight.attribution.MAX_REF_LEN both cap at 32 characters --
+    # assert the actual token length rather than trusting the library.
+    import secrets
+    assert len(secrets.token_urlsafe(24)) == 32
