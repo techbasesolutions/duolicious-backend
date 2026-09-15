@@ -157,14 +157,14 @@ def test_claim_route_returns_lease_token(make_person, client):
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         tx.execute("UPDATE publishing_queue SET status = 'scheduled', scheduled_for = NOW() - interval '1 minute' WHERE request_key = %(rk)s", dict(rk=rk))
-        set_setting(tx, 'scheduler_enabled', 'true')
+        set_setting(tx, 'publication_enabled', 'true')
     try:
         r = client.post('/admin/growth/queue/claim', json=dict(max=50), headers={'X-Growth-Cron': 'test-cron-secret'})
-        mine = [x for x in r.get_json() if x['request_key'] == rk]
+        mine = [x for x in r.get_json()['claimed'] if x['request_key'] == rk]
         assert len(mine) == 2 and all(isinstance(x['lease_token'], str) and len(x['lease_token']) == 32 for x in mine)
     finally:
         with api_tx() as tx:
-            set_setting(tx, 'scheduler_enabled', 'false')
+            set_setting(tx, 'publication_enabled', 'false')
 
 
 def test_late_receipt_on_a_roundup_files_one_unattributed_task():

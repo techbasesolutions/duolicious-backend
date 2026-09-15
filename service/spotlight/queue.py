@@ -1,6 +1,7 @@
 """Publishing queue operations (spec 3.6). Every function runs inside the caller's api_tx; never open one here."""
 from __future__ import annotations
 import hmac
+import re
 import uuid
 from typing import Optional
 from service.campaigns import make_campaign_link
@@ -37,21 +38,41 @@ OUTCOME_DELIVERY_STATE = {
     'delivery_unknown': 'delivery_unknown',
     'review': 'none',
 }
-# Wave 1 (migration 0044) seeded five more boolean flags alongside the
-# original three; `approve_card`, `edit_caption` and the render tick all
-# gate on the new ones, so they must be settable the same way.
-_SETTING_KEYS = ('scheduler_enabled', 'auto_welcome', 'auto_roundup',
-                 'approvals_enabled', 'roundup_tiles_enabled', 'invites_enabled',
+# Task 9 (F12): the one `scheduler_enabled` switch gated publishing and
+# removals together while the tick ran regardless, and `auto_welcome`/
+# `auto_roundup` were stored and never read. Migration 0045 deletes all
+# three rows; the five Wave 1 keys (migration 0044) are the whole surface
+# now -- `invites_enabled` (candidate creation and E4), `publication_enabled`
+# (claiming and publishing) and `external_access_enabled` (the emergency
+# stop for every outbound platform call, removals included) join
+# `approvals_enabled` and `roundup_tiles_enabled`.
+_SETTING_KEYS = ('approvals_enabled', 'roundup_tiles_enabled', 'invites_enabled',
                  'publication_enabled', 'external_access_enabled')
 # Keys whose value is not a 'true'/'false' flag. The page-token health probe
 # writes an ISO timestamp and a validity flag here, so these two accept any
 # string value; every other key stays a strict boolean.
 _FREE_KEYS = ('token_expires_at', 'token_valid')
 
+# A caller-supplied business key (Task 9): letters, digits, and the three
+# separators a key like `roundup:2026-W38` needs (the ISO week number's own
+# leading `W`, from the route's own week_key, is uppercase). Anything else
+# -- spaces, punctuation -- is refused rather than silently slugified.
+_REQUEST_KEY_RE = re.compile(r'^[a-zA-Z0-9:_-]{1,64}$')
 
-def create_candidate(tx, *, kind: str, subject_person_id: Optional[int], caption: str, created_by: str, platforms=PLATFORMS) -> str:
+
+def create_candidate(tx, *, kind: str, subject_person_id: Optional[int], caption: str, created_by: str,
+                     platforms=PLATFORMS, request_key: Optional[str] = None) -> str:
     if kind not in KINDS:
         raise ValueError('bad_kind')
+    if request_key is not None:
+        if not _REQUEST_KEY_RE.match(request_key):
+            raise ValueError('bad_request_key')
+        # Converge: a caller racing its own business key (the weekly roundup
+        # cron firing twice) gets the existing rows back untouched rather
+        # than a second copy.
+        if tx.execute("SELECT 1 FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
+                      dict(rk=request_key)).fetchone():
+            return request_key
     if kind == 'roundup':
         if subject_person_id is not None:
             raise ValueError('roundup_has_no_subject')
@@ -63,7 +84,7 @@ def create_candidate(tx, *, kind: str, subject_person_id: Optional[int], caption
         if not ok:
             raise ValueError(reason)
         status = 'awaiting_member'
-    rk = uuid.uuid4().hex
+    rk = request_key or uuid.uuid4().hex
     # Spec 3.4: every published card carries a measurable CTA, so the link is
     # minted here, once per request, and appended to the caption both platform
     # rows share. Minting it at creation (rather than in each caption builder)

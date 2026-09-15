@@ -46,7 +46,8 @@ from service.spotlight.occurrence import record_occurrence, pictured_people, is_
 from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      set_status, settings, set_setting,
                                      reap_expired_leases, record_receipt, OUTCOMES,
-                                     OUTCOME_DELIVERY_STATE, PLATFORMS)
+                                     OUTCOME_DELIVERY_STATE, PLATFORMS,
+                                     _SETTING_KEYS, _FREE_KEYS)
 from service.spotlight.revisions import attach_render, consent_complete, create_revision, edit_caption
 from service.spotlight.roundup import roundup_snapshot
 from service.spotlight.storage import _bucket, delete_images
@@ -296,21 +297,33 @@ _Q_ROWS = """
      LIMIT 200
 """
 
+# Task 9 (F12): the welcome cohort is defined by sign-up time, not opt-in
+# time -- opt-in can happen long after signing up (or be re-toggled), so
+# ordering by it let a member who opted in years ago resurface as "new".
 _Q_WELCOME_CANDIDATES = """
     SELECT p.id, p.name
       FROM person p
-     WHERE p.spotlight_opt_in_at > NOW() - interval '14 days'
+     WHERE p.sign_up_time > NOW() - interval '14 days'
+       AND p.spotlight_opt_in IS TRUE
        AND NOT EXISTS (SELECT 1 FROM publishing_queue q
                         WHERE q.subject_person_id = p.id AND q.kind = 'welcome')
-     ORDER BY p.spotlight_opt_in_at
+     ORDER BY p.sign_up_time
      LIMIT 50
 """
 
+# Task 9 (F12): a duplicate tick firing twice in the same week used to see no
+# roundup "recent enough" (a 6-day lookback measured from each call's own
+# NOW()) and create two. `_week_key` is the same business key
+# `post_growth_spotlight_roundup` passes to `create_candidate`, so this is
+# now an existence check on this week's key, not a rolling window.
 _Q_ROUNDUP_RECENT = """
-    SELECT EXISTS (SELECT 1 FROM publishing_queue
-                    WHERE kind = 'roundup'
-                      AND created_at > NOW() - interval '6 days') AS recent
+    SELECT EXISTS (SELECT 1 FROM publishing_queue WHERE request_key = %(rk)s) AS recent
 """
+
+
+def _week_key() -> str:
+    y, w, _ = datetime.now(timezone.utc).isocalendar()
+    return f"roundup:{y}-W{w:02d}"
 
 
 # The occurrence table (Wave 1 F05) is the source of truth for "when was this
@@ -446,28 +459,26 @@ def post_growth_queue_claim():
     except (TypeError, ValueError):
         abort(400)
     requested = max(1, min(requested, 50))
-    # Opt-in response shape. The admin worker (ahavah-admin growth-server.ts
-    # `claim`) still expects a bare array and has no `shape` key in its
-    # request body, so the default stays backward compatible; a caller that
-    # wants the reaped count sends {"shape": "v2"} and gets the object.
-    v2 = body.get('shape') == 'v2'
     with api_tx() as tx:
-        # Reaping runs on every call, scheduler on or off: an interrupted
-        # publish can leave a lease to expire regardless of the kill switch,
-        # and reaping only ever moves a row to 'review' -- it never
-        # publishes anything itself.
+        # Reaping runs on every call regardless of the two controls below: an
+        # interrupted publish can leave a lease to expire whether or not
+        # anything may currently be claimed, and reaping only ever moves a
+        # row to 'review' -- it never publishes anything itself.
         reaped = reap_expired_leases(tx)
-        # The kill switch. With the scheduler off nothing is leased, so a cron
-        # worker left running cannot publish.
-        if settings(tx).get('scheduler_enabled') != 'true':
+        cfg = settings(tx)
+        # Task 9 (F12): `external_access_enabled` is the emergency stop for
+        # every outbound platform call; `publication_enabled` is the
+        # ordinary pause. Both answer through this one object now -- the
+        # `shape` body key from the old bare-array default is gone.
+        halted = cfg.get('external_access_enabled') != 'true'
+        paused = cfg.get('publication_enabled') != 'true'
+        if halted or paused:
             rows = []
         else:
             rows = tx.execute("SELECT * FROM claim_spotlight_posts(%(m)s)", dict(m=requested)).fetchall()
-        _audit(tx, s, 'growth.queue.claim', claimed=len(rows), reaped=reaped)
+        _audit(tx, s, 'growth.queue.claim', claimed=len(rows), reaped=reaped, paused=paused, halted=halted)
     claimed = [_row(r) for r in rows]
-    if v2:
-        return jsonify({'claimed': claimed, 'reaped': reaped})
-    return jsonify(claimed)
+    return jsonify({'claimed': claimed, 'reaped': reaped, 'paused': paused, 'halted': halted})
 
 
 @post('/admin/growth/queue/<qid>/complete', limiter=growth_limit)
@@ -659,16 +670,20 @@ def post_growth_queue_image(request_key: str):
 def get_growth_candidates():
     _gate()
     with api_tx('read committed') as tx:
+        # Task 9 (F12): invites off means no new welcome or roundup should
+        # even be suggested, not just refused on creation.
+        if settings(tx).get('invites_enabled') != 'true':
+            return dict(welcomes=[], roundup_due=False, invites_enabled=False)
         rows = tx.execute(_Q_WELCOME_CANDIDATES).fetchall()
         welcomes = []
         for r in rows:
             ok, _reason = eligibility(tx, r['id'])
             if ok:
                 welcomes.append(dict(person_id=r['id'], first_name=(r['name'] or '').split(' ')[0]))
-        recent_roundup = tx.execute(_Q_ROUNDUP_RECENT).fetchone()['recent']
+        recent_roundup = tx.execute(_Q_ROUNDUP_RECENT, dict(rk=_week_key())).fetchone()['recent']
     # Monday is weekday() == 0.
     roundup_due = datetime.now(timezone.utc).weekday() == 0 and not recent_roundup
-    return dict(welcomes=welcomes, roundup_due=roundup_due)
+    return dict(welcomes=welcomes, roundup_due=roundup_due, invites_enabled=True)
 
 
 @post('/admin/growth/spotlight/welcome', limiter=growth_limit)
@@ -678,6 +693,10 @@ def post_growth_spotlight_welcome():
     if not person_id:
         abort(400)
     with api_tx() as tx:
+        cfg = settings(tx)
+        # Task 9 (F12): invites_enabled gates candidate creation and E4.
+        if cfg.get('invites_enabled') != 'true':
+            return dict(error='invites_paused'), 409
         already = tx.execute(
             """SELECT 1 FROM publishing_queue
                 WHERE subject_person_id = %(p)s AND kind = 'welcome' LIMIT 1""",
@@ -697,19 +716,34 @@ def post_growth_spotlight_welcome():
                                   caption=caption, created_by=_actor(s))
         except ValueError as e:
             abort(400, str(e))
-        _audit(tx, s, 'growth.queue.welcome', person_id=person_id, request_key=rk)
-    _send_card_ready(person_id, rk)
+        # Added from the Task 2 review: a member must never receive an
+        # invite they cannot act on. Approvals off means there is no way to
+        # approve the card yet, so the candidate is created (ready the
+        # moment approvals resume) but E4 is withheld.
+        invite_sent = cfg.get('approvals_enabled') == 'true'
+        _audit(tx, s, 'growth.queue.welcome', person_id=person_id, request_key=rk, invite_sent=invite_sent)
+    if invite_sent:
+        _send_card_ready(person_id, rk)
     return dict(request_key=rk)
 
 
 @post('/admin/growth/spotlight/roundup', limiter=growth_limit)
 def post_growth_spotlight_roundup():
     s = _gate()
+    week_key = _week_key()
     with api_tx() as tx:
+        # Task 9 (F12): invites_enabled gates candidate creation and E4.
+        if settings(tx).get('invites_enabled') != 'true':
+            return dict(error='invites_paused'), 409
+        # The weekly business key converges: a duplicate tick in the same
+        # week gets told "already" rather than creating a second roundup.
+        if tx.execute("SELECT 1 FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
+                      dict(rk=week_key)).fetchone():
+            return dict(request_key=week_key, already=True)
         snapshot = roundup_snapshot(tx)
         caption = _roundup_caption(snapshot['count'], snapshot['countries'])
         rk = create_candidate(tx, kind='roundup', subject_person_id=None,
-                              caption=caption, created_by=_actor(s))
+                              caption=caption, created_by=_actor(s), request_key=week_key)
         tx.execute(
             "UPDATE publishing_queue SET payload = %(p)s::jsonb WHERE request_key = %(rk)s",
             dict(p=json.dumps(snapshot), rk=rk))
@@ -741,6 +775,12 @@ def post_growth_spotlight_roundup():
 def post_growth_queue_expire_approvals():
     s = _gate()
     with api_tx() as tx:
+        # Added from the Task 2 review: the 7-day clock only runs while a
+        # member can act on it. With approvals off nobody can approve a
+        # card, so the sweep must not cancel anything for having sat idle.
+        if settings(tx).get('approvals_enabled') != 'true':
+            _audit(tx, s, 'growth.queue.expire_approvals', cancelled=0, approvals_paused=True)
+            return dict(cancelled=0, approvals_paused=True)
         n = expire_member_approvals(tx)
         _audit(tx, s, 'growth.queue.expire_approvals', cancelled=n)
     return dict(cancelled=n)
@@ -750,7 +790,11 @@ def post_growth_queue_expire_approvals():
 def get_growth_settings():
     _gate()
     with api_tx('read committed') as tx:
-        return settings(tx)
+        cfg = settings(tx)
+    # Task 9 (F12): only the five live controls plus the two free (non-flag)
+    # keys are ever answered here -- a stray row left behind by an old
+    # migration or a bad write must never resurface on this surface.
+    return {k: v for k, v in cfg.items() if k in _SETTING_KEYS or k in _FREE_KEYS}
 
 
 @get('/admin/growth/removals', limiter=growth_limit)
@@ -758,8 +802,13 @@ def get_growth_removals():
     _gate()
     pending = request.args.get('pending') in ('1', 'true', 'yes')
     with api_tx('read committed') as tx:
-        rows = tx.execute(_Q_REMOVALS, dict(pending=pending)).fetchall()
-    return jsonify([_row(r) for r in rows])
+        # Task 9 (F12): external_access_enabled is the emergency stop for
+        # every outbound platform call, removals (deletions) included -- the
+        # tasks stay pending in the database for later, this just refuses to
+        # hand them to the worker while the stop is engaged.
+        halted = settings(tx).get('external_access_enabled') != 'true'
+        rows = [] if halted else tx.execute(_Q_REMOVALS, dict(pending=pending)).fetchall()
+    return jsonify({'tasks': [_row(r) for r in rows], 'halted': halted})
 
 
 @post('/admin/growth/removals/<int:removal_id>/done', limiter=growth_limit)
@@ -954,6 +1003,9 @@ def post_growth_spotlight_member_of_week(s: t.SessionInfo):
         abort(400)
     when = _parse_dt(body.get('scheduled_for'))
     with api_tx() as tx:
+        # Task 9 (F12): invites_enabled gates candidate creation and E4.
+        if settings(tx).get('invites_enabled') != 'true':
+            return dict(error='invites_paused'), 409
         info = tx.execute(
             """SELECT split_part(name, ' ', 1) AS first_name,
                       date_part('year', age(date_of_birth))::int AS age,

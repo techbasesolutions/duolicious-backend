@@ -63,6 +63,19 @@ def _make_eligible(make_person, name='Elig', gender='Woman'):
     return p
 
 
+def _clear_this_weeks_roundup(tx):
+    """Task 9 (F12): POST /spotlight/roundup now converges on a weekly
+    business key, so two tests calling the route in the same calendar week
+    must not see each other's row -- clear it first, the same way
+    test_spotlight_controls.py's own convergence test does. The queue rows
+    go first (they hold the FK to spotlight_revision)."""
+    from datetime import datetime, timezone
+    y, w, _ = datetime.now(timezone.utc).isocalendar()
+    key = f"roundup:{y}-W{w:02d}"
+    tx.execute("DELETE FROM publishing_queue WHERE request_key = %(k)s", dict(k=key))
+    tx.execute("DELETE FROM spotlight_revision WHERE request_key = %(k)s", dict(k=key))
+
+
 def _render(tx, rk, key='k', url='https://cdn/k.png'):
     """Stand-in for the /admin/growth/queue/<rk>/image route (Task 2): renders
     the request's current revision and stamps every row's own image columns
@@ -100,13 +113,13 @@ def test_cron_can_list_claim_and_complete(client, make_person):
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
         _render(tx, rk)
-        set_setting(tx, 'scheduler_enabled', 'true')
+        set_setting(tx, 'publication_enabled', 'true')
         for r in tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall():
             set_status(tx, r['id'], 'scheduled')
         tx.execute("UPDATE publishing_queue SET scheduled_for = NOW() - interval '1 minute' WHERE request_key = %(rk)s", dict(rk=rk))
     H = {'X-Growth-Cron': 'test-cron-secret'}
-    claimed = client.post('/admin/growth/queue/claim', json={'max': 5}, headers=H).get_json()
-    mine = [r for r in claimed if r['request_key'] == rk]
+    body = client.post('/admin/growth/queue/claim', json={'max': 5}, headers=H).get_json()
+    mine = [r for r in body['claimed'] if r['request_key'] == rk]
     assert len(mine) == 2 and all(r['status'] == 'processing' for r in mine)
     r = client.post(f"/admin/growth/queue/{mine[0]['id']}/complete",
                     json={'status': 'published', 'external_post_id': '123', 'lease_token': mine[0]['lease_token']},
@@ -115,11 +128,12 @@ def test_cron_can_list_claim_and_complete(client, make_person):
     rows = client.get('/admin/growth/queue', headers=H).get_json()
     assert any(x['id'] == mine[0]['id'] and x['status'] == 'published' and x['external_post_id'] == '123' for x in rows)
     with api_tx() as tx:
-        set_setting(tx, 'scheduler_enabled', 'false')
+        set_setting(tx, 'publication_enabled', 'false')
 
 
-def test_claim_returns_nothing_when_scheduler_disabled(client):
-    assert client.post('/admin/growth/queue/claim', json={'max': 5}, headers={'X-Growth-Cron': 'test-cron-secret'}).get_json() == []
+def test_claim_returns_nothing_when_publication_disabled(client):
+    body = client.post('/admin/growth/queue/claim', json={'max': 5}, headers={'X-Growth-Cron': 'test-cron-secret'}).get_json()
+    assert body['claimed'] == [] and body['paused'] is True and body['halted'] is False
 
 
 def test_claim_reaps_expired_leases(client, make_person):
@@ -134,7 +148,7 @@ def test_claim_reaps_expired_leases(client, make_person):
                              lease_until = NOW() - interval '20 minutes'
                        WHERE id = %(id)s""", dict(id=qid))
     H = {'X-Growth-Cron': 'test-cron-secret'}
-    r = client.post('/admin/growth/queue/claim', json={'max': 5, 'shape': 'v2'}, headers=H)
+    r = client.post('/admin/growth/queue/claim', json={'max': 5}, headers=H)
     body = r.get_json()
     assert isinstance(body, dict) and 'claimed' in body and 'reaped' in body
     assert body['reaped'] >= 1
@@ -142,10 +156,6 @@ def test_claim_reaps_expired_leases(client, make_person):
     with api_tx('read committed') as tx:
         row = tx.execute("SELECT status, error, lease_until FROM publishing_queue WHERE id = %(id)s", dict(id=qid)).fetchone()
     assert row['status'] == 'review' and row['error'] == 'lease_expired' and row['lease_until'] is None
-    # The default (no shape key) shape is still a bare array, unchanged for
-    # the existing admin worker contract.
-    plain = client.post('/admin/growth/queue/claim', json={'max': 5}, headers=H).get_json()
-    assert isinstance(plain, list)
 
 
 def test_queue_due_filter(client, make_person):
@@ -345,8 +355,9 @@ def test_removals_listed_and_marked_done(client, make_person):
         # already published (service/spotlight/queue.py::cancel_for_member).
         set_spotlight_opt_in(tx, p['id'], False)
     H = {'X-Growth-Cron': 'test-cron-secret'}
-    rows = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
-    mine = [r for r in rows if r['request_key'] == rk]
+    body = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
+    assert body['halted'] is False
+    mine = [r for r in body['tasks'] if r['request_key'] == rk]
     assert len(mine) == 1
     task = mine[0]
     assert task['platform'] == 'instagram' and task['external_post_id'] == 'ig-1'
@@ -357,7 +368,7 @@ def test_removals_listed_and_marked_done(client, make_person):
                              dict(i=task['id'])).fetchone()['done_at']
     assert done_at is not None
     assert not any(r['id'] == task['id']
-                   for r in client.get('/admin/growth/removals?pending=1', headers=H).get_json())
+                   for r in client.get('/admin/growth/removals?pending=1', headers=H).get_json()['tasks'])
 
 
 def test_removal_done_deletes_stored_image(client, make_person, monkeypatch):
@@ -373,7 +384,7 @@ def test_removal_done_deletes_stored_image(client, make_person, monkeypatch):
                        WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk))
         set_spotlight_opt_in(tx, p['id'], False)
     H = {'X-Growth-Cron': 'test-cron-secret'}
-    task = [r for r in client.get('/admin/growth/removals?pending=1', headers=H).get_json() if r['request_key'] == rk][0]
+    task = [r for r in client.get('/admin/growth/removals?pending=1', headers=H).get_json()['tasks'] if r['request_key'] == rk][0]
     assert client.post(f"/admin/growth/removals/{task['id']}/done", json={}, headers=H).status_code == 200
     assert deleted == ['spotlight/removed.png']
     with api_tx('read committed') as tx:
@@ -399,8 +410,8 @@ def test_candidates_and_welcome(client, make_person, monkeypatch):
 def test_settings_and_token_health(client, make_person):
     admin = _make_admin(make_person); tok = _session_for(admin)
     A = {'Authorization': f'Bearer {tok}'}; H = {'X-Growth-Cron': 'test-cron-secret'}
-    assert client.post('/admin/growth/settings', json={'key': 'auto_welcome', 'value': 'true'}, headers=A).status_code == 200
-    assert client.get('/admin/growth/settings', headers=H).get_json()['auto_welcome'] == 'true'
+    assert client.post('/admin/growth/settings', json={'key': 'roundup_tiles_enabled', 'value': 'true'}, headers=A).status_code == 200
+    assert client.get('/admin/growth/settings', headers=H).get_json()['roundup_tiles_enabled'] == 'true'
     assert client.post('/admin/growth/settings', json={'key': 'nope', 'value': 'true'}, headers=A).status_code == 400
     assert client.post('/admin/growth/token-health', json={'expires_at': '2027-01-01T00:00:00Z', 'valid': True}, headers=H).status_code == 200
     th = client.get('/admin/growth/token-health', headers=A).get_json()
@@ -412,7 +423,7 @@ def test_settings_and_token_health(client, make_person):
     # A rejected write leaves the stored value alone.
     th = client.get('/admin/growth/token-health', headers=A).get_json()
     assert th['valid'] is True and th['days_left'] > 0 and th['expires_at']
-    client.post('/admin/growth/settings', json={'key': 'auto_welcome', 'value': 'false'}, headers=A)
+    client.post('/admin/growth/settings', json={'key': 'roundup_tiles_enabled', 'value': 'false'}, headers=A)
 
 
 def test_suggest_orders_never_featured_first(client, make_person):
@@ -446,6 +457,7 @@ def test_roundup_route_stores_and_serves_tile_payload(client, make_person):
         rev_w = current_revision(tx, rk_w)
         record_consent(tx, rev_w['id'], a['id'], 'subject')
         set_setting(tx, 'roundup_tiles_enabled', 'true')
+        _clear_this_weeks_roundup(tx)
     H = {'X-Growth-Cron': 'test-cron-secret'}
     try:
         r = client.post('/admin/growth/spotlight/roundup', json={}, headers=H)
@@ -468,6 +480,8 @@ def test_roundup_route_count_only_revision(client):
     """Task 8: the owner-decision default. With roundup_tiles_enabled off
     (its seeded value), the roundup revision created by create_candidate
     stands untouched -- empty participants, complete by definition."""
+    with api_tx() as tx:
+        _clear_this_weeks_roundup(tx)
     r = client.post('/admin/growth/spotlight/roundup', json={}, headers={'X-Growth-Cron': 'test-cron-secret'})
     rk = r.get_json()['request_key']
     with api_tx() as tx:
@@ -485,6 +499,7 @@ def test_roundup_route_with_tiles_needs_every_participant(make_person, client):
         rev_w = current_revision(tx, rk_w)
         record_consent(tx, rev_w['id'], a['id'], 'subject')
         set_setting(tx, 'roundup_tiles_enabled', 'true')
+        _clear_this_weeks_roundup(tx)
     try:
         r = client.post('/admin/growth/spotlight/roundup', json={}, headers={'X-Growth-Cron': 'test-cron-secret'})
         rk = r.get_json()['request_key']
@@ -509,6 +524,7 @@ def test_roundup_route_tiled_creates_two_revisions_pointing_at_the_second(make_p
         rev_w = current_revision(tx, rk_w)
         record_consent(tx, rev_w['id'], a['id'], 'subject')
         set_setting(tx, 'roundup_tiles_enabled', 'true')
+        _clear_this_weeks_roundup(tx)
     try:
         r = client.post('/admin/growth/spotlight/roundup', json={}, headers={'X-Growth-Cron': 'test-cron-secret'})
         rk = r.get_json()['request_key']
@@ -536,6 +552,8 @@ def test_roundup_route_count_only_creates_a_single_revision(client):
     default), only revision 1 from create_candidate exists -- there is no
     second create_revision call and no dormant participants branch left in
     create_candidate to produce a mismatched one."""
+    with api_tx() as tx:
+        _clear_this_weeks_roundup(tx)
     r = client.post('/admin/growth/spotlight/roundup', json={}, headers={'X-Growth-Cron': 'test-cron-secret'})
     rk = r.get_json()['request_key']
     with api_tx() as tx:

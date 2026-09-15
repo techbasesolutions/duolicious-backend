@@ -10,7 +10,9 @@ def test_0041_schema():
         assert {'queue_id','platform','external_post_id','reason','done_at'} <= _cols(tx, 'spotlight_removal_task')
         assert {'key','value'} <= _cols(tx, 'spotlight_setting')
         assert 'signup_person_id' in _cols(tx, 'campaign_click')
-        assert tx.execute("SELECT value FROM spotlight_setting WHERE key = 'scheduler_enabled'").fetchone()['value'] == 'false'
+        # `scheduler_enabled` itself was deleted by migration 0045 (Task 9,
+        # F12: replaced by three named controls) -- only the column shape
+        # this migration introduced is still asserted here.
 
 def test_0041_claim_skips_future_and_locks():
     rk = uuid.uuid4().hex

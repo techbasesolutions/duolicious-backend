@@ -160,12 +160,12 @@ def test_opt_out_cancels(make_person):
 
 def test_settings_roundtrip():
     with api_tx() as tx:
-        assert settings(tx)['scheduler_enabled'] in ('true', 'false')
-        set_setting(tx, 'auto_welcome', 'true')
-        assert settings(tx)['auto_welcome'] == 'true'
+        assert settings(tx)['publication_enabled'] in ('true', 'false')
+        set_setting(tx, 'publication_enabled', 'true')
+        assert settings(tx)['publication_enabled'] == 'true'
         with pytest.raises(ValueError):
             set_setting(tx, 'nope', 'true')
-        set_setting(tx, 'auto_welcome', 'false')
+        set_setting(tx, 'publication_enabled', 'false')
 
 
 def test_create_candidate_appends_a_campaign_link_to_the_caption(make_person):
