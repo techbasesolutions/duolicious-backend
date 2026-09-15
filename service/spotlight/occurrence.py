@@ -87,7 +87,17 @@ def is_first_confirmation(tx, request_key: str) -> bool:
     the request key does, because both siblings are rows of the same key --
     the second completion blocks in the database until the first has
     committed, and then counts a state that already includes it. Without the
-    lock both could read 1 and both would send E5."""
+    lock both could read 1 and both would send E5.
+
+    Residual fix (fix wave item 1): the caller -- `post_growth_queue_complete`
+    or `post_growth_queue_reconcile` in service/api/admin/spotlight_routes.py
+    -- already took this exact lock, over this exact set of rows, in this
+    exact id order, via `lock_request_rows` (service/spotlight/queue.py)
+    before it read anything off its own row. The `FOR UPDATE` here is
+    therefore a re-lock by the same transaction, which Postgres grants for
+    free; it is kept (rather than trusting the caller) because this function
+    has its own correctness to prove and must not depend on every future
+    caller remembering to lock first."""
     tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s FOR UPDATE",
                dict(rk=request_key))
     n = tx.execute(

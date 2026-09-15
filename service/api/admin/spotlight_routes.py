@@ -44,7 +44,7 @@ from service.spotlight.dispatch import dispatch_check
 from service.spotlight.eligibility import eligibility, primary_photo_uuid, photo_url
 from service.spotlight.occurrence import record_occurrence, pictured_people, is_first_confirmation
 from service.spotlight.queue import (create_candidate, expire_member_approvals,
-                                     lock_queue_row, set_status, settings, set_setting,
+                                     lock_request_rows, set_status, settings, set_setting,
                                      reap_expired_leases, reconcile_published,
                                      record_receipt, OUTCOMES,
                                      OUTCOME_DELIVERY_STATE, PLATFORMS,
@@ -494,6 +494,14 @@ def post_growth_queue_complete(qid: str):
     email decision, before `record_receipt` runs, so a late `published`
     receipt against a withdrawn member's row is recorded (and its removal
     task filed, inside `record_receipt` itself) without ever sending it.
+
+    Residual fix (item 1): the lock taken here covers every row of the
+    request key, not just this one -- a sibling platform row completing at
+    the same moment takes the same wide lock before touching anything, so the
+    two can never each hold one row and block on the other's (see
+    `lock_request_rows`'s docstring in service/spotlight/queue.py).
+    `record_receipt` re-locks its own row in the same transaction, which
+    Postgres grants outright.
     """
     s = _gate()
     body = _body()
@@ -507,12 +515,12 @@ def post_growth_queue_complete(qid: str):
     occurrences = None
     first_confirmation = None
     with api_tx() as tx:
-        # The row lock is taken HERE, before anything is read off the row,
-        # so the `cancellation_requested_at` this route gates E5 on cannot
-        # change between that read and `record_receipt`'s own write.
-        # `record_receipt` re-locks the same row in the same transaction,
-        # which Postgres grants outright.
-        row = lock_queue_row(tx, queue_id)
+        # The request-wide lock is taken HERE, before anything is read off
+        # any row of the key, so the `cancellation_requested_at` this route
+        # gates E5 on cannot change between that read and `record_receipt`'s
+        # own write.
+        rows = lock_request_rows(tx, queue_id)
+        row = next((r for r in rows if r['id'] == queue_id), None)
         if not row:
             abort(404)
         try:
@@ -999,6 +1007,11 @@ def post_growth_queue_reconcile(s: t.SessionInfo, qid: str):
     task is filed when the member has already withdrawn, the occurrence is
     recorded, and E5 fires under the same conditions the complete route
     applies.
+
+    Residual fix (item 1): the lock taken here covers every row of the
+    request key, the same as the complete route above, before
+    `reconcile_published` is ever called -- see `lock_request_rows`'s
+    docstring in service/spotlight/queue.py for why.
     """
     require_admin(s)
     body = _body()
@@ -1009,13 +1022,14 @@ def post_growth_queue_reconcile(s: t.SessionInfo, qid: str):
     queue_id = _qid(qid)
     live = None
     with api_tx() as tx:
+        rows = lock_request_rows(tx, queue_id)
+        row = next((r for r in rows if r['id'] == queue_id), None)
+        if not row:
+            abort(404)
         try:
-            row = reconcile_published(tx, queue_id, external_post_id, post_url)
+            reconcile_published(tx, row, external_post_id, post_url)
         except ValueError as e:
-            reason = str(e)
-            if reason == 'not_found':
-                abort(404)
-            return dict(error=reason), 409
+            return dict(error=str(e)), 409
         occurrences = record_occurrence(tx, row['kind'], row['request_key'], pictured_people(tx, row))
         first_confirmation = is_first_confirmation(tx, row['request_key'])
         if (first_confirmation and row['subject_person_id'] is not None

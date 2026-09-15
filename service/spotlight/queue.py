@@ -166,13 +166,47 @@ def lock_queue_row(tx, queue_id):
     """Take the row lock for one queue row and read it back, or None when
     there is no such row.
 
-    Callers that both read a row and then act on it (the complete and
-    reconcile routes, `record_receipt` itself) take this lock FIRST, so the
-    values they decide on -- `cancellation_requested_at` above all, which
-    gates the live-card email -- cannot change underneath them between the
-    read and the write. `record_receipt`'s own lock is then a re-lock by the
-    same transaction, which Postgres grants for free."""
+    `record_receipt` takes this lock itself, as a re-lock: the complete route
+    calling it has already taken the wider `lock_request_rows` lock below, so
+    this never contends with anything. A caller with no wider lock of its own
+    (a direct call from a test, say) still gets the same single-row
+    correctness this always gave."""
     return tx.execute(_Q_LOCKED_ROW, dict(id=queue_id)).fetchone()
+
+
+_Q_REQUEST_ROWS = """
+    SELECT id, status, lease_token, delivery_state, external_post_id, post_url,
+           cancellation_requested_at, subject_person_id, platform, request_key, kind,
+           current_revision_id
+      FROM publishing_queue
+     WHERE request_key = (SELECT request_key FROM publishing_queue WHERE id = %(id)s)
+     ORDER BY id
+     FOR UPDATE
+"""
+
+
+def lock_request_rows(tx, queue_id):
+    """Lock every row of the request_key the given queue row belongs to, in
+    id order, and return them all.
+
+    Residual fix (fix wave item 1): the complete and reconcile routes used to
+    take `lock_queue_row`'s single-row lock, then later reach
+    `is_first_confirmation` (service/spotlight/occurrence.py), whose own
+    `SELECT ... FOR UPDATE` spans every row of the request key. Two sibling
+    platform rows completing at the same moment could each hold their own
+    row's lock and then block waiting for the other's there -- a genuine
+    deadlock. Taking the whole request's lock, in this same id order, before
+    either route reads anything off its own row removes the interleaving
+    entirely: whichever completion arrives first locks both rows and runs to
+    commit before the second can acquire anything, so the second simply
+    queues behind the first rather than contending row by row.
+    `is_first_confirmation`'s later `FOR UPDATE` over the same rows is then a
+    re-lock by the same transaction, which Postgres grants for free.
+
+    Returns [] when there is no such row (queue_id not found): the subquery
+    yields NULL and the outer WHERE then matches nothing, so the caller gets
+    the same "not found" shape `lock_queue_row`'s None used to give."""
+    return tx.execute(_Q_REQUEST_ROWS, dict(id=queue_id)).fetchall()
 
 
 def _file_late_removal_task(tx, queue_id, row: dict, external_post_id: Optional[str]) -> None:
@@ -196,6 +230,29 @@ def _file_late_removal_task(tx, queue_id, row: dict, external_post_id: Optional[
     _file_removal_tasks(tx, [task_row], row['subject_person_id'])
 
 
+def _file_investigate_task(tx, queue_id, row: dict) -> None:
+    """A row that already carries `cancellation_requested_at` just moved INTO
+    an unresolved delivery state (residual fix, item 2): `record_receipt`'s
+    own `delivery_unknown` outcome, or `reap_expired_leases` reaping it out of
+    `processing` on an expired lease. Either way its lease holder is gone and
+    nobody is coming back to it on their own -- exactly the situation
+    `withdraw_member` already hands an `investigate` task for when the row is
+    ALREADY in that state at withdrawal time (service/spotlight/withdrawal.py
+    step 3). This is the other direction: the withdrawal came first, stamping
+    the row while it was still `processing` (no task filed then -- its lease
+    holder was still expected to report back), and only now does the row
+    reach the state that needed one.
+
+    Goes through the same `_file_removal_tasks` helper withdrawal uses, so
+    the open-task guard (never two open tasks on one row) and the in-place
+    upgrade (a later `published` receipt turns this same task into a real
+    `delete_via_api`/`manual_instagram` order) both still apply."""
+    from service.spotlight.withdrawal import _file_removal_tasks
+    task_row = dict(id=queue_id, platform=row['platform'], external_post_id=None,
+                     request_key=row['request_key'])
+    _file_removal_tasks(tx, [task_row], row['subject_person_id'], reason='investigate')
+
+
 def _mark_published(tx, queue_id, row: dict, external_post_id: str, post_url: Optional[str]) -> None:
     """The one place a queue row becomes `published`. Shared by the lease
     holder's own receipt and the operator's reconcile, so both leave exactly
@@ -211,23 +268,28 @@ def _mark_published(tx, queue_id, row: dict, external_post_id: str, post_url: Op
         _file_late_removal_task(tx, queue_id, row, external_post_id)
 
 
-def reconcile_published(tx, queue_id, external_post_id: str, post_url: Optional[str] = None) -> dict:
+def reconcile_published(tx, row: dict, external_post_id: str, post_url: Optional[str] = None) -> dict:
     """The operator's decision that a row parked in `review` with an
     unresolved delivery is in fact live on the platform (spec 5). No lease is
     required: the lease that produced the row is gone by definition, which is
     exactly why a human has to answer for it.
 
-    Returns the locked row as it was BEFORE the write, so the caller can act
-    on its `cancellation_requested_at`/subject the same way the complete
-    route does. Raises ValueError('not_found') or ValueError('not_reconcilable')."""
+    `row` is the caller's own row, already locked: the reconcile route calls
+    `lock_request_rows` for the whole request key before this (the same
+    residual fix, item 1, `post_growth_queue_complete` applies before
+    `record_receipt`), so there is no `queue_id` re-lock here and no
+    ValueError('not_found') any more -- a missing row means the route's own
+    lookup in `lock_request_rows`'s result already came back None, which it
+    turns into a 404 before this is ever called.
+
+    Returns `row` unchanged, so the caller can act on its
+    `cancellation_requested_at`/subject the same way the complete route does.
+    Raises ValueError('not_reconcilable') for any other row state."""
     if not external_post_id:
         raise ValueError('external_id_required')
-    row = lock_queue_row(tx, queue_id)
-    if not row:
-        raise ValueError('not_found')
     if row['status'] != 'review' or row['delivery_state'] not in RECOVERABLE_DELIVERY_STATES:
         raise ValueError('not_reconcilable')
-    _mark_published(tx, queue_id, row, external_post_id, post_url)
+    _mark_published(tx, row['id'], row, external_post_id, post_url)
     return row
 
 
@@ -306,6 +368,18 @@ def record_receipt(tx, queue_id, lease_token: Optional[str], outcome: str, *,
                       error = %(err)s, lease_until = NULL, updated_at = NOW()
                 WHERE id = %(id)s""",
             dict(err=error, id=queue_id))
+        # Residual fix item 2: this outcome is only reached from a
+        # `processing` row (the duplicate check above already answered
+        # 'already' for a row that was parked in review with delivery_state
+        # 'delivery_unknown' already). A member who withdrew WHILE it was
+        # processing left only the cancellation stamp (withdraw_member step
+        # 3 files no task for a still-processing row -- its lease holder was
+        # still expected to report back). That lease holder just reported
+        # back with nothing definite, so the row is now exactly what
+        # withdrawal itself would have filed a task for had it arrived here
+        # first.
+        if row['cancellation_requested_at'] is not None:
+            _file_investigate_task(tx, queue_id, row)
     else:  # 'review'
         tx.execute(
             """UPDATE publishing_queue SET status = 'review', delivery_state = 'none',
@@ -332,12 +406,22 @@ def reap_expired_leases(tx) -> int:
     """An interrupted publish (worker crash, deploy, network partition) may
     have actually succeeded on the platform before the lease expired, so
     this never auto-retries (never moves back to 'scheduled') -- it lands in
-    'review' for a human to check (spec 5)."""
-    cur = tx.execute(
+    'review' for a human to check (spec 5).
+
+    Residual fix item 2: a row already carrying `cancellation_requested_at`
+    (a member who withdrew while it was still `processing`, per the same
+    reasoning as `record_receipt`'s `delivery_unknown` branch above) gets an
+    `investigate` task the instant it lands here, rather than waiting for
+    some later event that may never come."""
+    rows = tx.execute(
         """UPDATE publishing_queue SET status = 'review', error = 'lease_expired',
                   lease_until = NULL, updated_at = NOW()
-            WHERE status = 'processing' AND lease_until < NOW()""")
-    return cur.rowcount
+            WHERE status = 'processing' AND lease_until < NOW()
+        RETURNING id, platform, request_key, subject_person_id, cancellation_requested_at""").fetchall()
+    for row in rows:
+        if row['cancellation_requested_at'] is not None:
+            _file_investigate_task(tx, row['id'], row)
+    return len(rows)
 
 
 def settings(tx) -> dict:

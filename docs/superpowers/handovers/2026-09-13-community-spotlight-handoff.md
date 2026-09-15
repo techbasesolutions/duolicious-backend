@@ -170,10 +170,14 @@ record-loss paths that could leave a withdrawn member visible on the Page.
 One commit per repo closes them, on the same two branches, still unpushed:
 `fix(spotlight): recoverable receipts, purge respects in-flight rows, tile
 photos, approvals gate on member of the week, standing preference cleared on
-withdrawal` (api) and `fix(admin): refused published receipts are reported,
-tick renders every row needing a render` (admin). Their SHAs, both suite
-totals and the observed failing tests are in
+withdrawal` (api, `152c752`) and `fix(admin): refused published receipts are
+reported, tick renders every row needing a render` (admin, `842ebe5`). Both
+suite totals and the observed failing tests are in
 `.superpowers/sdd/2026-09-14-spotlight-wave-1/fix-wave-report.md`.
+
+A re-review of that fix wave found three residuals, closed in one further api
+commit, still unpushed: `fix(spotlight): request-wide lock order on
+completion; investigate tasks on the transition into an unresolved state`.
 
 1. A live post whose receipt never landed is now recoverable, and withdrawal
    never orphans it. `record_receipt` accepts a late `published` outcome on a

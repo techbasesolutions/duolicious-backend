@@ -897,16 +897,23 @@ def test_reconcile_refuses_a_row_that_is_not_in_an_unresolved_delivery(client, m
 
 
 def test_reconcile_is_admin_only(client, make_person):
-    """An operator decision, not an unattended one: the cron secret is not
-    enough, and a missing external id is a bad request."""
+    """An operator decision, not an unattended one: the cron secret alone
+    cannot reach this route. `reconcile` is registered with `apost`, so
+    `require_auth` (service/api/decorators.py) resolves the bearer BEFORE
+    `require_admin` is ever reached; a bearer that resolves to no session
+    gets that decorator's own 401 'Invalid session token', which is the
+    status a non-session caller actually gets here (checked in
+    decorators.py) -- distinct from the 400 a missing required field gets
+    from the handler itself, below."""
     admin = _make_admin(make_person); A = {'Authorization': f'Bearer {_session_for(admin)}'}
     p = _make_eligible(make_person, name='ReconcileAuth')
     with api_tx() as tx:
         rk, rows = _claimed_rows(tx, p['id'])
         qid = rows[0]['id']
         _reap(tx, qid)
-    assert client.post(f'/admin/growth/queue/{qid}/reconcile', json={'external_post_id': '1_45'},
-                       headers={'X-Growth-Cron': 'test-cron-secret'}).status_code == 400
+    r = client.post(f'/admin/growth/queue/{qid}/reconcile', json={'external_post_id': '1_45'},
+                    headers={'X-Growth-Cron': 'test-cron-secret', 'Authorization': 'Bearer not-a-real-session'})
+    assert r.status_code == 401
     assert client.post(f'/admin/growth/queue/{qid}/reconcile', json={}, headers=A).status_code == 400
 
 

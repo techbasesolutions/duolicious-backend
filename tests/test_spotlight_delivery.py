@@ -1,9 +1,11 @@
 """Lease-bound receipts and delivery state separate from withdrawal (Wave 1
 F04). `_make_eligible` and `_photo` copied from tests/test_spotlight_revisions.py
 on purpose -- test files in this suite do not import from each other."""
+import psycopg
 import pytest
+import database
 from database import api_tx
-from service.spotlight.queue import create_candidate, record_receipt, set_status, TRANSITIONS
+from service.spotlight.queue import create_candidate, lock_request_rows, record_receipt, set_status, TRANSITIONS
 from service.spotlight.revisions import current_revision, attach_render, record_consent
 from service.spotlight.withdrawal import withdraw_member
 
@@ -305,3 +307,93 @@ def test_operator_parked_review_row_still_refuses_a_published_receipt(make_perso
         record_receipt(tx, q['id'], q['lease_token'], 'review', error='ineligible now')
         with pytest.raises(ValueError, match='not_processing'):
             record_receipt(tx, q['id'], q['lease_token'], 'published', external_post_id='1_11')
+
+
+def test_lock_request_rows_holds_both_platform_rows_of_the_request(make_person):
+    """Residual fix item 1: the complete and reconcile routes now take
+    `lock_request_rows`'s wide lock, over EVERY row of the request key, before
+    reading anything off their own row -- replacing the single-row
+    `lock_queue_row` they used to call. Two sibling platform rows completing
+    at once used to each hold only their own row's lock, then both reach
+    `is_first_confirmation` (occurrence.py), whose own `FOR UPDATE` spans the
+    whole key -- a real deadlock. Proven directly here with a second, raw
+    connection (the shared `api_tx()` connection is a single global lock, so
+    a genuine second transaction needs its own connection, the same way
+    tests/test_review_reliability.py's concurrency tests do): while the first
+    connection's `lock_request_rows` transaction is still open, a `FOR UPDATE
+    NOWAIT` from a second connection against the SIBLING row is refused
+    outright, proving the first transaction holds that row's lock too, not
+    just its own."""
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk, rows = _claimed(tx, p['id'])
+    fb, ig = rows
+    conn = psycopg.connect(database._api_conninfo, row_factory=psycopg.rows.dict_row)
+    try:
+        locked = lock_request_rows(conn, fb['id'])
+        # Both rows of the request, ordered by id -- the same order every
+        # caller (this one, and is_first_confirmation's later re-lock) uses,
+        # which is what rules out the two-sibling deadlock: whichever
+        # transaction gets here first always acquires the whole set before
+        # the other can acquire any of it.
+        assert [r['id'] for r in locked] == sorted([fb['id'], ig['id']], key=str)
+        with psycopg.connect(database._api_conninfo, row_factory=psycopg.rows.dict_row) as other:
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                other.execute("SELECT id FROM publishing_queue WHERE id = %(id)s FOR UPDATE NOWAIT",
+                              dict(id=ig['id']))
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def test_delivery_unknown_after_processing_withdrawal_files_and_upgrades_investigate_task(make_person):
+    """Residual fix item 2(a): a member who withdraws WHILE their row is still
+    `processing` gets only the cancellation stamp then -- `withdraw_member`
+    step 3 files no task for a still-processing row, since its lease holder is
+    still expected to report back. When that lease holder's own receipt comes
+    back `delivery_unknown`, the row has just reached the exact unresolved
+    state withdrawal itself hands an `investigate` task for when it is
+    already in that state at withdrawal time, so `record_receipt` files one
+    now. A later `published` receipt under the same lease upgrades that same
+    task in place (fix wave item 1's existing upgrade path) rather than
+    filing a second one beside it -- exactly one task throughout."""
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk, rows = _claimed(tx, p['id'])
+        q = rows[0]
+        out = withdraw_member(tx, p['id'], 'opt_out')
+        assert out['left_attempting'] == 2 and out['removal_tasks'] == 0
+        assert _row(tx, q['id'])['status'] == 'processing'
+        assert record_receipt(tx, q['id'], q['lease_token'], 'delivery_unknown',
+                              error='no confirmation') == 'recorded'
+        tasks = tx.execute(
+            "SELECT reason, external_post_id FROM spotlight_removal_task WHERE queue_id = %(id)s",
+            dict(id=q['id'])).fetchall()
+        assert [(t['reason'], t['external_post_id']) for t in tasks] == [('investigate', None)]
+        assert record_receipt(tx, q['id'], q['lease_token'], 'published', external_post_id='1_12') == 'recorded'
+        tasks = tx.execute(
+            "SELECT reason, external_post_id FROM spotlight_removal_task WHERE queue_id = %(id)s",
+            dict(id=q['id'])).fetchall()
+        assert [(t['reason'], t['external_post_id']) for t in tasks] == [('delete_via_api', '1_12')]
+
+
+def test_reap_after_processing_withdrawal_files_investigate_task(make_person):
+    """Residual fix item 2(b): the same transition into an unresolved state,
+    reached via `reap_expired_leases` instead of a receipt -- a withdrawn
+    member's row that ages out of its lease lands in `review` with nobody
+    left to ever report back, so the reaper files the `investigate` task
+    itself, the moment it happens, rather than waiting on an event that may
+    never come."""
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk, rows = _claimed(tx, p['id'])
+        q = rows[0]
+        out = withdraw_member(tx, p['id'], 'opt_out')
+        assert out['removal_tasks'] == 0
+        assert _row(tx, q['id'])['status'] == 'processing'
+        _reap(tx, q['id'])
+        assert _row(tx, q['id'])['status'] == 'review'
+        tasks = tx.execute(
+            "SELECT reason, external_post_id FROM spotlight_removal_task WHERE queue_id = %(id)s",
+            dict(id=q['id'])).fetchall()
+        assert [(t['reason'], t['external_post_id']) for t in tasks] == [('investigate', None)]
