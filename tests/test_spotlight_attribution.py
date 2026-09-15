@@ -30,7 +30,17 @@ def test_attribute_stamps_person_and_credits_that_receipts_own_click(make_person
         assert row['spotlight_ref'] == key
         stamped = tx.execute("SELECT ua_class FROM campaign_click WHERE link_key = %(k)s AND signup_person_id = %(pid)s", dict(k=key, pid=joiner['id'])).fetchall()
         assert [r['ua_class'] for r in stamped] == ['mobile']
-        assert post_stats(tx, rk) == {'clicks': 1, 'signups': 1}
+        # Wave 3b, task 4: post_stats now also splits by platform. Neither
+        # click here carried a `?p=` param, so both (the bot click and the
+        # credited human click) land under 'unknown'.
+        assert post_stats(tx, rk) == {
+            'clicks': 1, 'signups': 1,
+            'by_platform': {
+                'facebook': {'clicks': 0, 'signups': 0},
+                'instagram': {'clicks': 0, 'signups': 0},
+                'unknown': {'clicks': 1, 'signups': 1},
+            },
+        }
         assert attribute_signup(tx, joiner['id'], 'unknownkey') is False
         assert attribute_signup(tx, joiner['id'], None) is False
 
@@ -288,3 +298,41 @@ def test_losing_a_concurrent_claim_declines_instead_of_failing_the_signup(make_c
     assert w['spotlight_ref'] == key
     assert l['spotlight_ref'] is None
     assert l['about'] == 'still writable after a lost race'
+
+
+# ---------------------------------------------------------------------------
+# Wave 3b, task 4: one campaign_link.key is shared by both platform rows of a
+# Spotlight post, so clicks and sign-ups have always been summed together
+# with no way to tell Facebook and Instagram apart. `post_stats` now also
+# reports the same rows split on `campaign_click.platform`.
+# ---------------------------------------------------------------------------
+
+def test_post_stats_splits_clicks_and_signups_by_platform(make_person):
+    joiner = make_person(name='PlatformJoiner')
+    rk = uuid.uuid4().hex
+    with api_tx() as tx:
+        url = make_campaign_link(tx, f'post:{rk}', f'{WEB_BASE_URL}/discover', None)
+        key = url.rsplit('/', 1)[1]
+        # A credited Facebook click, an uncredited Instagram click, and an
+        # uncredited click with no `?p=` at all (unknown).
+        _, r_fb = record_click(tx, key, 'Mozilla/5.0 (iPhone)', platform='facebook')
+        record_click(tx, key, 'Mozilla/5.0 (iPhone)', platform='instagram')
+        record_click(tx, key, 'Mozilla/5.0 (iPhone)')
+        assert attribute_signup(tx, joiner['id'], r_fb) is True
+
+        stats = post_stats(tx, rk)
+
+    assert stats == {
+        'clicks': 3, 'signups': 1,
+        'by_platform': {
+            'facebook': {'clicks': 1, 'signups': 1},
+            'instagram': {'clicks': 1, 'signups': 0},
+            'unknown': {'clicks': 1, 'signups': 0},
+        },
+    }
+    # The top-level totals must reconcile to the sum of the per-platform
+    # parts -- the whole point of the split is that it can never disagree
+    # with the number the Growth tab already shows.
+    by_platform = stats['by_platform']
+    assert stats['clicks'] == sum(v['clicks'] for v in by_platform.values())
+    assert stats['signups'] == sum(v['signups'] for v in by_platform.values())

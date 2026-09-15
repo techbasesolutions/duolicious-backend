@@ -204,9 +204,27 @@ def count_reinvite_cohort(tx, days: int = 30, resend_days: int = 30) -> int:
 # from both counts so a crawler prefetching the link doesn't inflate either
 # number, and `signups` counts distinct signup_person_id so a person who
 # somehow shows up on two clicks for the same post is only counted once.
+#
+# Wave 3b, task 4: one campaign_link.key is shared by both platform rows of a
+# post, so a click has never been attributable to Facebook or Instagram on
+# its own -- everything landed in one shared total. Now that a click stores
+# `campaign_click.platform` (migration 0048), the same rows are split on it
+# with FILTER, in the SAME query as the totals, so the two can never drift
+# apart the way two independently written queries could. A click whose
+# platform is null (no recognised `?p=` param, or a click recorded before
+# platform tagging existed) falls under 'unknown'. Every signup_person_id is
+# credited by exactly one click row (attribute_signup consumes one receipt
+# per person, first touch wins), so the per-platform DISTINCT counts are
+# disjoint and always sum back to the top-level `signups`.
 _Q_POST_STATS = """
-    SELECT count(*)                                 AS clicks,
-           count(DISTINCT c.signup_person_id)        AS signups
+    SELECT count(*)                                                                   AS clicks,
+           count(DISTINCT c.signup_person_id)                                         AS signups,
+           count(*) FILTER (WHERE c.platform = 'facebook')                            AS fb_clicks,
+           count(DISTINCT c.signup_person_id) FILTER (WHERE c.platform = 'facebook')  AS fb_signups,
+           count(*) FILTER (WHERE c.platform = 'instagram')                           AS ig_clicks,
+           count(DISTINCT c.signup_person_id) FILTER (WHERE c.platform = 'instagram') AS ig_signups,
+           count(*) FILTER (WHERE c.platform IS NULL)                                 AS unk_clicks,
+           count(DISTINCT c.signup_person_id) FILTER (WHERE c.platform IS NULL)       AS unk_signups
       FROM campaign_click c
       JOIN campaign_link l ON l.key = c.link_key
      WHERE l.kind = %(kind)s AND c.ua_class <> 'bot'
@@ -214,4 +232,12 @@ _Q_POST_STATS = """
 
 def post_stats(tx, request_key: str) -> dict:
     row = tx.execute(_Q_POST_STATS, dict(kind=f'post:{request_key}')).fetchone()
-    return {'clicks': row['clicks'], 'signups': row['signups']}
+    return {
+        'clicks': row['clicks'],
+        'signups': row['signups'],
+        'by_platform': {
+            'facebook': {'clicks': row['fb_clicks'], 'signups': row['fb_signups']},
+            'instagram': {'clicks': row['ig_clicks'], 'signups': row['ig_signups']},
+            'unknown': {'clicks': row['unk_clicks'], 'signups': row['unk_signups']},
+        },
+    }
