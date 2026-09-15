@@ -304,9 +304,19 @@ Wave 3 built every member-facing and operator-facing surface that Waves 1 and 2 
 
 | Repo | Branch | Base | Head |
 | --- | --- | --- | --- |
-| ahavah-api | spotlight-wave-3 | ebc7d5e (Wave 2 deployed head, `ahavah/main`) | 9204d6d |
-| ahavah-admin | spotlight-wave-3 | 1b9479d (Wave 2 head, `master`) | 51ae0e4 |
-| ahavah-web | spotlight-wave-3 | 7728165 (Phase B head, `master`) | 63011c9 |
+| ahavah-api | spotlight-wave-3 | ebc7d5e (Wave 2 deployed head, `ahavah/main`) | one commit past `58bc3fd`, see below |
+| ahavah-admin | spotlight-wave-3 | 1b9479d (Wave 2 head, `master`) | 30daef1 |
+| ahavah-web | spotlight-wave-3 | 7728165 (Phase B head, `master`) | 2f72038 |
+
+Corrected 2026-09-15 by the fix wave. The row this table previously gave
+for ahavah-api (`9204d6d`) was already wrong when it was written: it
+omitted `58bc3fd`, the docs commit that contains this table. A table
+cannot name the commit that introduces it, so the API head is stated
+here as a rule rather than a hash. Read it as: the API branch is every
+commit in the list below, plus the fix wave's own docs commit on top,
+which is the current head. `git log --oneline ebc7d5e..HEAD` in
+`ahavah-api` is the authority. The admin and web heads above are exact,
+because the fix wave committed both before this table was written.
 
 ### Commits
 
@@ -314,6 +324,10 @@ API (`git log --oneline ebc7d5e..HEAD`, oldest first):
 
 1. `898f975` docs(spotlight): wave 3 plan, designed surfaces
 2. `9204d6d` feat(growth): queue rows carry a presigned preview, post url and delivery state; suggest carries a default caption; emails index lists system-sent campaigns
+3. `58bc3fd` docs(spotlight): wave 3 record (the commit carrying this document)
+4. (head) docs(spotlight): correct the wave 3 heads table and the photo host sentence, the fix wave's own docs-only commit
+
+No API code changed in the fix wave, so the deployable API tree is still `9204d6d`.
 
 Admin (`git log --oneline 1b9479d..HEAD`, oldest first):
 
@@ -322,6 +336,7 @@ Admin (`git log --oneline 1b9479d..HEAD`, oldest first):
 3. `a3508ee` feat(admin): Growth tab with stats, queue and removals
 4. `69f5cf3` fix(admin): Growth tab offers only actions the API accepts and shows real error states
 5. `51ae0e4` feat(admin): Growth tab member of the week, emails, controls and dialogs
+6. `30daef1` fix(admin): purge names what it cancels, retry follows the failed row, render failures carry their reason
 
 Web (`git log --oneline 7728165..HEAD`, oldest first):
 
@@ -330,14 +345,15 @@ Web (`git log --oneline 7728165..HEAD`, oldest first):
 3. `bf49132` feat(spotlight): confirmation page
 4. `f28425a` fix(spotlight): ghost pill outline per the design
 5. `63011c9` feat(spotlight): card approval page
+6. `2f72038` fix(spotlight): a changed card asks again instead of reporting success
 
 No migration this wave.
 
 ### Test totals
 
-- API (disposable Docker stack, `tests -q`): 608 passed (baseline 604 before Wave 3), 9 known Pydantic deprecation warnings, unrelated to Spotlight.
-- Admin (`node --test tests/*.test.mjs`): 107 passed (baseline 59 before Wave 3); `npx tsc --noEmit` clean; `npx next build` clean.
-- Web (`pnpm test`): 564 passed (baseline 544 before Wave 3); `pnpm exec tsc --noEmit` clean; `pnpm exec eslint` clean on every touched file (the repo-wide `--max-warnings 0` gate fails on pre-existing debt in files this wave never touched).
+- API (disposable Docker stack, `tests -q`): 608 passed (baseline 604 before Wave 3), 9 known Pydantic deprecation warnings, unrelated to Spotlight. Not re-run by the fix wave, which changed only two documents in this repo and no code.
+- Admin (`node --test tests/*.test.mjs`): 112 passed after the fix wave (107 at `51ae0e4`, baseline 59 before Wave 3); `npx tsc --noEmit` clean; `npx next build` clean.
+- Web (`pnpm test`): 574 passed after the fix wave (564 at `63011c9`, baseline 544 before Wave 3); `pnpm exec tsc --noEmit` clean; `pnpm exec eslint` clean on every touched file (the repo-wide `--max-warnings 0` gate fails on pre-existing debt in files this wave never touched).
 
 ### What was built, per repo
 
