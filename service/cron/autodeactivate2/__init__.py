@@ -1,7 +1,7 @@
 from database.asyncdatabase import api_tx
 from service.cron.autodeactivate2.sql import *
 from service.cron.autodeactivate2.template import emailtemplate
-from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY
+from service.cron.cronutil import env_int, print_stacktrace, MAX_RANDOM_START_DELAY
 from smtp import aws_smtp
 import asyncio
 import os
@@ -12,10 +12,10 @@ DRY_RUN = os.environ.get(
     'true',
 ).lower() not in ['false', 'f', '0', 'no']
 
-AUTODEACTIVATE2_POLL_SECONDS = int(os.environ.get(
+AUTODEACTIVATE2_POLL_SECONDS = env_int(
     'DUO_CRON_AUTODEACTIVATE2_POLL_SECONDS',
-    str(60 * 10), # 10 minutes
-))
+    60 * 10, # 10 minutes
+)
 
 print(f'Hello from cron module: {__name__}')
 

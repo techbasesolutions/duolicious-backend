@@ -4,16 +4,12 @@ from verification import verify
 from verification.messages import (
     V_SOMETHING_WENT_WRONG,
 )
-from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY
+from service.cron.cronutil import env_int, print_stacktrace, MAX_RANDOM_START_DELAY
 import asyncio
-import os
 import random
 from dataclasses import dataclass
 
-VERIFICATION_POLL_SECONDS = int(os.environ.get(
-    'DUO_CRON_VERIFICATION_POLL_SECONDS',
-    str(1), # 1 second
-))
+VERIFICATION_POLL_SECONDS = env_int('DUO_CRON_VERIFICATION_POLL_SECONDS', 1) # 1 second
 
 print(f'Hello from cron module: {__name__}')
 

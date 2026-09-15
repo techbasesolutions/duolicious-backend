@@ -4,6 +4,7 @@ from service.cron.cronutil import (
     MAX_RANDOM_START_DELAY,
     delete_images_from_object_store,
     download_450_images,
+    env_int,
     print_stacktrace,
 )
 import asyncio
@@ -20,10 +21,7 @@ DRY_RUN = os.environ.get(
     'true',
 ).lower() not in ['false', 'f', '0', 'no']
 
-CHECK_PHOTOS_POLL_SECONDS = int(os.environ.get(
-    'DUO_CRON_CHECK_PHOTOS_POLL_SECONDS',
-    str(1), # 1 second
-))
+CHECK_PHOTOS_POLL_SECONDS = env_int('DUO_CRON_CHECK_PHOTOS_POLL_SECONDS', 1) # 1 second
 
 R2_ACCT_ID           = os.environ['DUO_R2_ACCT_ID']
 R2_ACCESS_KEY_ID     = os.environ['DUO_R2_ACCESS_KEY_ID']

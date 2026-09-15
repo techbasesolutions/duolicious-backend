@@ -23,9 +23,8 @@ Manual one-off send remains available via:
 """
 
 from database.asyncdatabase import api_tx
-from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY
+from service.cron.cronutil import env_int, print_stacktrace, MAX_RANDOM_START_DELAY
 import asyncio
-import os
 import random
 
 from emails.base import mask_email, suppressed_sql_pattern
@@ -35,15 +34,12 @@ from emails.reengagement import send_reengagement
 # Poll cadence — every 6 hours is plenty for a 7-day trigger. The exact
 # moment a row crosses the threshold doesn't matter; what matters is that
 # we never miss it and never spam.
-BETA_REENGAGEMENT_POLL_SECONDS = int(os.environ.get(
+BETA_REENGAGEMENT_POLL_SECONDS = env_int(
     'DUO_CRON_BETA_REENGAGEMENT_POLL_SECONDS',
-    str(60 * 60 * 6),  # 6 hours
-))
+    60 * 60 * 6,  # 6 hours
+)
 
-BETA_REENGAGEMENT_GRACE_DAYS = int(os.environ.get(
-    'DUO_BETA_REENGAGEMENT_GRACE_DAYS',
-    '7',
-))
+BETA_REENGAGEMENT_GRACE_DAYS = env_int('DUO_BETA_REENGAGEMENT_GRACE_DAYS', 7)
 
 print(f'Hello from cron module: {__name__}')
 

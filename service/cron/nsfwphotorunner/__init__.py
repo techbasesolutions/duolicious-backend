@@ -4,16 +4,13 @@ from service.cron.nsfwphotorunner.sql import *
 from service.cron.cronutil import (
     MAX_RANDOM_START_DELAY,
     download_450_images,
+    env_int,
     print_stacktrace,
 )
 import asyncio
-import os
 import random
 
-NSFW_PHOTO_RUNNER_POLL_SECONDS = int(os.environ.get(
-    'DUO_CRON_NSFW_PHOTO_RUNNER_POLL_SECONDS',
-    str(1), # 1 second
-))
+NSFW_PHOTO_RUNNER_POLL_SECONDS = env_int('DUO_CRON_NSFW_PHOTO_RUNNER_POLL_SECONDS', 1) # 1 second
 
 print(f'Hello from cron module: {__name__}')
 

@@ -1,17 +1,13 @@
 from database.asyncdatabase import api_tx
 from service.cron.garbagerecords.sql import *
-from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY
+from service.cron.cronutil import env_int, print_stacktrace, MAX_RANDOM_START_DELAY
 from emails.waitlist_admin import FROM_ADDR, TO_ADDR
 from smtp import aws_smtp
 import asyncio
 import html
-import os
 import random
 
-GARBAGE_RECORDS_POLL_SECONDS = int(os.environ.get(
-    'DUO_CRON_GARBAGE_RECORDS_POLL_SECONDS',
-    str(10), # 10 seconds
-))
+GARBAGE_RECORDS_POLL_SECONDS = env_int('DUO_CRON_GARBAGE_RECORDS_POLL_SECONDS', 10) # 10 seconds
 
 print(f'Hello from cron module: {__name__}')
 

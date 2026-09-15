@@ -10,16 +10,15 @@ volume), so a build failure degrades to "no IP-reputation layer",
 never to blocked sign-ins.
 """
 import asyncio
-import os
 import random
 
 from antiabuse.firehol import build_blocklist_file
-from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY
+from service.cron.cronutil import env_int, print_stacktrace, MAX_RANDOM_START_DELAY
 
-FIREHOLBUILDER_POLL_SECONDS = int(os.environ.get(
+FIREHOLBUILDER_POLL_SECONDS = env_int(
     'DUO_CRON_FIREHOLBUILDER_POLL_SECONDS',
-    str(60 * 60 * 4),  # 4 hours, matching the lists' own refresh cadence
-))
+    60 * 60 * 4,  # 4 hours, matching the lists' own refresh cadence
+)
 
 print(f'Hello from cron module: {__name__}')
 

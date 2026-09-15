@@ -22,17 +22,16 @@ this async loop; the DB call briefly blocks the event loop, same
 trade-off other crons accept for their own blocking I/O.
 """
 import asyncio
-import os
 import random
 from datetime import datetime, timezone
 
-from service.cron.cronutil import MAX_RANDOM_START_DELAY, print_stacktrace
+from service.cron.cronutil import MAX_RANDOM_START_DELAY, env_int, print_stacktrace
 from service.entitlements import expire_stale
 
-ENTITLEMENTS_POLL_SECONDS = int(os.environ.get(
+ENTITLEMENTS_POLL_SECONDS = env_int(
     'DUO_CRON_ENTITLEMENTS_POLL_SECONDS',
-    str(60 * 60),  # 1 hour
-))
+    60 * 60,  # 1 hour
+)
 
 print(f'Hello from cron module: {__name__}')
 

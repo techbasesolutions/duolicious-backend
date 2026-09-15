@@ -3,6 +3,7 @@ from service.cron.audiocleaner.sql import *
 from service.cron.cronutil import (
     MAX_RANDOM_START_DELAY,
     delete_audio_from_object_store,
+    env_int,
     print_stacktrace,
 )
 import asyncio
@@ -14,10 +15,7 @@ DRY_RUN = os.environ.get(
     'true',
 ).lower() not in ['false', 'f', '0', 'no']
 
-AUDIO_CLEANER_POLL_SECONDS = int(os.environ.get(
-    'DUO_CRON_AUDIO_CLEANER_POLL_SECONDS',
-    str(60), # 1 minute
-))
+AUDIO_CLEANER_POLL_SECONDS = env_int('DUO_CRON_AUDIO_CLEANER_POLL_SECONDS', 60) # 1 minute
 
 print(f'Hello from cron module: {__name__}')
 

@@ -15,22 +15,18 @@ cancel-deletion endpoint can land later.
 
 from database.asyncdatabase import api_tx
 from database import api_tx as _sync_api_tx
-from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY
+from service.cron.cronutil import env_int, print_stacktrace, MAX_RANDOM_START_DELAY
 from service.spotlight.withdrawal import withdraw_member
 import asyncio
-import os
 import random
 
 
-PENDING_DELETION_POLL_SECONDS = int(os.environ.get(
+PENDING_DELETION_POLL_SECONDS = env_int(
     'DUO_CRON_PENDING_DELETION_POLL_SECONDS',
-    str(60 * 60),  # 1 hour
-))
+    60 * 60,  # 1 hour
+)
 
-GRACE_PERIOD_DAYS = int(os.environ.get(
-    'DUO_PENDING_DELETION_GRACE_DAYS',
-    '7',
-))
+GRACE_PERIOD_DAYS = env_int('DUO_PENDING_DELETION_GRACE_DAYS', 7)
 
 print(f'Hello from cron module: {__name__}')
 

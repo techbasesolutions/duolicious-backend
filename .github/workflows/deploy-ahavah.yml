@@ -115,14 +115,43 @@ jobs:
 
             echo "::group::health check"
             sleep 5
+            api_healthy=0
             for i in $(seq 1 24); do
               if curl -fsS http://localhost:5000/health >/dev/null; then
                 echo "  api healthy after ${i}x5s"
-                exit 0
+                api_healthy=1
+                break
               fi
               sleep 5
             done
-            echo "  api FAILED to come up healthy in 120s"
-            docker logs --tail 60 ahavah-api-api-1 || true
-            exit 1
+            if [ "$api_healthy" -ne 1 ]; then
+              echo "  api FAILED to come up healthy in 120s"
+              docker logs --tail 60 ahavah-api-api-1 || true
+              exit 1
+            fi
+            echo "::endgroup::"
+
+            echo "::group::cron container"
+            cid=$(docker compose -f docker-compose.yml \
+                                 -f docker-compose.production.yml \
+                                 --env-file .env.production \
+                                 ps -q cron)
+            if [ -z "$cid" ]; then
+              echo "  cron container is not present"
+              exit 1
+            fi
+            state=$(docker inspect -f '{{.State.Status}}' "$cid")
+            restarts=$(docker inspect -f '{{.RestartCount}}' "$cid")
+            echo "  cron state=$state restarts=$restarts"
+            if [ "$state" != "running" ]; then
+              echo "  cron is not running"
+              docker logs --tail 60 "$cid" || true
+              exit 1
+            fi
+            if docker logs --tail 200 "$cid" 2>&1 | grep -qi traceback; then
+              echo "  cron logged a traceback"
+              docker logs --tail 60 "$cid" || true
+              exit 1
+            fi
+            echo "::endgroup::"
           REMOTE_SCRIPT

@@ -11,6 +11,7 @@ from emails.notification import new_message_email
 from service.config import WEB_BASE_URL
 from service.cron.cronutil import (
     MAX_RANDOM_START_DELAY,
+    env_int,
     print_stacktrace,
 )
 from commonsql import (
@@ -19,15 +20,11 @@ from commonsql import (
 )
 import asyncio
 from smtp import make_aws_smtp
-import os
 import random
 import json
 import traceback
 
-EMAIL_POLL_SECONDS = int(os.environ.get(
-    'DUO_CRON_EMAIL_POLL_SECONDS',
-    str(10), # 10 seconds
-))
+EMAIL_POLL_SECONDS = env_int('DUO_CRON_EMAIL_POLL_SECONDS', 10) # 10 seconds
 
 print(f'Hello from cron module: {__name__}')
 
