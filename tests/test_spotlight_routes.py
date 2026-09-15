@@ -320,6 +320,28 @@ def test_image_upload_refuses_when_no_revision_is_assigned(client, monkeypatch):
     assert calls == []
 
 
+def test_image_upload_returns_503_when_storage_is_unconfigured(client, make_person, monkeypatch):
+    """Fix round 1 (Task 2 review): put_png now raises
+    RuntimeError('storage_unconfigured') instead of silently dropping the
+    bytes when the object store has no credentials; the route maps that to
+    503 the same way an approve-time storage failure already is, and the
+    row is left untouched (no image_key, still awaiting upload)."""
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, '_configured', lambda: False)
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+    r = client.post(f'/admin/growth/queue/{rk}/image',
+                    json=dict(platform='facebook', png_base64=_b64(_png_bytes())), headers=H)
+    assert r.status_code == 503 and r.get_json() == dict(error='storage_unavailable')
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            """SELECT image_key, image_sha256 FROM publishing_queue
+                WHERE request_key = %(rk)s AND platform = 'facebook'""",
+            dict(rk=rk)).fetchone()
+    assert row['image_key'] is None and row['image_sha256'] is None
+
+
 def test_image_route_rejects_invalid_png(client, make_person, monkeypatch):
     import service.spotlight.storage as st
     puts = []

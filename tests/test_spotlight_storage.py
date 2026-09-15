@@ -29,11 +29,41 @@ def test_validate_png_rejects_oversize():
         st.validate_png(_png(), max_bytes=10)
 
 
+class _Object:
+    """Stub for the `s3.Object` resource `_bucket().Object(key)` returns --
+    just enough to record a `put_object_acl` call the way `make_public`
+    makes it."""
+    def __init__(self, bucket, key):
+        self._bucket = bucket
+        self._key = key
+
+    def put_object_acl(self, **kw):
+        self._bucket.calls.append(('acl', self._key, kw.get('ACL')))
+
+
+class _Client:
+    """Stub for `_bucket().meta.client` -- just enough to record a
+    `generate_presigned_url` call the way `presign` makes it."""
+    def __init__(self, bucket):
+        self._bucket = bucket
+
+    def generate_presigned_url(self, operation, Params=None, ExpiresIn=None):
+        self._bucket.calls.append(('presign', operation, Params, ExpiresIn))
+        return f"https://signed/{Params['Key']}"
+
+
+class _Meta:
+    def __init__(self, bucket):
+        self.client = _Client(bucket)
+
+
 class _Bucket:
     def __init__(self, response=None, raise_exc=None):
         self.calls = []
         self.response = response
         self.raise_exc = raise_exc
+        self.name = 'test-bucket'
+        self.meta = _Meta(self)
 
     def delete_objects(self, Delete):
         self.calls.append([o['Key'] for o in Delete['Objects']])
@@ -43,6 +73,9 @@ class _Bucket:
 
     def put_object(self, **kw):
         self.calls.append(('put', kw.get('Key'), kw.get('ACL')))
+
+    def Object(self, key):
+        return _Object(self, key)
 
 
 def test_delete_images_returns_only_confirmed(monkeypatch):
@@ -68,6 +101,54 @@ def test_put_png_is_private_by_default(monkeypatch):
     st.put_png('k', b'x')
     st.put_png('k2', b'x', public=True)
     assert b.calls == [('put', 'k', 'private'), ('put', 'k2', 'public-read')]
+
+
+def test_make_public_sets_public_read_acl(monkeypatch):
+    b = _Bucket()
+    monkeypatch.setattr(st, '_configured', lambda: True)
+    monkeypatch.setattr(st, '_bucket', lambda: b)
+    st.make_public('k')
+    assert b.calls == [('acl', 'k', 'public-read')]
+
+
+def test_presign_returns_the_client_presigned_url(monkeypatch):
+    b = _Bucket()
+    monkeypatch.setattr(st, '_configured', lambda: True)
+    monkeypatch.setattr(st, '_bucket', lambda: b)
+    url = st.presign('k', 120)
+    assert url == 'https://signed/k'
+    assert b.calls == [('presign', 'get_object', {'Bucket': b.name, 'Key': 'k'}, 120)]
+
+
+def test_put_png_unconfigured_raises_and_never_touches_the_bucket(monkeypatch):
+    """Fix round 1 (Task 2 review): unlike delete_images, an unconfigured
+    store must fail loudly here rather than silently drop the bytes -- a
+    dropped upload would let a card's row believe it has a reachable
+    image when nothing was ever written."""
+    b = _Bucket()
+    monkeypatch.setattr(st, '_configured', lambda: False)
+    monkeypatch.setattr(st, '_bucket', lambda: b)
+    with pytest.raises(RuntimeError, match='storage_unconfigured'):
+        st.put_png('k', b'x')
+    assert b.calls == []
+
+
+def test_make_public_unconfigured_raises(monkeypatch):
+    """Fix round 1. `_bucket` is made to raise if it is ever called, to
+    prove the failure happens before any network attempt."""
+    monkeypatch.setattr(st, '_configured', lambda: False)
+    monkeypatch.setattr(st, '_bucket', lambda: (_ for _ in ()).throw(AssertionError('_bucket must not be called')))
+    with pytest.raises(RuntimeError, match='storage_unconfigured'):
+        st.make_public('k')
+
+
+def test_presign_unconfigured_raises(monkeypatch):
+    """Fix round 1. `_bucket` is made to raise if it is ever called, to
+    prove the failure happens before any network attempt."""
+    monkeypatch.setattr(st, '_configured', lambda: False)
+    monkeypatch.setattr(st, '_bucket', lambda: (_ for _ in ()).throw(AssertionError('_bucket must not be called')))
+    with pytest.raises(RuntimeError, match='storage_unconfigured'):
+        st.presign('k')
 
 
 def test_delete_images_swallows_errors(monkeypatch):

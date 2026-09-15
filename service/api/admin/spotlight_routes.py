@@ -621,7 +621,16 @@ def post_growth_queue_image(request_key: str):
     # Upload outside any transaction: a network round trip must not hold the
     # api connection lock. Private by default (Wave 2 F09) -- the object is
     # not publicly reachable until the card is approved and scheduled.
-    st.put_png(key, data)
+    # Fix round 1 (Task 2 review): an unconfigured object store now raises
+    # RuntimeError('storage_unconfigured') up front rather than silently
+    # dropping the bytes; mapped here the same way an approve-time storage
+    # failure already is, below.
+    try:
+        st.put_png(key, data)
+    except RuntimeError as e:
+        if str(e) != 'storage_unconfigured':
+            raise
+        return dict(error='storage_unavailable'), 503
 
     # The revision id and status were read before the upload, and the upload
     # is a network round trip: a caption edit (new revision), an approve or a

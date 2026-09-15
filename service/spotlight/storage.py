@@ -14,6 +14,12 @@ already has approval in hand passes `public=True`, and `make_public` flips
 an already-uploaded object over once approval lands. `presign` hands out a
 short-lived read URL for a private object (an admin preview, or a member's
 own approval screen) without ever making the object itself public.
+
+Unlike deletion, every write here (`put_png`, `make_public`, `presign`)
+fails loudly -- `RuntimeError('storage_unconfigured')` -- when the object
+store is unconfigured, rather than silently no-op'ing: a dropped upload or
+ACL change would let a card's row believe it has a reachable image when it
+does not, which deletion's silent skip never risks.
 """
 from __future__ import annotations
 
@@ -107,7 +113,16 @@ def put_png(key: str, data: bytes, *, public: bool = False) -> None:
     must not be reachable by anyone before the member pictured in it has
     approved it. `public=True` is for the one call site that already has
     approval in hand at upload time; every other caller flips visibility
-    later with `make_public`."""
+    later with `make_public`.
+
+    Fix round 1: raises `RuntimeError('storage_unconfigured')` up front,
+    before ever touching `_bucket()`, when the object store has no
+    credentials or bucket name. Unlike `delete_images` (whose unconfigured
+    no-op is safe -- there is nothing left to clean up either way), a
+    silent no-op here would let a card's row believe it has a rendered
+    image when no bytes were ever written, so this fails loudly instead."""
+    if not _configured():
+        raise RuntimeError('storage_unconfigured')
     _bucket().put_object(Key=key, Body=data, ACL='public-read' if public else 'private',
                           ContentType='image/png')
 
@@ -115,14 +130,28 @@ def put_png(key: str, data: bytes, *, public: bool = False) -> None:
 def make_public(key: str) -> None:
     """Flip an already-uploaded, private-by-default object public once the
     member's approval has landed. Never re-uploads the bytes -- an ACL
-    change on the existing object."""
+    change on the existing object.
+
+    Fix round 1: raises `RuntimeError('storage_unconfigured')` up front,
+    before ever touching `_bucket()`, when the object store is unconfigured
+    -- the same fail-loudly reasoning as `put_png`: a card must not be
+    treated as approved-and-public when nothing was actually made public."""
+    if not _configured():
+        raise RuntimeError('storage_unconfigured')
     _bucket().Object(key).put_object_acl(ACL='public-read')
 
 
 def presign(key: str, seconds: int = 900) -> str:
     """A short-lived signed read URL for a private object -- an admin
     preview, or a member's own approval screen -- without ever making the
-    object itself public."""
+    object itself public.
+
+    Fix round 1: raises `RuntimeError('storage_unconfigured')` up front,
+    before ever touching `_bucket()`, when the object store is unconfigured
+    -- a URL minted against nothing would not actually resolve, so failing
+    loudly here is the same call as `put_png` and `make_public`."""
+    if not _configured():
+        raise RuntimeError('storage_unconfigured')
     bucket = _bucket()
     return bucket.meta.client.generate_presigned_url(
         'get_object', Params={'Bucket': bucket.name, 'Key': key}, ExpiresIn=seconds)
