@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from database import api_tx
 from service.spotlight.queue import create_candidate, set_setting
-from service.spotlight.revisions import current_revision, record_consent
+from service.spotlight.revisions import create_revision, current_revision, record_consent
 from service.spotlight.roundup import roundup_snapshot
 
 
@@ -102,5 +102,31 @@ def test_snapshot_tiles_only_when_enabled(make_person):
         set_setting(tx, 'roundup_tiles_enabled', 'true')
         try:
             assert len(roundup_snapshot(tx)['tiles']) >= 1
+        finally:
+            set_setting(tx, 'roundup_tiles_enabled', 'false')
+
+
+def test_reissued_revision_without_consent_drops_candidate(make_person):
+    """Task 8 fix round 1 (ruling 3): _Q_CANDIDATES is scoped to the
+    welcome request's CURRENT revision. A re-issued revision (any
+    create_revision call, e.g. a caption edit) never copies consent rows
+    across, so a member who consented to revision 1 must drop out of
+    roundup candidacy the moment revision 2 exists without a consent row
+    of its own -- their old consent must never quietly carry over."""
+    a = _make_eligible(make_person, name='Reissued', gender='Woman')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=a['id'], caption='c', created_by='t')
+        photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=a['id'])).fetchone()['u']
+        _stamp_member_approval(tx, rk, photo)
+        set_setting(tx, 'roundup_tiles_enabled', 'true')
+        try:
+            names = [t['first_name'] for t in roundup_snapshot(tx)['tiles']]
+            assert 'Reissued' in names
+            # A caption edit re-issues the revision; create_revision never
+            # copies consent rows onto the new one.
+            create_revision(tx, rk, caption='new caption', photo_uuid=photo,
+                            participants=[], channels=['facebook', 'instagram'], created_by='t')
+            names = [t['first_name'] for t in roundup_snapshot(tx)['tiles']]
+            assert 'Reissued' not in names
         finally:
             set_setting(tx, 'roundup_tiles_enabled', 'false')

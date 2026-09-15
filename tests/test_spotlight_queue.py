@@ -295,3 +295,27 @@ def test_opt_out_does_not_duplicate_removal_tasks_across_tile_members(make_perso
     assert [t['platform'] for t in tasks] == ['facebook', 'instagram']
     assert len({t['queue_id'] for t in tasks}) == 2
     assert all(t['done_at'] is None for t in tasks)
+
+
+def test_create_candidate_never_builds_roundup_participants(make_person):
+    """Task 8 fix round 1 (ruling 1): create_candidate no longer calls
+    roundup_snapshot itself -- revision 1 of every roundup starts with
+    participants [] regardless of roundup_tiles_enabled. Building the
+    tiled participant list is the roundup route's job
+    (post_growth_spotlight_roundup), not create_candidate's."""
+    a = _make_eligible(make_person, name='DormantBranch')
+    with api_tx() as tx:
+        rk_w = create_candidate(tx, kind='welcome', subject_person_id=a['id'], caption='c', created_by='t')
+        photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=a['id'])).fetchone()['u']
+        tx.execute(
+            """INSERT INTO spotlight_revision_consent (revision_id, person_id, role)
+               SELECT current_revision_id, %(pid)s, 'subject' FROM publishing_queue
+                WHERE request_key = %(rk)s LIMIT 1""",
+            dict(pid=a['id'], rk=rk_w))
+        set_setting(tx, 'roundup_tiles_enabled', 'true')
+        try:
+            rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+            rev = current_revision(tx, rk)
+        finally:
+            set_setting(tx, 'roundup_tiles_enabled', 'false')
+    assert rev['participants'] == []

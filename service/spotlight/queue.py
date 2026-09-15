@@ -7,7 +7,6 @@ from service.campaigns import make_campaign_link
 from service.config import WEB_BASE_URL
 from service.spotlight.eligibility import eligibility, primary_photo_uuid
 from service.spotlight.revisions import create_revision
-from service.spotlight.roundup import roundup_snapshot
 
 KINDS = ('welcome', 'roundup', 'member_of_week', 'highlight')
 PLATFORMS = ('facebook', 'instagram')
@@ -83,18 +82,15 @@ def create_candidate(tx, *, kind: str, subject_person_id: Optional[int], caption
     # immutable revision, and every queue row of the key points at it -- a
     # welcome/member_of_week card's chosen photo is its subject's primary
     # approved photo; a roundup carries no photo of its own. Participants
-    # stay empty (count-only) unless roundup_tiles_enabled is on, matching
-    # roundup_snapshot's own gate on the same setting (Task 8) -- the
-    # setting is seeded false, so this branch only fires once it is turned
-    # on. `post_growth_spotlight_roundup` replaces this revision with a
-    # richer one (first_name/photo_url per participant) whenever tiles are
-    # non-empty, so this initial revision is the count-only steady state.
+    # always start empty here (Task 8 fix round 1, ruling 1): a roundup's
+    # tiled participants belong to `post_growth_spotlight_roundup`, which
+    # replaces this revision with a richer one (first_name/photo_url per
+    # participant) whenever `roundup_tiles_enabled` is on and the snapshot
+    # has tiles. `create_candidate` itself never reads that setting or
+    # calls `roundup_snapshot` -- revision 1 of every roundup is always the
+    # count-only steady state.
     photo_uuid = primary_photo_uuid(tx, subject_person_id) if subject_person_id is not None else None
-    participants: list = []
-    if kind == 'roundup' and settings(tx).get('roundup_tiles_enabled') == 'true':
-        participants = [{'person_id': tile['person_id'], 'photo_uuid': None}
-                         for tile in roundup_snapshot(tx)['tiles']]
-    create_revision(tx, rk, caption=caption, photo_uuid=photo_uuid, participants=participants,
+    create_revision(tx, rk, caption=caption, photo_uuid=photo_uuid, participants=[],
                     channels=list(platforms), created_by=created_by)
     return rk
 

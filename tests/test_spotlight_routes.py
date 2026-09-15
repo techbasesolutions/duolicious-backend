@@ -497,6 +497,53 @@ def test_roundup_route_with_tiles_needs_every_participant(make_person, client):
             set_setting(tx, 'roundup_tiles_enabled', 'false')
 
 
+def test_roundup_route_tiled_creates_two_revisions_pointing_at_the_second(make_person, client):
+    """Task 8 fix round 1 (ruling 1): create_candidate always creates
+    revision 1 with participants [] now (the dormant branch that used to
+    call roundup_snapshot itself is gone). With tiles enabled, the route's
+    own create_revision call adds a second revision carrying the tiled
+    participant, and every queue row of the request re-points at it."""
+    a = _make_eligible(make_person, name='TwoRevisions', gender='Woman')
+    with api_tx() as tx:
+        rk_w = create_candidate(tx, kind='welcome', subject_person_id=a['id'], caption='c', created_by='t')
+        rev_w = current_revision(tx, rk_w)
+        record_consent(tx, rev_w['id'], a['id'], 'subject')
+        set_setting(tx, 'roundup_tiles_enabled', 'true')
+    try:
+        r = client.post('/admin/growth/spotlight/roundup', json={}, headers={'X-Growth-Cron': 'test-cron-secret'})
+        rk = r.get_json()['request_key']
+        with api_tx() as tx:
+            revs = tx.execute(
+                "SELECT id, revision, participants, channels FROM spotlight_revision WHERE request_key = %(rk)s ORDER BY revision",
+                dict(rk=rk)).fetchall()
+            assert len(revs) == 2
+            assert revs[0]['participants'] == []
+            assert [p['person_id'] for p in revs[1]['participants']] == [a['id']]
+            # Ruling 2: channels comes from the PLATFORMS constant, not an
+            # unordered SELECT over the queue rows.
+            assert revs[1]['channels'] == ['facebook', 'instagram']
+            queue_revision_ids = {row['current_revision_id'] for row in tx.execute(
+                "SELECT current_revision_id FROM publishing_queue WHERE request_key = %(rk)s",
+                dict(rk=rk)).fetchall()}
+        assert queue_revision_ids == {revs[1]['id']}
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'roundup_tiles_enabled', 'false')
+
+
+def test_roundup_route_count_only_creates_a_single_revision(client):
+    """Task 8 fix round 1 (ruling 1): with roundup_tiles_enabled off (the
+    default), only revision 1 from create_candidate exists -- there is no
+    second create_revision call and no dormant participants branch left in
+    create_candidate to produce a mismatched one."""
+    r = client.post('/admin/growth/spotlight/roundup', json={}, headers={'X-Growth-Cron': 'test-cron-secret'})
+    rk = r.get_json()['request_key']
+    with api_tx() as tx:
+        revs = tx.execute(
+            "SELECT revision FROM spotlight_revision WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()
+    assert len(revs) == 1
+
+
 def test_cron_header_never_resolves_a_session(client, monkeypatch):
     """I6: `_gate` checks the cron header before `_session`, so a cron call
     never opens a transaction (and never takes the api connection lock) to

@@ -721,14 +721,17 @@ def post_growth_spotlight_roundup():
         # (consent_complete) refuses the card until each one consents.
         count_only = not snapshot['tiles']
         if not count_only:
-            rows = tx.execute(
-                "SELECT caption, platform FROM publishing_queue WHERE request_key = %(rk)s",
-                dict(rk=rk)).fetchall()
+            caption_row = tx.execute(
+                "SELECT caption FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
+                dict(rk=rk)).fetchone()
             create_revision(
-                tx, rk, caption=rows[0]['caption'], photo_uuid=None,
+                tx, rk, caption=caption_row['caption'], photo_uuid=None,
                 participants=[dict(person_id=tile['person_id'], first_name=tile['first_name'],
                                    photo_url=tile['photo_url']) for tile in snapshot['tiles']],
-                channels=[row['platform'] for row in rows], created_by=_actor(s))
+                # Fix round 1 (ruling 2): the same PLATFORMS constant
+                # create_candidate inserted rows with, not an unordered
+                # SELECT over those rows.
+                channels=list(PLATFORMS), created_by=_actor(s))
         _audit(tx, s, 'growth.queue.roundup', request_key=rk,
                tiles=len(snapshot['tiles']), count=snapshot['count'], count_only=count_only)
     return dict(request_key=rk)
