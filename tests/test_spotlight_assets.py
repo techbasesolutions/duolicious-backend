@@ -20,9 +20,28 @@ def test_complete_render_if_ready_is_false_until_every_row_has_a_hash():
         rev_id = current_revision(tx, rk)['id']
         sha = _sha(b'bytes')
         key = asset_key(rk, rev_id, sha, 'facebook')
-        assert attach_platform_image(tx, rk, 'facebook', rev_id, key, f'https://cdn/{key}', sha) == 'attached'
+        assert attach_platform_image(tx, rk, 'facebook', rev_id, key, f'https://cdn/{key}', sha) == ('attached', None)
         assert complete_render_if_ready(tx, rk, rev_id) is False
         assert current_revision(tx, rk)['asset_hash'] is None
+
+
+def test_attach_platform_image_hands_back_the_key_it_displaced():
+    """Fix wave item 6: the contract the route's orphan cleanup depends on.
+    The first attach displaces nothing (None); the second, for the same
+    un-rendered revision with different bytes, hands back the first key so
+    the caller can queue the object it just stopped naming. Read inside the
+    UPDATE's own statement, so it is the value the statement actually
+    replaced rather than one read separately beforehand."""
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        rev_id = current_revision(tx, rk)['id']
+        sha1, sha2 = _sha(b'displaced-one'), _sha(b'displaced-two')
+        key1 = asset_key(rk, rev_id, sha1, 'facebook')
+        key2 = asset_key(rk, rev_id, sha2, 'facebook')
+        assert attach_platform_image(tx, rk, 'facebook', rev_id, key1, f'https://cdn/{key1}', sha1) == \
+            ('attached', None)
+        assert attach_platform_image(tx, rk, 'facebook', rev_id, key2, f'https://cdn/{key2}', sha2) == \
+            ('attached', key1)
 
 
 def test_attach_platform_image_refuses_once_the_revision_is_rendered():
@@ -39,14 +58,17 @@ def test_attach_platform_image_refuses_once_the_revision_is_rendered():
         first_sha = _sha(b'first-bytes')
         fb_key = asset_key(rk, rev_id, first_sha, 'facebook')
         ig_key = asset_key(rk, rev_id, first_sha, 'instagram')
-        assert attach_platform_image(tx, rk, 'facebook', rev_id, fb_key, f'https://cdn/{fb_key}', first_sha) == 'attached'
-        assert attach_platform_image(tx, rk, 'instagram', rev_id, ig_key, f'https://cdn/{ig_key}', first_sha) == 'attached'
+        assert attach_platform_image(tx, rk, 'facebook', rev_id, fb_key, f'https://cdn/{fb_key}', first_sha)[0] == 'attached'
+        assert attach_platform_image(tx, rk, 'instagram', rev_id, ig_key, f'https://cdn/{ig_key}', first_sha)[0] == 'attached'
         assert complete_render_if_ready(tx, rk, rev_id) is True
 
         second_sha = _sha(b'second-bytes')
         fb_key2 = asset_key(rk, rev_id, second_sha, 'facebook')
         outcome = attach_platform_image(tx, rk, 'facebook', rev_id, fb_key2, f'https://cdn/{fb_key2}', second_sha)
-        assert outcome == 'superseded'
+        # Fix wave item 6: a superseded attach changed no row, so it displaced
+        # no key either and there is nothing for the route to clean up beyond
+        # the object it just uploaded.
+        assert outcome == ('superseded', None)
 
         row = tx.execute(
             "SELECT image_key, image_sha256 FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
@@ -70,8 +92,8 @@ def test_complete_render_refuses_while_a_sibling_is_parked_with_unresolved_deliv
         fb_sha1 = _sha(b'fb-rev1'); ig_sha1 = _sha(b'ig-rev1')
         fb_key1 = asset_key(rk, rev1, fb_sha1, 'facebook')
         ig_key1 = asset_key(rk, rev1, ig_sha1, 'instagram')
-        assert attach_platform_image(tx, rk, 'facebook', rev1, fb_key1, f'https://cdn/{fb_key1}', fb_sha1) == 'attached'
-        assert attach_platform_image(tx, rk, 'instagram', rev1, ig_key1, f'https://cdn/{ig_key1}', ig_sha1) == 'attached'
+        assert attach_platform_image(tx, rk, 'facebook', rev1, fb_key1, f'https://cdn/{fb_key1}', fb_sha1)[0] == 'attached'
+        assert attach_platform_image(tx, rk, 'instagram', rev1, ig_key1, f'https://cdn/{ig_key1}', ig_sha1)[0] == 'attached'
         assert complete_render_if_ready(tx, rk, rev1) is True
 
         # Facebook's post went out but its receipt could not confirm the
@@ -95,7 +117,7 @@ def test_complete_render_refuses_while_a_sibling_is_parked_with_unresolved_deliv
 
         ig_sha2 = _sha(b'ig-rev2')
         ig_key2 = asset_key(rk, rev2, ig_sha2, 'instagram')
-        assert attach_platform_image(tx, rk, 'instagram', rev2, ig_key2, f'https://cdn/{ig_key2}', ig_sha2) == 'attached'
+        assert attach_platform_image(tx, rk, 'instagram', rev2, ig_key2, f'https://cdn/{ig_key2}', ig_sha2)[0] == 'attached'
         assert complete_render_if_ready(tx, rk, rev2) is False
         assert current_revision(tx, rk)['asset_hash'] is None
 
@@ -103,4 +125,4 @@ def test_complete_render_refuses_while_a_sibling_is_parked_with_unresolved_deliv
         # refused outright by attach_platform_image's own guard.
         fb_key2 = asset_key(rk, rev2, _sha(b'fb-rev2'), 'facebook')
         assert attach_platform_image(tx, rk, 'facebook', rev2, fb_key2, f'https://cdn/{fb_key2}',
-                                     _sha(b'fb-rev2')) == 'superseded'
+                                     _sha(b'fb-rev2')) == ('superseded', None)

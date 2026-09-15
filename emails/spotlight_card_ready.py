@@ -110,4 +110,4 @@ def enqueue_card_ready(tx, person_id: int, request_key: str) -> int | None:
         email=person['email'], subject=SUBJECT, html=html, from_addr=FROM_ADDR,
         unsub_scope=UNSUB_SCOPE,
         list_unsubscribe=f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{unsub}>",
-        exempt=True)
+        exempt=True, requires_spotlight_opt_in=True)

@@ -21,8 +21,10 @@ The job table splits that into two halves that fail independently:
 
   * `run_cleanup_batch` is the ONLY place storage deletion happens. One
     transaction reserves what is due, the delete call runs with NO transaction
-    open, and a second transaction records each result -- and clears the queue
-    row's image columns only for the keys storage actually CONFIRMED.
+    open, and a second transaction records each result -- and clears the image
+    columns of every row naming the key, on `publishing_queue` AND on
+    `spotlight_revision` (fix wave item 4), only for the keys storage actually
+    CONFIRMED.
 
 So a key is never cleared until its deletion is confirmed, and a failure is a
 retry with backoff rather than a silent orphan. A job that exhausts
@@ -152,7 +154,22 @@ _Q_CLEAR_KEY = """
      WHERE image_key = %(k)s
 """
 
+# The revision names the object too, and it is the revision a member's own
+# card screen reads: `approval.card_state` presigns `revision.image_key`.
+# Clearing only the queue row (fix wave item 4) left the revision pointing at
+# an object that is provably gone, so a member opening their card after a
+# retention sweep got a signed URL for nothing. `asset_hash` is deliberately
+# NOT cleared: it records that this revision was rendered, which stays true,
+# and it is what the one-render-per-revision guard reads. Runs in the same
+# transaction as `_Q_CLEAR_KEY`, against the same confirmed key, so the two
+# tables can never disagree about whether the object exists.
+_Q_CLEAR_REVISION_KEY = """
+    UPDATE spotlight_revision SET image_key = NULL, image_url = NULL WHERE image_key = %(k)s
+"""
+
 _Q_OUTSTANDING = "SELECT count(*) AS n FROM cleanup_job WHERE state = 'pending'"
+
+_Q_ABANDONED = "SELECT count(*) AS n FROM cleanup_job WHERE state = 'abandoned'"
 
 _Q_OVERDUE_REMOVALS = """
     SELECT count(*) AS n FROM spotlight_removal_task
@@ -254,6 +271,15 @@ def outstanding_jobs(tx) -> int:
     return int(tx.execute(_Q_OUTSTANDING).fetchone()['n'])
 
 
+def abandoned_jobs(tx) -> int:
+    """Jobs that ran out of attempts. Nothing sweeps these up and, since fix
+    wave item 3, the retention sweep no longer re-queues their keys either --
+    so this count is the only thing that makes them visible. Each one is an
+    object that may still be sitting in the bucket with nothing in the
+    database naming it as live."""
+    return int(tx.execute(_Q_ABANDONED).fetchone()['n'])
+
+
 def overdue_removals(tx) -> int:
     """Open removal tasks past their deadline. A removal order that nobody
     actions is the failure mode that matters most here: the member asked to be
@@ -327,6 +353,7 @@ def run_cleanup_batch(tx_factory, delete: Callable[[list], list] = delete_images
                                         error=None if ok else 'deletion not confirmed by storage')
                 if ok and outcome == 'done':
                     tx.execute(_Q_CLEAR_KEY, dict(k=key))
+                    tx.execute(_Q_CLEAR_REVISION_KEY, dict(k=key))
                 if outcome == 'done':
                     done += 1
                 elif outcome == 'abandoned':

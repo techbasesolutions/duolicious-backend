@@ -39,6 +39,33 @@ def test_retention_queues_old_published_rows_and_clears_nothing():
     assert RETENTION_DAYS == 90
 
 
+ABANDONED_KEY = 'spotlight/abandoned1-facebook.png'
+
+
+def test_retention_stops_re_queueing_a_key_whose_job_was_abandoned():
+    """Fix wave item 3. An abandoned job is left in the table on purpose: it
+    is the only record that an object may still be sitting in the bucket, and
+    a human has to look. But the queue row keeps its key (nothing confirmed
+    the deletion), so without this guard the next sweep would see the row
+    again, find no PENDING job for the key, and file a fresh one -- which
+    would fail its way to abandoned all over again, every day, burying the
+    original alert under duplicates. The row drops out of the sweep instead
+    and stays visible through `abandoned_cleanup` on the removals surface."""
+    with api_tx() as tx:
+        tx.execute("DELETE FROM publishing_queue WHERE request_key = 'abandoned1'")
+        tx.execute("DELETE FROM cleanup_job WHERE target = %(t)s", dict(t=ABANDONED_KEY))
+        tx.execute("""INSERT INTO publishing_queue (request_key, kind, platform, status, image_key, image_url, updated_at)
+                      VALUES ('abandoned1', 'roundup', 'facebook', 'published', %(k)s, 'https://cdn/abandoned1',
+                              NOW() - interval '100 days')""", dict(k=ABANDONED_KEY))
+        tx.execute("""INSERT INTO cleanup_job (kind, target, state, last_error)
+                      VALUES ('asset_delete', %(k)s, 'abandoned', 'deletion not confirmed by storage')""",
+                   dict(k=ABANDONED_KEY))
+        retention_sweep(tx)
+        jobs = tx.execute(
+            "SELECT state FROM cleanup_job WHERE target = %(t)s ORDER BY id", dict(t=ABANDONED_KEY)).fetchall()
+    assert [r['state'] for r in jobs] == ['abandoned']
+
+
 # Storage-level delete_images tests (validate_png, put_png, and the
 # confirmed-deletion / batching / unconfigured-noop behaviour of
 # delete_images itself) moved to tests/test_spotlight_storage.py in

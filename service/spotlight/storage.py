@@ -180,6 +180,15 @@ def delete_images(keys: list[str]) -> list[str]:
     raises outright, and an unconfigured object store all confirm nothing
     for the keys involved; nothing here ever raises.
 
+    That confirmation depends on VERBOSE mode, which is why the request
+    below carries no `Quiet` flag (fix wave item 1). S3 only lists a removed
+    key under `Deleted` when quiet mode is off; a quiet request answers with
+    errors alone, so every key would come back unconfirmed, every queue row
+    would keep its image key, and the cleanup batch would retry each one
+    until it abandoned the job. Verbose mode also reports a key that never
+    existed as deleted, so the `NoSuchKey` branch below is belt and braces
+    rather than the usual path.
+
     Wave 2 Task 5 closed the known follow-up this docstring used to record:
     there is now exactly ONE production caller,
     `service.spotlight.cleanup.run_cleanup_batch`, and it calls this with no
@@ -198,7 +207,7 @@ def delete_images(keys: list[str]) -> list[str]:
         batch = keys[start:start + BATCH_SIZE]
         try:
             response = _bucket().delete_objects(
-                Delete={'Objects': [{'Key': k} for k in batch], 'Quiet': True})
+                Delete={'Objects': [{'Key': k} for k in batch]})
         except Exception as e:
             print(f'spotlight.storage.delete_images: failed to delete {len(batch)} object(s): {e!r}')
             continue

@@ -234,14 +234,18 @@ def test_invite_pending_cancels_a_request_whose_subject_became_ineligible(client
     """Fix round 1 ruling 1: a withheld invite that can never become sendable
     reaches a terminal state instead of sitting in invites_pending forever --
     an ineligible subject's request is cancelled outright, drops out of the
-    backlog, and a second call finds nothing left to do for it."""
+    backlog, and a second call finds nothing left to do for it.
+
+    Fix wave item 5 narrowed which failures count as "can never become
+    sendable" to the three that really are terminal, so this now uses
+    `pending_deletion` (the member asked for their account to go) rather than
+    `under_18`, which simply means "not yet"."""
     p = _make_eligible(make_person)
     with api_tx() as tx: _set(tx, approvals_enabled='false', invites_enabled='true')
     try:
         assert client.post('/admin/growth/spotlight/welcome', json=dict(person_id=p['id']), headers=H).status_code == 200
         with api_tx() as tx:
-            tx.execute("UPDATE person SET date_of_birth = (NOW() - interval '17 years')::date WHERE id = %(id)s",
-                      dict(id=p['id']))
+            tx.execute("UPDATE person SET deletion_requested_at = NOW() WHERE id = %(id)s", dict(id=p['id']))
         with api_tx() as tx: _set(tx, approvals_enabled='true')
         r = client.post('/admin/growth/spotlight/invite-pending', json={}, headers=H).get_json()
         assert r['cancelled'] >= 1 and r['queued'] == 0
@@ -250,8 +254,76 @@ def test_invite_pending_cancels_a_request_whose_subject_became_ineligible(client
                 "SELECT status FROM publishing_queue WHERE subject_person_id = %(p)s", dict(p=p['id'])).fetchall()}
             errors = {row['error'] for row in tx.execute(
                 "SELECT error FROM publishing_queue WHERE subject_person_id = %(p)s", dict(p=p['id'])).fetchall()}
-        assert statuses == {'cancelled'} and errors == {'invite_skipped:under_18'}
+        assert statuses == {'cancelled'} and errors == {'invite_skipped:pending_deletion'}
         second = client.post('/admin/growth/spotlight/invite-pending', json={}, headers=H).get_json()
         assert second == dict(queued=0, skipped=0, cancelled=0)
+    finally:
+        with api_tx() as tx:
+            tx.execute("UPDATE person SET deletion_requested_at = NULL WHERE id = %(id)s", dict(id=p['id']))
+            _restore_defaults(tx)
+
+
+def test_invite_pending_skips_a_recoverable_failure_and_queues_it_later(client, make_person):
+    """Fix wave item 5. Cancelling on ANY eligibility failure threw away
+    invites over conditions that clear on their own: a report that is
+    dismissed, a verification that lands, a birthday, the 30-day featured
+    cooldown running out. Cancellation is not reversible from this route, so
+    the member simply never got their card. Only `not_activated`,
+    `not_opted_in` and `pending_deletion` are treated as terminal now;
+    everything else counts `skipped` and is re-checked on the next run."""
+    reporter = _make_eligible(make_person, name='ReportSkipReporter', gender='Man')
+    p = _make_eligible(make_person, name='ReportSkipSubject')
+    with api_tx() as tx: _set(tx, approvals_enabled='false', invites_enabled='true')
+    try:
+        assert client.post('/admin/growth/spotlight/welcome', json=dict(person_id=p['id']), headers=H).status_code == 200
+        with api_tx() as tx:
+            tx.execute(
+                """INSERT INTO skipped (subject_person_id, object_person_id, reported, report_reason)
+                   VALUES (%(a)s, %(b)s, TRUE, 'spam')""", dict(a=reporter['id'], b=p['id']))
+            _set(tx, approvals_enabled='true')
+        first = client.post('/admin/growth/spotlight/invite-pending', json={}, headers=H).get_json()
+        assert first['skipped'] >= 1 and first['cancelled'] == 0 and first['queued'] == 0
+        with api_tx('read committed') as tx:
+            # The request is untouched and still in the backlog, so the next
+            # run reconsiders it rather than having thrown it away.
+            assert {row['status'] for row in tx.execute(
+                "SELECT status FROM publishing_queue WHERE subject_person_id = %(p)s",
+                dict(p=p['id'])).fetchall()} == {'awaiting_member'}
+        with api_tx() as tx:
+            tx.execute("UPDATE skipped SET reported = FALSE WHERE object_person_id = %(b)s", dict(b=p['id']))
+        second = client.post('/admin/growth/spotlight/invite-pending', json={}, headers=H).get_json()
+        assert second['queued'] >= 1
+        with api_tx('read committed') as tx:
+            assert tx.execute(
+                """SELECT count(*) AS n FROM email_outbox
+                    WHERE campaign = 'e4' AND person_id = %(p)s AND state = 'queued'""",
+                dict(p=p['id'])).fetchone()['n'] == 1
+    finally:
+        with api_tx() as tx: _restore_defaults(tx)
+
+
+def test_a_cancelled_welcome_does_not_block_a_new_one(client, make_person):
+    """Fix wave item 5, second half. The welcome route's duplicate guard
+    matched on kind alone, so once invite-pending cancelled a request the
+    member could never be offered a welcome card again: the guard saw the
+    cancelled row and answered 409 forever. A cancelled row is a request that
+    did not happen, so it no longer counts as a duplicate. Rows in every other
+    status still do -- the guard exists to stop two live welcome cards for the
+    same member."""
+    p = _make_eligible(make_person, name='CancelledWelcome')
+    with api_tx() as tx: _set(tx, approvals_enabled='true', invites_enabled='true')
+    try:
+        first = client.post('/admin/growth/spotlight/welcome', json=dict(person_id=p['id']), headers=H)
+        assert first.status_code == 200
+        first_rk = first.get_json()['request_key']
+        # A live welcome still blocks a second one.
+        assert client.post('/admin/growth/spotlight/welcome',
+                           json=dict(person_id=p['id']), headers=H).status_code == 409
+        with api_tx() as tx:
+            tx.execute("UPDATE publishing_queue SET status = 'cancelled', error = 'invite_skipped:not_opted_in' "
+                       "WHERE request_key = %(rk)s", dict(rk=first_rk))
+        second = client.post('/admin/growth/spotlight/welcome', json=dict(person_id=p['id']), headers=H)
+        assert second.status_code == 200
+        assert second.get_json()['request_key'] != first_rk
     finally:
         with api_tx() as tx: _restore_defaults(tx)

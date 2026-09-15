@@ -129,7 +129,8 @@ _Q_STATUS = """
 def enqueue(tx, *, campaign: str, campaign_id: str, person_id: int, email: str,
             subject: str, html: str, from_addr: str, unsub_scope: str,
             list_unsubscribe: Optional[str] = None, exempt: bool = False,
-            cap_days: int = 7, post_send: Optional[str] = None) -> Optional[int]:
+            cap_days: int = 7, post_send: Optional[str] = None,
+            requires_spotlight_opt_in: bool = False) -> Optional[int]:
     """Queue one message. Returns the new row id, or None when this exact
     (campaign, campaign_id, person_id) was already queued, sent, skipped or
     failed -- which is what makes a retried caller safe.
@@ -142,12 +143,19 @@ def enqueue(tx, *, campaign: str, campaign_id: str, person_id: int, email: str,
     there). `cap_days` rides along so the drain's own frequency re-check uses
     the campaign's real window rather than the 7-day default -- E2's weekly
     cadence is a 6-day cap, and re-checking it at 7 would hold back exactly
-    the member the 6-day window exists to reach."""
+    the member the 6-day window exists to reach.
+
+    `requires_spotlight_opt_in` marks a message that exists only because the
+    member consented to Community Spotlight (E4, E5). It rides in the payload
+    rather than being inferred from the campaign name so the drain does not
+    have to keep a list of which campaigns are Spotlight's, and it is what
+    `_refusal` re-reads consent for at send time (fix wave item 2)."""
     if post_send is not None and post_send not in POST_SEND_HOOKS:
         raise ValueError(f'unknown post_send hook: {post_send}')
     payload = dict(subject=subject, html=html, from_addr=from_addr,
                    list_unsubscribe=list_unsubscribe, post_send=post_send,
-                   cap_days=int(cap_days))
+                   cap_days=int(cap_days),
+                   requires_spotlight_opt_in=bool(requires_spotlight_opt_in))
     row = tx.execute(_Q_ENQUEUE, dict(c=campaign, cid=campaign_id, pid=person_id, email=email,
                                       payload=json.dumps(payload), exempt=bool(exempt),
                                       scope=unsub_scope)).fetchone()
@@ -195,9 +203,11 @@ def mark_accepted(tx, id: int, provider_message_id: Optional[str]) -> None:
 
 
 def mark_skipped(tx, id: int, reason: str) -> None:
-    """A send-time re-check refused this row: 'suppressed', 'unsubscribed'
-    or 'capped'. Terminal, and deliberately distinct from 'failed' -- nothing
-    went wrong, we simply must not send it."""
+    """A send-time re-check refused this row: 'withdrawn', 'suppressed',
+    'unsubscribed' or 'capped'. Terminal, and deliberately distinct from
+    'failed' -- nothing went wrong, we simply must not send it. The same
+    state and reason string `withdraw_member` writes directly onto the
+    Spotlight invites it finds still queued."""
     tx.execute(_Q_SKIP, dict(id=id, reason=reason))
 
 
@@ -214,14 +224,36 @@ def mark_failed_attempt(tx, id: int, error: str, attempts: int) -> None:
         tx.execute(_Q_FAIL, dict(id=id, err=err))
 
 
+_Q_SPOTLIGHT_CONSENT = """
+    SELECT spotlight_opt_in, activated FROM person WHERE id = %(p)s
+"""
+
+
 def _refusal(tx, row: dict) -> Optional[str]:
     """The send-time re-checks, in the order they cost. None means send.
 
     These run again here, not only at enqueue time, because the gap between
     the two can be long: a member may have unsubscribed, been mailed by
     another campaign, or had their address suppressed since the row was
-    written."""
+    written.
+
+    Consent comes first (fix wave item 2). A Spotlight invite is queued
+    inside the transaction that created the candidate, and the member can
+    withdraw at any point after that -- opt out, delete their account, be
+    deactivated or banned. `withdraw_member` marks the rows it can see
+    `skipped` in its own transaction, but a row enqueued on either side of
+    that sweep, or by a producer racing it, is still queued when the drain
+    arrives. Mailing a withdrawn member is the consent breach the whole
+    withdrawal path exists to prevent, so the drain re-reads consent rather
+    than trusting the row: a missing person, a cleared `spotlight_opt_in` or
+    a deactivated account all refuse. Only messages that carry
+    `requires_spotlight_opt_in` are checked, so no other campaign pays for
+    the read."""
     payload = row['payload'] or {}
+    if payload.get('requires_spotlight_opt_in'):
+        consent = tx.execute(_Q_SPOTLIGHT_CONSENT, dict(p=row['person_id'])).fetchone()
+        if not consent or not consent['spotlight_opt_in'] or not consent['activated']:
+            return 'withdrawn'
     if is_suppressed_send(row['email']):
         return 'suppressed'
     if campaign_unsubscribed(tx, row['person_id'], row['unsub_scope']):

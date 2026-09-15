@@ -34,8 +34,13 @@ CREATE TABLE IF NOT EXISTS cleanup_job (
   evidence         jsonb NOT NULL DEFAULT '{}'::jsonb,
   last_error       text,
   created_at       timestamptz NOT NULL DEFAULT NOW(),
-  done_at          timestamptz,
-  UNIQUE (kind, target)
+  done_at          timestamptz
+  -- No UNIQUE (kind, target) here (fix wave item 7). Spotlight object keys
+  -- are content-hashed, so the same key is legitimately created, retired and
+  -- created again, and an unconditional constraint would let a key be queued
+  -- only once ever. 0047 adds the partial unique index over pending jobs that
+  -- is actually wanted, and still carries the DROP for the constraint this
+  -- line used to create, since this file may already have run elsewhere.
 );
 ALTER TABLE cleanup_job DROP CONSTRAINT IF EXISTS cleanup_job_kind_check;
 ALTER TABLE cleanup_job ADD CONSTRAINT cleanup_job_kind_check CHECK (kind IN ('asset_delete'));

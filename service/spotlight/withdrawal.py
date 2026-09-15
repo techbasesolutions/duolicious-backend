@@ -137,6 +137,15 @@ _Q_CANCEL_TILE_OR_PARTICIPANT_ROWS = f"""
 """
 
 
+# Fix wave item 2: the Spotlight campaigns, and only those. E1/E2/E3 are not
+# Spotlight messages and a withdrawal says nothing about them, so they are
+# left exactly as they are. `queued` only -- see the note at the call site.
+_Q_SKIP_QUEUED_INVITES = """
+    UPDATE email_outbox SET state = 'skipped', last_error = 'withdrawn'
+     WHERE person_id = %(pid)s AND campaign IN ('e4', 'e5') AND state = 'queued'
+"""
+
+
 def _file_removal_tasks(tx, rows, person_id: Optional[int], reason: Optional[str] = None) -> int:
     """One open task per published platform row. A Facebook post can be
     deleted through the Graph API; Instagram has no delete endpoint for
@@ -204,7 +213,8 @@ def withdraw_member(tx, person_id: int, reason: str) -> dict:
     one field is deliberately excluded from the idempotence claim.
 
     Returns dict(cancelled=int, left_attempting=int, roundups_reissued=int,
-                 removal_tasks=int, nonces_invalidated=int, epoch=int)."""
+                 removal_tasks=int, nonces_invalidated=int, emails_skipped=int,
+                 epoch=int)."""
     if reason not in REASONS:
         raise ValueError('bad_reason')
     if not tx.execute("SELECT 1 FROM person WHERE id = %(pid)s", dict(pid=person_id)).fetchone():
@@ -303,5 +313,17 @@ def withdraw_member(tx, person_id: int, reason: str) -> dict:
         "UPDATE spotlight_token_nonce SET used_at = NOW() WHERE person_id = %(pid)s AND used_at IS NULL",
         params).rowcount
 
+    # Step 9 (fix wave item 2): a queued E4 or E5 is a Spotlight message that
+    # only exists because the member consented, so it goes with the
+    # withdrawal. Left alone, the emailoutbox cron would mail a withdrawn
+    # member minutes later -- precisely the breach this function exists to
+    # prevent. `skipped` rather than deleted: the row stays as the record
+    # that the message was queued and deliberately not sent. Only `queued`
+    # rows are touched; an `accepted` one has already gone out, a `reserved`
+    # one is in flight (the drain's own send-time re-check refuses it), and
+    # a `failed` or `acceptance_unknown` one is a state a human reads.
+    emails_skipped = tx.execute(_Q_SKIP_QUEUED_INVITES, params).rowcount
+
     return dict(cancelled=cancelled, left_attempting=left_attempting, roundups_reissued=roundups_reissued,
-                removal_tasks=removal_tasks, nonces_invalidated=nonces_invalidated, epoch=epoch)
+                removal_tasks=removal_tasks, nonces_invalidated=nonces_invalidated,
+                emails_skipped=emails_skipped, epoch=epoch)

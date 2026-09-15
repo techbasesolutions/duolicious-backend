@@ -282,6 +282,10 @@ The review of the API halves of Tasks 6 and 7 (`d369dc4`) was still running when
 
 F10 (attribution) and the remainder of F12 (idempotent-tick work beyond the weekly key, any auto mode) stay deferred to Wave 3 per the triage sequencing; the acceptance-matrix staging run is Wave 4.
 
+### Deploy note: the first overdue count is the historical backlog
+
+Migration 0046 back-stamps every existing removal task with `deadline_at = created_at + interval '72 hours'`. Tasks filed before Wave 2 had no deadline at all, so on the deploy that runs 0046 each one older than three days is immediately past its stamped deadline. Expect `GET /admin/growth/removals` to report a non-zero and possibly large `overdue` on the first read after deploy: that number is the backlog that was already there, not a regression introduced by the deploy, and it does not mean anything failed during it. Work it down once and the count then tracks real breaches of the 72-hour promise. The same read now also reports `abandoned_cleanup`, which the retention sweep no longer re-queues, so an abandoned job stays visible until a human clears the object.
+
 ### Where the record lives
 
 Wave 2 briefs, task reports, review packages and the ledger, both api and admin sides, live in one place: `ahavah-api/.superpowers/sdd/2026-09-15-spotlight-wave-2/` (`progress.md` is the ledger; `task-N-brief.md` and `task-N-report.md` per task; `task-6-7-api-report.md` and `task-6-7-admin-report.md` for the split task; `review-<base>..<head>.diff` and `review-admin-<base>..<head>.diff` are the exact diffs each reviewer read). Unlike Wave 1, the admin repo has no separate Wave 2 workspace of its own.

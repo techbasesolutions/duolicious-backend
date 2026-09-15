@@ -66,6 +66,11 @@ class _Bucket:
         self.meta = _Meta(self)
 
     def delete_objects(self, Delete):
+        # Fix wave item 1: verbose mode is what makes a deletion confirmable.
+        # S3 returns an entry under `Deleted` for every key it removed only
+        # when Quiet is off, so a quiet request would confirm nothing and the
+        # cleanup batch would retry every key until it abandoned the job.
+        assert Delete.get('Quiet') is not True, 'delete_objects must not request quiet mode'
         self.calls.append([o['Key'] for o in Delete['Objects']])
         if self.raise_exc:
             raise self.raise_exc
@@ -185,6 +190,27 @@ def test_delete_images_batches_at_the_api_limit(monkeypatch):
     all_keys = [f'k{i}' for i in range(2500)]
     assert sorted(st.delete_images(all_keys)) == sorted(all_keys)
     assert batches == [1000, 1000, 500]
+
+
+def test_delete_images_never_requests_quiet_mode(monkeypatch):
+    """Fix wave item 1. `delete_images` promises to return only the keys
+    storage CONFIRMED gone, and the only confirmation S3 gives is the
+    `Deleted` list -- which a quiet request omits entirely. Asking for quiet
+    mode would therefore confirm nothing, leave every queue row's image key in
+    place, and have the cleanup batch retry each key until it abandoned the
+    job. This asserts on the request itself, not on the response, so the bug
+    is caught even against a stub that happens to answer verbosely anyway."""
+    seen = {}
+
+    class _B:
+        def delete_objects(self, Delete):
+            seen['quiet'] = Delete.get('Quiet')
+            return {'Deleted': [{'Key': o['Key']} for o in Delete['Objects']]}
+
+    monkeypatch.setattr(st, '_configured', lambda: True)
+    monkeypatch.setattr(st, '_bucket', lambda: _B())
+    assert st.delete_images(['a', 'b']) == ['a', 'b']
+    assert seen['quiet'] is not True
 
 
 def test_delete_images_is_a_noop_when_unconfigured(monkeypatch):

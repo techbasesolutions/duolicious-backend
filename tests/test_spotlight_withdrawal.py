@@ -132,7 +132,12 @@ def test_second_call_is_idempotent_except_epoch(make_person):
         second = withdraw_member(tx, p['id'], 'opt_out')
         assert first['cancelled'] == 2
         assert first['left_attempting'] == 2
-        assert {k: v for k, v in second.items() if k != 'epoch'} == dict(cancelled=0, left_attempting=0, roundups_reissued=0, removal_tasks=0, nonces_invalidated=0)
+        # `emails_skipped` (fix wave item 2) joins the idempotence claim: the
+        # first call moved every queued Spotlight invite out of `queued`, so
+        # the second finds none left to skip.
+        assert {k: v for k, v in second.items() if k != 'epoch'} == dict(
+            cancelled=0, left_attempting=0, roundups_reissued=0, removal_tasks=0,
+            nonces_invalidated=0, emails_skipped=0)
         assert second['epoch'] == 2
 
 
@@ -255,8 +260,8 @@ def test_reissue_clears_sha256_so_a_partial_reupload_does_not_complete(make_pers
         rev2 = current_revision(tx, rk)
         fb_key = asset_key(rk, rev2['id'], 'oldsha', 'facebook')
         ig_key = asset_key(rk, rev2['id'], 'oldsha', 'instagram')
-        assert attach_platform_image(tx, rk, 'facebook', rev2['id'], fb_key, 'https://cdn/fb.png', 'oldsha') == 'attached'
-        assert attach_platform_image(tx, rk, 'instagram', rev2['id'], ig_key, 'https://cdn/ig.png', 'oldsha') == 'attached'
+        assert attach_platform_image(tx, rk, 'facebook', rev2['id'], fb_key, 'https://cdn/fb.png', 'oldsha')[0] == 'attached'
+        assert attach_platform_image(tx, rk, 'instagram', rev2['id'], ig_key, 'https://cdn/ig.png', 'oldsha')[0] == 'attached'
         assert complete_render_if_ready(tx, rk, rev2['id']) is True
 
         withdraw_member(tx, a['id'], 'account_deletion')
@@ -270,7 +275,7 @@ def test_reissue_clears_sha256_so_a_partial_reupload_does_not_complete(make_pers
 
         # Upload facebook only -- the set must not read as ready.
         fb_key2 = asset_key(rk, new_rev['id'], 'newsha', 'facebook')
-        assert attach_platform_image(tx, rk, 'facebook', new_rev['id'], fb_key2, 'https://cdn/fb2.png', 'newsha') == 'attached'
+        assert attach_platform_image(tx, rk, 'facebook', new_rev['id'], fb_key2, 'https://cdn/fb2.png', 'newsha')[0] == 'attached'
         assert complete_render_if_ready(tx, rk, new_rev['id']) is False
         rows2 = {r['platform']: r for r in tx.execute(
             "SELECT platform, status, image_sha256 FROM publishing_queue WHERE request_key = %(rk)s",
@@ -313,7 +318,7 @@ def test_reissued_row_completes_render_ignoring_published_sibling(make_person):
         assert new_rev_id != rev2['id']
 
         ig_key = asset_key(rk, new_rev_id, 'igsha', 'instagram')
-        assert attach_platform_image(tx, rk, 'instagram', new_rev_id, ig_key, 'https://cdn/ig.png', 'igsha') == 'attached'
+        assert attach_platform_image(tx, rk, 'instagram', new_rev_id, ig_key, 'https://cdn/ig.png', 'igsha')[0] == 'attached'
         assert complete_render_if_ready(tx, rk, new_rev_id) is True
 
         attached = tx.execute("SELECT asset_hash, image_key FROM spotlight_revision WHERE id = %(id)s",
@@ -516,6 +521,88 @@ def test_investigate_task_is_listed_for_the_operator(make_person, client):
     listed = client.get('/admin/growth/removals?pending=1', headers=_auth_headers_for(admin)).get_json()
     mine = [t for t in listed['tasks'] if t['request_key'] == rk]
     assert len(mine) == 2 and {t['reason'] for t in mine} == {'investigate'}
+
+
+class _Smtp:
+    """Local SMTP stub. Nothing in this file may touch the network, and the
+    two outbox tests below care only about whether anything was handed to
+    SMTP at all."""
+    def __init__(self):
+        self.sent: list[dict] = []
+
+    def send(self, **kw):
+        self.sent.append(kw)
+        return 'mid-1'
+
+
+def _only(*person_ids):
+    """Park every other due outbox row so a drain in these tests can only
+    reach the rows they enqueued. The suite shares one database and one
+    outbox table, so without this a drain would also pick up whatever an
+    earlier test left queued. Copied from tests/test_email_outbox.py; test
+    files in this suite do not import from each other."""
+    with api_tx() as tx:
+        tx.execute(
+            """UPDATE email_outbox SET next_attempt_at = NOW() + interval '1 hour'
+                WHERE state = 'queued' AND NOT (person_id = ANY(%(ids)s))""",
+            dict(ids=list(person_ids)))
+
+
+def _outbox_row(pid):
+    with api_tx('read committed') as tx:
+        return tx.execute(
+            "SELECT state, last_error FROM email_outbox WHERE person_id = %(p)s ORDER BY id DESC LIMIT 1",
+            dict(p=pid)).fetchone()
+
+
+def test_withdrawal_skips_queued_spotlight_invites(make_person):
+    """Fix wave item 2: a queued E4 or E5 is a Spotlight message the member
+    has just withdrawn consent for. Leaving it queued means the drain mails a
+    withdrawn member minutes later, which is exactly the consent breach the
+    withdrawal exists to prevent, so the rows are marked `skipped` (nothing
+    went wrong, we simply must not send them) in the withdrawal's own
+    transaction and the drain then finds nothing to do."""
+    from service.campaigns import outbox
+    p = _make_eligible(make_person, name='SkipQueued')
+    with api_tx() as tx:
+        email = tx.execute("SELECT email FROM person WHERE id = %(p)s", dict(p=p['id'])).fetchone()['email']
+        assert outbox.enqueue(tx, campaign='e5', campaign_id=f"e5-{p['id']}", person_id=p['id'],
+                              email=email, subject='s', html='<p>h</p>', from_addr='hello@ahavah.app',
+                              unsub_scope='notifications', exempt=True) is not None
+    _only(p['id'])
+    with api_tx() as tx:
+        result = withdraw_member(tx, p['id'], 'opt_out')
+    assert result['emails_skipped'] == 1
+    assert _outbox_row(p['id']) == dict(state='skipped', last_error='withdrawn')
+    smtp = _Smtp()
+    assert outbox.drain(api_tx, smtp)['accepted'] == 0
+    assert smtp.sent == []
+
+
+def test_send_time_recheck_refuses_a_spotlight_invite_to_a_withdrawn_member(make_person):
+    """Fix wave item 2, the second half. The skip above closes the rows that
+    exist when the withdrawal runs; this closes the window the other way
+    round -- a row enqueued just before (or racing) the withdrawal, still
+    `queued` when the drain reaches it. Every Spotlight invite carries
+    `requires_spotlight_opt_in` in its payload, so the drain re-reads consent
+    at send time and refuses rather than trusting the row."""
+    from service.campaigns import outbox
+    p = _make_eligible(make_person, name='RecheckWithdrawn')
+    with api_tx() as tx:
+        email = tx.execute("SELECT email FROM person WHERE id = %(p)s", dict(p=p['id'])).fetchone()['email']
+        assert outbox.enqueue(tx, campaign='e4', campaign_id=f"e4-recheck-{p['id']}", person_id=p['id'],
+                              email=email, subject='s', html='<p>h</p>', from_addr='hello@ahavah.app',
+                              unsub_scope='notifications', exempt=True,
+                              requires_spotlight_opt_in=True) is not None
+        # The consent goes away without the row being touched: the enqueue
+        # and the withdrawal landed in either order, or on either side of the
+        # sweep. Either way the drain must not trust what the row says.
+        tx.execute("UPDATE person SET spotlight_opt_in = FALSE WHERE id = %(p)s", dict(p=p['id']))
+    _only(p['id'])
+    smtp = _Smtp()
+    assert outbox.drain(api_tx, smtp)['skipped'] == 1
+    assert smtp.sent == []
+    assert _outbox_row(p['id']) == dict(state='skipped', last_error='withdrawn')
 
 
 def test_withdrawal_clears_the_standing_preference(make_person, client):

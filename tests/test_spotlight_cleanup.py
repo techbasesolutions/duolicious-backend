@@ -39,6 +39,7 @@ from uuid import uuid4
 from database import api_tx
 from service.cron.spotlightretention import retention_sweep
 from service.spotlight import cleanup
+from service.spotlight.approval import card_state
 from service.spotlight.assets import asset_key, attach_platform_image, complete_render_if_ready
 from service.spotlight.queue import create_candidate, set_setting
 from service.spotlight.revisions import attach_render, current_revision, edit_caption
@@ -280,6 +281,44 @@ def test_retention_keeps_keys_until_the_job_confirms(make_person):
     assert all(r['image_key'] is None and r['image_url'] is None for r in rows)
 
 
+def test_confirmed_deletion_clears_the_revision_columns_too(make_person):
+    """Fix wave item 4. `spotlight_revision` names the object as well as the
+    queue row does, and it is the revision the member's own card screen reads
+    (`card_state.image_url` presigns `revision.image_key`). Clearing only the
+    queue row left the revision pointing at an object that is provably gone,
+    so a member opening their card after a retention sweep or a withdrawal
+    got a signed URL for nothing. `asset_hash` is deliberately left: it is the
+    record that this revision WAS rendered, which is still true, and it is
+    what keeps the one-render-per-revision guard honest."""
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        key = f'spotlight/{rk}/1-abc-facebook.png'
+        attach_render(tx, current_revision(tx, rk)['id'], 'h', key, 'https://cdn/x.png')
+        tx.execute(
+            """UPDATE publishing_queue
+                  SET status = 'published', external_post_id = '1',
+                      image_key = 'spotlight/' || request_key || '/1-abc-' || platform || '.png',
+                      image_url = 'https://cdn/x.png', updated_at = NOW() - interval '91 days'
+                WHERE request_key = %(rk)s""", dict(rk=rk))
+        retention_sweep(tx)
+        rev = current_revision(tx, rk)
+        assert rev['image_key'] == key and rev['asset_hash'] == 'h'
+    out = cleanup.run_cleanup_batch(api_tx, delete=lambda keys: list(keys),   # storage confirms everything
+                                    target_prefix=f'spotlight/{rk}/')
+    assert out['done'] == 2
+    with api_tx('read committed') as tx:
+        rev = current_revision(tx, rk)
+        assert rev['image_key'] is None and rev['image_url'] is None
+        assert rev['asset_hash'] == 'h'
+        state = card_state(tx, rk)
+    assert state['image_url'] is None
+    # The revision still says it was rendered, so the card screen reports the
+    # preview as having existed rather than pretending the render never
+    # happened.
+    assert state['preview_available'] is True
+
+
 def test_removal_done_enqueues_and_keeps_key_until_confirmed(client, make_person):
     p = _make_eligible(make_person)
     with api_tx() as tx:
@@ -317,6 +356,55 @@ def test_overdue_removals_counted(client, make_person):
         assert cleanup.overdue_removals(tx) >= 2
     body = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
     assert body['overdue'] >= 2 and 'outstanding_cleanup' in body
+
+
+def test_removals_rows_carry_their_retry_and_deadline_state(client, make_person):
+    """Fix wave item 8. The removals list is what an operator works from, and
+    it was answering with the task's identity only: no attempt count, no last
+    error, no next attempt time, no deadline, no evidence. A task that had
+    been failing for two days looked exactly like one filed a minute ago, and
+    the `overdue` counter said how many were late without saying which. All
+    five columns already exist on the row, so this is a projection fix."""
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute("UPDATE publishing_queue SET status = 'published', external_post_id = '9' "
+                   "WHERE request_key = %(rk)s", dict(rk=rk))
+        from service.spotlight.withdrawal import withdraw_member
+        withdraw_member(tx, p['id'], 'opt_out')
+        tx.execute("""UPDATE spotlight_removal_task
+                         SET attempts = 3, last_error = 'graph api said no'
+                       WHERE request_key = %(rk)s""", dict(rk=rk))
+    body = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
+    mine = [t for t in body['tasks'] if t['request_key'] == rk]
+    assert mine
+    for task in mine:
+        assert task['attempts'] == 3
+        assert task['last_error'] == 'graph api said no'
+        # A deadline is stamped at filing time, and the next attempt time is
+        # what says whether the worker is backing off.
+        assert task['next_attempt_at'] and task['deadline_at']
+        assert 'evidence' in task
+
+
+def test_abandoned_jobs_are_counted_on_the_removals_surface(client):
+    """Fix wave item 3. An abandoned job is deliberately left in the table and
+    nothing sweeps it up, so the only thing that can make it visible is the
+    operator surface. Without a count here the retention sweep's new guard
+    (which stops re-queueing the key) would make an abandoned job silent as
+    well as unswept: an object still in the bucket that nobody is told about.
+    Counted even under the emergency stop, like `overdue` and
+    `outstanding_cleanup`, since a stop is exactly when a backlog must stay
+    visible."""
+    key = _pfx() + 'abandoned-facebook.png'
+    before = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
+    assert 'abandoned_cleanup' in before
+    with api_tx() as tx:
+        tx.execute("""INSERT INTO cleanup_job (kind, target, state, last_error)
+                      VALUES ('asset_delete', %(k)s, 'abandoned', 'deletion not confirmed by storage')""",
+                   dict(k=key))
+    after = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
+    assert after['abandoned_cleanup'] == before['abandoned_cleanup'] + 1
 
 
 def test_withdrawal_enqueues_cancelled_keys_instead_of_deleting(make_person):
@@ -375,7 +463,7 @@ def test_caption_edit_unrenders_every_repointed_row_and_enqueues_the_old_keys(ma
         # Only facebook is re-uploaded against the new revision.
         sha2 = hashlib.sha256(f'{rk}-facebook-2'.encode()).hexdigest()
         key2 = asset_key(rk, rev2, sha2, 'facebook')
-        assert attach_platform_image(tx, rk, 'facebook', rev2, key2, 'https://cdn/fb2.png', sha2) == 'attached'
+        assert attach_platform_image(tx, rk, 'facebook', rev2, key2, 'https://cdn/fb2.png', sha2)[0] == 'attached'
         assert complete_render_if_ready(tx, rk, rev2) is False
 
     rows = _jobs(old['facebook'], old['instagram'])

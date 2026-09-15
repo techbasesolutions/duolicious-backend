@@ -52,7 +52,7 @@ from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      SETTING_KEYS, FREE_KEYS)
 from service.spotlight.assets import asset_key, attach_platform_image, complete_render_if_ready
 from service.spotlight import cleanup
-from service.spotlight.cleanup import (enqueue_asset_delete, is_referenced,
+from service.spotlight.cleanup import (abandoned_jobs, enqueue_asset_delete, is_referenced,
                                        outstanding_jobs, overdue_removals)
 from service.spotlight.revisions import consent_complete, create_revision, edit_caption
 from service.spotlight.roundup import roundup_snapshot
@@ -398,6 +398,21 @@ _Q_INVITES_PENDING_ROWS = f"""
 """
 
 
+# Fix wave item 5: the only eligibility failures a withheld invite can never
+# recover from. Everything else in `eligibility.REASONS` clears on its own --
+# a report is dismissed, a verification lands, a birthday passes, the 30-day
+# featured cooldown runs out, a photo is re-approved -- and cancelling on one
+# of those threw the invite away for good, since nothing re-creates a
+# cancelled request. Those count `skipped` and are re-checked next run.
+#
+# `not_activated` and `not_opted_in` are terminal because both mean consent
+# is gone, and both already run `withdraw_member` on the way out; if a member
+# activates or opts in again, the welcome route can create a fresh candidate
+# (its duplicate guard ignores cancelled rows). `pending_deletion` is the
+# member asking for the whole account to go.
+TERMINAL_INVITE_REASONS = ('not_activated', 'not_opted_in', 'pending_deletion')
+
+
 def _cancel_invite_pending_request(tx, request_key: str, error: str) -> None:
     """Fix round 1 ruling 1: a withheld invite that can never become sendable
     (the subject is no longer eligible, or there is nobody/no nonce to send
@@ -468,6 +483,17 @@ _Q_REMOVALS = """
            t.reason,
            t.done_at,
            t.created_at,
+           -- Fix wave item 8: the working state of the task, not just its
+           -- identity. Without these an operator could not tell a task that
+           -- has been failing for two days from one filed a minute ago, and
+           -- the `overdue` counter said how many were late without saying
+           -- which. `_row` passes every column through, so selecting them is
+           -- all the surface needs.
+           t.attempts,
+           t.last_error,
+           t.next_attempt_at,
+           t.deadline_at,
+           t.evidence,
            q.request_key,
            q.kind,
            q.caption
@@ -755,7 +781,18 @@ def post_growth_queue_image(request_key: str):
     # and nothing ever will -- so it is queued for deletion rather than left
     # behind.
     with api_tx() as tx:
-        outcome = attach_platform_image(tx, request_key, platform, revision_id, key, url, sha256)
+        outcome, previous_key = attach_platform_image(tx, request_key, platform, revision_id,
+                                                      key, url, sha256)
+        if previous_key and previous_key != key and not is_referenced(tx, previous_key):
+            # Fix wave item 6: this upload displaced an earlier one. Keys are
+            # content-hashed, so different bytes for the same revision land on
+            # a different key and nothing names the old object any more -- the
+            # ordinary case while an operator iterates on artwork, and the one
+            # the superseded branch below never covered. Guarded by the same
+            # reference check: a sibling platform row or a revision may still
+            # name it (identical bytes share a key), in which case there is no
+            # orphan to clean up.
+            enqueue_asset_delete(tx, previous_key)
         if outcome == 'superseded' and not is_referenced(tx, key):
             # Nothing points at the just-uploaded object and nothing ever
             # will, so it is queued for deletion (Wave 2 Task 5) rather than
@@ -821,9 +858,17 @@ def post_growth_spotlight_welcome():
         # Task 9 (F12): invites_enabled gates candidate creation and E4.
         if cfg.get('invites_enabled') != 'true':
             return dict(error='invites_paused'), 409
+        # Fix wave item 5: a cancelled row is a request that did not happen,
+        # so it is not a duplicate. The guard matched on kind alone, which
+        # meant a member whose welcome was cancelled (by invite-pending's
+        # terminal path, or a withdrawal they have since reversed) could never
+        # be offered one again -- this route answered 409 forever and nothing
+        # re-creates a cancelled request. Every other status still blocks: the
+        # guard exists to stop two live welcome cards for the same member.
         already = tx.execute(
             """SELECT 1 FROM publishing_queue
-                WHERE subject_person_id = %(p)s AND kind = 'welcome' LIMIT 1""",
+                WHERE subject_person_id = %(p)s AND kind = 'welcome'
+                  AND status <> 'cancelled' LIMIT 1""",
             dict(p=person_id)).fetchone()
         if already:
             abort(409)
@@ -909,17 +954,22 @@ def post_growth_spotlight_invite_pending():
     to act -- this is what drains that backlog once approvals resume, and the
     tick calls it every run `candidates.invites_pending` is above zero.
 
-    Fix round 1 ruling 1: the backlog must reach a TERMINAL state, not sit in
-    `invites_pending` forever. A subject that is no longer eligible (opted
-    out, reported, aged out of the 30-day cooldown check's own window, etc)
-    is never going to become sendable by trying again next tick, so its
-    request is cancelled outright -- same for the rarer case where
+    Fix round 1 ruling 1: a backlog entry that can never become sendable must
+    reach a TERMINAL state rather than sit in `invites_pending` forever, so
+    its request is cancelled outright -- same for the rarer case where
     `enqueue_card_ready` itself cannot address the invite (no activated
     person, no card nonce) and left no outbox row behind. A `None` WITH an
     outbox row already present is the ordinary idempotent case (a retried
     call, or a race with another producer) and is simply skipped: the
     predicate that built `rows` will drop it on its own the moment that row
-    exists."""
+    exists.
+
+    Fix wave item 5 narrowed "can never become sendable" to
+    TERMINAL_INVITE_REASONS. Most eligibility failures are temporary, and
+    cancelling on one threw the invite away for good, since nothing
+    re-creates a cancelled request: a member whose report was dismissed the
+    next day simply never got their card. Those now count `skipped` and are
+    re-checked on the following run."""
     s = _gate()
     with api_tx('read committed') as tx:
         cfg = settings(tx)
@@ -938,8 +988,15 @@ def post_growth_spotlight_invite_pending():
         with api_tx() as tx:
             ok, reason = eligibility(tx, r['subject_person_id'], exclude_request_key=rk)
             if not ok:
-                _cancel_invite_pending_request(tx, rk, f'invite_skipped:{reason}')
-                cancelled += 1
+                if reason in TERMINAL_INVITE_REASONS:
+                    _cancel_invite_pending_request(tx, rk, f'invite_skipped:{reason}')
+                    cancelled += 1
+                else:
+                    # Recoverable (fix wave item 5): the request stays exactly
+                    # as it is and the next run reconsiders it. It keeps
+                    # counting towards `invites_pending`, which is the honest
+                    # reading -- the invite really is still owed.
+                    skipped += 1
                 continue
             oid = _enqueue_card_ready(tx, r['subject_person_id'], rk)
             if oid is not None:
@@ -1008,12 +1065,18 @@ def get_growth_removals():
         # task list (Wave 2 Task 5, F09).
         overdue = overdue_removals(tx)
         outstanding_cleanup = outstanding_jobs(tx)
+        # Fix wave item 3: an abandoned job is left in the table and nothing
+        # sweeps it up, and the retention sweep no longer re-queues its key
+        # either, so this count is the only thing that surfaces it. Read under
+        # the stop for the same reason as the two above.
+        abandoned_cleanup = abandoned_jobs(tx)
         # Fix round 1 ruling 2: same reasoning -- a render stuck behind a
         # parked sibling is exactly the kind of backlog that must stay
         # visible under the stop, not disappear along with the task list.
         render_blocked = int(tx.execute(_Q_RENDER_BLOCKED_COUNT).fetchone()['n'])
     return jsonify({'tasks': [_row(r) for r in rows], 'halted': halted,
                     'overdue': overdue, 'outstanding_cleanup': outstanding_cleanup,
+                    'abandoned_cleanup': abandoned_cleanup,
                     'render_blocked': render_blocked})
 
 

@@ -985,6 +985,42 @@ def test_image_upload_refuses_a_row_that_moved_during_the_upload(client, monkeyp
     assert all(row['image_key'] is None and row['image_url'] is None for row in rows)
 
 
+def test_replacing_an_unrendered_upload_queues_the_previous_key(client, monkeypatch):
+    """Fix wave item 6. Keys are content-hashed, so re-rendering the same
+    revision with different bytes lands on a DIFFERENT key: the row is
+    re-stamped, the first object is left in the bucket, and nothing in the
+    database names it any more. The superseded path only covers the opposite
+    case (the upload that lost), so a re-render that WON leaked an object
+    every time -- the ordinary case while an operator is iterating on
+    artwork. `attach_platform_image` now hands back the key it displaced and
+    the route queues it for deletion."""
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: None)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        rev_id = current_revision(tx, rk)['id']
+    first, second = _png_bytes(colour='white'), _png_bytes(colour='black')
+    assert first != second
+    first_key = f'spotlight/{rk}/{rev_id}-{hashlib.sha256(first).hexdigest()[:16]}-facebook.png'
+    second_key = f'spotlight/{rk}/{rev_id}-{hashlib.sha256(second).hexdigest()[:16]}-facebook.png'
+    # Only the facebook row is uploaded, so the revision never completes its
+    # render set and stays open to a second upload.
+    for data in (first, second):
+        assert client.post(f'/admin/growth/queue/{rk}/image',
+                           json={'platform': 'facebook', 'png_base64': _b64(data)},
+                           headers=H).status_code == 200
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            "SELECT image_key FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
+            dict(rk=rk)).fetchone()
+        jobs = {r['target']: r['state'] for r in tx.execute(
+            "SELECT target, state FROM cleanup_job WHERE target = ANY(%(t)s::text[])",
+            dict(t=[first_key, second_key])).fetchall()}
+    assert row['image_key'] == second_key
+    # The displaced key is queued; the key the row now names is not.
+    assert jobs == {first_key: 'pending'}
+
+
 def test_queue_row_counts_one_signup_per_person(client, make_person):
     """M-b: two clicks that lead back to the same member are one sign-up, so
     the queue view and `post_stats` report the same number. Also covers I3:

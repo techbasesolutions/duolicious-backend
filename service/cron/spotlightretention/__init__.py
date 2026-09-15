@@ -37,11 +37,23 @@ SPOTLIGHT_RETENTION_POLL_SECONDS = int(os.environ.get(
 
 print(f'Hello from cron module: {__name__}')
 
+# Fix wave item 3: a key whose cleanup job was ABANDONED drops out of the
+# sweep. An abandoned job is left in the table on purpose (it is the only
+# record that an object may still be in the bucket, and a human has to look),
+# and the row keeps its key because nothing confirmed the deletion -- so
+# without this the next sweep would find no PENDING job for the key, file a
+# fresh one, and that one would fail its way to abandoned as well, every day,
+# burying the original alert under duplicates. The backlog stays visible
+# through `abandoned_cleanup` on GET /admin/growth/removals instead.
 _Q_SWEEP = """
     SELECT id, image_key FROM publishing_queue
      WHERE status = 'published'
        AND updated_at < NOW() - make_interval(days => %(days)s)
        AND image_key IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM cleanup_job c
+                        WHERE c.kind = 'asset_delete'
+                          AND c.target = publishing_queue.image_key
+                          AND c.state = 'abandoned')
 """
 
 

@@ -9,6 +9,8 @@ function here runs inside the caller's api_tx; none opens one.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from service.spotlight.revisions import attach_render
 
 
@@ -17,7 +19,7 @@ def asset_key(request_key: str, revision_id: int, sha256: str, platform: str) ->
 
 
 def attach_platform_image(tx, request_key: str, platform: str, revision_id: int,
-                           key: str, url: str, sha256: str) -> str:
+                           key: str, url: str, sha256: str) -> tuple[str, Optional[str]]:
     """Compare-and-set: stamps this row's own image columns only when it is
     still pinned to the exact revision the upload was rendered against, and
     still in a status that may have its artwork replaced. The route reads
@@ -26,9 +28,20 @@ def attach_platform_image(tx, request_key: str, platform: str, revision_id: int,
     in flight moves the row (or its current_revision_id) out from under
     this WHERE, and zero rows are updated.
 
-    Returns 'attached' or 'superseded' (0 rows) -- the route's own row
-    reflects reality either way, and the caller (not this function) decides
-    what happens to the now-orphaned upload.
+    Returns `(outcome, previous_key)`: 'attached' or 'superseded' (0 rows),
+    and the image_key this UPDATE displaced (None when the row carried none,
+    and always None on 'superseded', which changed nothing). The route's own
+    row reflects reality either way, and the caller (not this function)
+    decides what happens to whichever object is now orphaned.
+
+    `previous_key` exists because keys are content-hashed (fix wave item 6):
+    re-rendering the SAME revision with different bytes produces a different
+    key, so a successful attach silently stops naming the object it replaced.
+    The superseded path only ever covered the upload that LOST; the one that
+    won leaked an object every time, which is the ordinary case while an
+    operator iterates on artwork. It is read in the UPDATE's own statement,
+    through a `FOR UPDATE` CTE, so no concurrent writer can slip a different
+    key in between reading the old value and stamping the new one.
 
     Fix round 1 (ruling 4): also refuses once the pinned revision already
     has an attached render (its `asset_hash` is set), even though the
@@ -45,18 +58,27 @@ def attach_platform_image(tx, request_key: str, platform: str, revision_id: int,
     `delivery_unknown`) -- the same rows `create_revision`'s un-render step
     leaves untouched because a live post may be behind them. Attaching a
     fresh upload there would overwrite the artwork that post shows."""
-    cur = tx.execute(
-        """UPDATE publishing_queue
+    row = tx.execute(
+        """WITH prev AS (
+               SELECT id, image_key FROM publishing_queue
+                WHERE request_key = %(rk)s AND platform = %(pl)s
+                  FOR UPDATE
+           )
+           UPDATE publishing_queue
                SET image_key = %(k)s, image_url = %(u)s, image_sha256 = %(h)s, updated_at = NOW()
-             WHERE request_key = %(rk)s AND platform = %(pl)s
+              FROM prev
+             WHERE publishing_queue.id = prev.id
                AND current_revision_id = %(rev)s
                AND status IN ('awaiting_member', 'awaiting_render', 'review')
                AND (delivery_state IS NULL OR delivery_state NOT IN ('attempting', 'delivery_unknown'))
                AND NOT EXISTS (
                      SELECT 1 FROM spotlight_revision r
-                      WHERE r.id = publishing_queue.current_revision_id AND r.asset_hash IS NOT NULL)""",
-        dict(k=key, u=url, h=sha256, rk=request_key, pl=platform, rev=revision_id))
-    return 'attached' if cur.rowcount else 'superseded'
+                      WHERE r.id = publishing_queue.current_revision_id AND r.asset_hash IS NOT NULL)
+         RETURNING prev.image_key AS previous_key""",
+        dict(k=key, u=url, h=sha256, rk=request_key, pl=platform, rev=revision_id)).fetchone()
+    if not row:
+        return 'superseded', None
+    return 'attached', row['previous_key']
 
 
 def complete_render_if_ready(tx, request_key: str, revision_id: int) -> bool:
