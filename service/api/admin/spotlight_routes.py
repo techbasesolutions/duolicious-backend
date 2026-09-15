@@ -54,7 +54,8 @@ from service.spotlight.assets import asset_key, attach_platform_image, complete_
 from service.spotlight import cleanup
 from service.spotlight.cleanup import (abandoned_job_rows, abandoned_jobs, enqueue_asset_delete,
                                        is_referenced, outstanding_jobs, overdue_removals)
-from service.spotlight.revisions import consent_complete, create_revision, edit_caption
+from service.spotlight.revisions import (consent_complete, create_revision,
+                                         current_revision, edit_caption)
 from service.spotlight.roundup import roundup_snapshot
 from service.spotlight.storage import InvalidImage
 import service.spotlight.storage as st
@@ -968,9 +969,13 @@ def post_growth_spotlight_roundup():
         # (consent_complete) refuses the card until each one consents.
         count_only = not snapshot['tiles']
         if not count_only:
-            caption_row = tx.execute(
-                "SELECT caption FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
-                dict(rk=rk)).fetchone()
+            # Fix wave I1: read the caption off the CURRENT REVISION, not off
+            # an arbitrary queue row. Each row's caption now carries its own
+            # `?p=` platform stamp, so `LIMIT 1` over the rows would have
+            # frozen one platform's stamped link into the shared, immutable
+            # revision every row points at. The revision's own caption is the
+            # platform-neutral form `create_candidate` wrote.
+            caption_row = current_revision(tx, rk)
             create_revision(
                 tx, rk, caption=caption_row['caption'], photo_uuid=None,
                 participants=[dict(person_id=tile['person_id'], first_name=tile['first_name'],

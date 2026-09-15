@@ -4,7 +4,7 @@ import hmac
 import re
 import uuid
 from typing import Optional
-from service.campaigns import make_campaign_link
+from service.campaigns import make_campaign_link, with_platform
 from service.config import WEB_BASE_URL
 from service.spotlight.eligibility import eligibility, primary_photo_uuid
 from service.spotlight.revisions import create_revision
@@ -91,18 +91,33 @@ def create_candidate(tx, *, kind: str, subject_person_id: Optional[int], caption
         status = 'awaiting_member'
     rk = request_key or uuid.uuid4().hex
     # Spec 3.4: every published card carries a measurable CTA, so the link is
-    # minted here, once per request, and appended to the caption both platform
-    # rows share. Minting it at creation (rather than in each caption builder)
+    # minted here, once per request, and appended to every platform row's
+    # caption. Minting it at creation (rather than in each caption builder)
     # means a hand-written caption from the admin surface gets one too, and
     # the kind 'post:<request_key>' is what `post_stats` and the queue view
     # count clicks and sign-ups against.
+    #
+    # Fix wave I1: the link is one key shared by every platform row, but each
+    # row's caption now carries it stamped with that row's own `?p=`
+    # (`with_platform`), so a click from the Facebook post and a click from
+    # the Instagram post are told apart by `campaign_click.platform`. Before
+    # this, one caption string was built before the loop and inserted
+    # verbatim into every row, so nothing ever emitted `?p=` and every real
+    # click landed under 'unknown'.
+    #
+    # `base_caption` (the same text with the BARE link) is what the revision
+    # records: a revision is one immutable snapshot shared by every row of
+    # the request, so the platform-neutral form is the honest thing to store
+    # there, and `edit_caption` re-derives the per-row captions from it the
+    # same way this does.
     link = make_campaign_link(tx, f'post:{rk}', f"{WEB_BASE_URL}/", None)
-    caption = f"{caption} {link}"
+    base_caption = f"{caption} {link}"
     for platform in platforms:
         tx.execute(
             """INSERT INTO publishing_queue (request_key, kind, subject_person_id, platform, caption, status, created_by)
                VALUES (%(rk)s, %(kind)s, %(pid)s, %(pl)s, %(cap)s, %(st)s, %(by)s)""",
-            dict(rk=rk, kind=kind, pid=subject_person_id, pl=platform, cap=caption, st=status, by=created_by))
+            dict(rk=rk, kind=kind, pid=subject_person_id, pl=platform,
+                 cap=f"{caption} {with_platform(link, platform)}", st=status, by=created_by))
 
     # Revision 1 (Wave 1, F01): every request's content starts life as an
     # immutable revision, and every queue row of the key points at it -- a
@@ -116,7 +131,7 @@ def create_candidate(tx, *, kind: str, subject_person_id: Optional[int], caption
     # calls `roundup_snapshot` -- revision 1 of every roundup is always the
     # count-only steady state.
     photo_uuid = primary_photo_uuid(tx, subject_person_id) if subject_person_id is not None else None
-    create_revision(tx, rk, caption=caption, photo_uuid=photo_uuid, participants=[],
+    create_revision(tx, rk, caption=base_caption, photo_uuid=photo_uuid, participants=[],
                     channels=list(platforms), created_by=created_by)
     return rk
 

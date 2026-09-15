@@ -154,7 +154,34 @@ def _ua_class(ua: str) -> str:
 # Anything else is stored as null rather than trusted verbatim into the
 # column -- the platform is metadata for reporting, not something that
 # should silently grow new values just because a URL was crafted with one.
+#
+# This tuple is the source of truth for the whole dimension: `record_click`
+# below decides what may be stored from it, `with_platform` stamps a link
+# with it, and `service.growth.queries.post_stats` derives its buckets from
+# it rather than repeating the names. Adding a platform here is the one edit
+# a third platform needs on the reporting side.
 PLATFORMS = ('facebook', 'instagram')
+
+
+def with_platform(link: str, platform: Optional[str]) -> str:
+    """Stamp a `/s/<key>` campaign link with the platform it is published
+    on, so the click it earns is attributable to that platform rather than
+    landing under 'unknown'.
+
+    Fix wave I1: the `?p=` parameter, the `campaign_click.platform` column
+    and `post_stats`' split all shipped in Wave 3b task 4, but nothing ever
+    emitted the parameter, so the dimension was inert and every real click
+    read as 'unknown'. This is the one place a link is stamped; callers
+    (`service.spotlight.queue.create_candidate`,
+    `service.spotlight.revisions.edit_caption`,
+    `emails.spotlight_card_live.enqueue_card_live`) pass the platform of the
+    row they are writing.
+
+    An unrecognised or missing platform returns the link untouched rather
+    than inventing a parameter `record_click` would drop anyway."""
+    if platform not in PLATFORMS:
+        return link
+    return f"{link}?p={platform}"
 
 def record_click(tx, key: str, user_agent: str,
                  platform: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:

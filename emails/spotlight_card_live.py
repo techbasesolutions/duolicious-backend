@@ -16,7 +16,7 @@ from html import escape as html_escape
 from urllib.parse import quote
 
 from emails.base import render, button, chip, title_image, INK_SOFT, MUTED, SANS
-from service.campaigns import make_campaign_link, outbox
+from service.campaigns import make_campaign_link, outbox, with_platform
 from service.config import EMAIL_DOMAIN, WEB_BASE_URL
 from service.unsubscribe import make_url as unsub_url
 
@@ -128,7 +128,9 @@ def enqueue_card_live(tx, person_id: int, request_key: str, external_post_id: st
     www.facebook.com URL even when the post itself is on Instagram, since
     Facebook's sharer can open for any link), so clicking it in the email
     is counted against 'post:<request_key>' the same way a click on the
-    plain post link is. The plain "see the post" link stays the unwrapped,
+    plain post link is, and carries the `?p=` of the platform this row
+    published on so the click splits by platform rather than reading as
+    'unknown'. The plain "see the post" link stays the unwrapped,
     plain post URL, so a reader can always reach the post directly even if
     campaign-link redirects are ever unavailable."""
     person = tx.execute(_Q_PERSON, dict(id=person_id)).fetchone()
@@ -142,8 +144,15 @@ def enqueue_card_live(tx, person_id: int, request_key: str, external_post_id: st
     # external_ok=True: the sharer dialog lives on www.facebook.com, not our
     # own web app, which make_campaign_link otherwise refuses (spec 3.4/3.5
     # CTA attribution for E5).
-    wrapped = make_campaign_link(tx, f'post:{request_key}', share_url_for(resolved_post_url),
-                                 person_id, external_ok=True)
+    # Fix wave I1: stamped with the platform this row actually published on,
+    # so the share button's own click is attributable to Facebook or to
+    # Instagram instead of landing under 'unknown' in `post_stats`. The
+    # campaign link row itself is unchanged; only the URL in the email
+    # carries the `?p=` the click route reads.
+    wrapped = with_platform(
+        make_campaign_link(tx, f'post:{request_key}', share_url_for(resolved_post_url),
+                           person_id, external_ok=True),
+        platform)
     unsub = unsub_url(UNSUB_SCOPE, person['email'], WEB_BASE_URL)
     html = card_live_html(person['first_name'], card['image_url'], resolved_post_url, wrapped, unsub)
     return outbox.enqueue(

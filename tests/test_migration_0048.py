@@ -1,5 +1,8 @@
 import uuid
 
+import psycopg
+import pytest
+
 from database import api_tx
 
 def test_receipt_columns_exist_and_are_unique():
@@ -18,12 +21,17 @@ def test_receipt_is_unique_when_present(make_campaign_link):
     key = make_campaign_link()
     with api_tx() as tx:
         tx.execute("INSERT INTO campaign_click (link_key, receipt) VALUES (%(k)s, %(r)s)", dict(k=key, r=r))
-    with api_tx() as tx:
-        try:
+    # Fix wave I3: this used to be `try: ...; assert False, '...'; except
+    # Exception: pass`, and `AssertionError` IS an `Exception`, so the handler
+    # swallowed the very assertion meant to fail the test. Dropping the unique
+    # index left the test green. `pytest.raises` names the exact error the
+    # index raises and fails when nothing is raised at all.
+    # `pytest.raises` wraps the whole `api_tx` block, not just the statement,
+    # so the failed transaction is rolled back by the context manager on the
+    # way out rather than being asked to commit while aborted.
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        with api_tx() as tx:
             tx.execute("INSERT INTO campaign_click (link_key, receipt) VALUES (%(k)s, %(r)s)", dict(k=key, r=r))
-            assert False, 'the second insert should have violated the unique index'
-        except Exception:
-            pass
 
 def test_two_null_receipts_are_allowed(make_campaign_link):
     key = make_campaign_link()

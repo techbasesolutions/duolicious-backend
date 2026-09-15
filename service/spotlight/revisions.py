@@ -21,8 +21,10 @@ cycle. `service.spotlight.cleanup` is safe to import at the top: it reaches
 from __future__ import annotations
 
 import json
+import re
 from typing import Optional
 
+from service.campaigns import with_platform
 from service.config import WEB_BASE_URL
 from service.spotlight.cleanup import enqueue_asset_delete
 
@@ -226,6 +228,30 @@ def consent_complete(tx, revision_id: int) -> bool:
 
 
 def edit_caption(tx, request_key: str, caption: str, created_by: str) -> int:
+    """Replace the request's caption, keeping its `/s/` campaign link.
+
+    Fix wave I1: yes, this had to learn the per-row platform too. The link
+    `create_candidate` mints is one key shared by every platform row, and
+    since that fix each row's caption carries it stamped with that row's own
+    `?p=`. This function used to write ONE caption string to every row of the
+    request key, so the first admin caption edit after publication would have
+    collapsed both rows back onto the bare link and silently switched the
+    per-platform split back off for that post, with no error anywhere. It now
+    re-derives each row's caption from the same platform-neutral base, from
+    the row's own `platform` column, exactly as `create_candidate` does.
+
+    The revision keeps the BARE link: a revision is one immutable snapshot
+    every row of the request shares (consent is recorded against it, and
+    `post_growth_spotlight_roundup` and `withdrawal` both re-use its caption
+    when they build a successor), so stamping it with one arbitrary row's
+    platform would make the shared snapshot claim a platform it does not
+    belong to.
+
+    An incoming caption that already carries the link, in either the bare or
+    a `?p=`-stamped form, has it removed before the bare link is re-appended,
+    so a round trip through the admin surface (which hands the operator back
+    one ROW's stamped caption) can never duplicate it or leave a stale stamp
+    behind."""
     cur = current_revision(tx, request_key)
     caption_text = caption
     # Phase B's caption route logic, moved here: the /s/ campaign link is
@@ -234,10 +260,16 @@ def edit_caption(tx, request_key: str, caption: str, created_by: str) -> int:
     # counting) is silently lost.
     link = tx.execute("SELECT key FROM campaign_link WHERE kind = %(k)s LIMIT 1",
                       dict(k=f'post:{request_key}')).fetchone()
+    url = None
     if link:
         url = f"{WEB_BASE_URL.rstrip('/')}/s/{link['key']}"
-        if url not in caption_text:
-            caption_text = f"{caption_text.rstrip()} {url}"
+        # Strip every existing copy (bare or stamped) rather than testing for
+        # the bare form only: the admin surface returns a stamped caption, so
+        # a bare `url not in caption_text` test would see no match and append
+        # a SECOND link beside the stamped one.
+        stripped = re.sub(re.escape(url) + r'(?:\?p=[a-z]+)?', '', caption_text)
+        stripped = re.sub(r'[ \t]{2,}', ' ', stripped).strip()
+        caption_text = f"{stripped} {url}" if stripped else url
     new_id = create_revision(
         tx, request_key, caption=caption_text,
         photo_uuid=cur['photo_uuid'] if cur else None,
@@ -245,8 +277,16 @@ def edit_caption(tx, request_key: str, caption: str, created_by: str) -> int:
         channels=(cur['channels'] if cur else None) or [],
         layout_version=cur['layout_version'] if cur else 'v1',
         created_by=created_by)
-    tx.execute("UPDATE publishing_queue SET caption = %(c)s, updated_at = NOW() WHERE request_key = %(rk)s",
-               dict(c=caption_text, rk=request_key))
+    # One UPDATE per row, since each row's caption now differs by its own
+    # `?p=` stamp. With no campaign link at all (a request minted before the
+    # link existed) every row keeps the plain edited text, as before.
+    for row in tx.execute(
+            "SELECT id, platform FROM publishing_queue WHERE request_key = %(rk)s ORDER BY id",
+            dict(rk=request_key)).fetchall():
+        row_caption = caption_text if url is None else (
+            f"{caption_text[:-len(url)]}{with_platform(url, row['platform'])}")
+        tx.execute("UPDATE publishing_queue SET caption = %(c)s, updated_at = NOW() WHERE id = %(id)s",
+                   dict(c=row_caption, id=row['id']))
     return new_id
 
 

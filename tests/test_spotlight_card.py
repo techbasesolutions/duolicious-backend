@@ -307,6 +307,31 @@ def test_enqueue_card_live_wraps_share_link_and_is_idempotent(make_person, outbo
     assert '/s/' in body and 'https://www.facebook.com/123_456' in body
 
 
+def test_enqueue_card_live_stamps_the_share_link_with_the_row_platform(make_person, outbox_drain):
+    """Fix wave I1: the share button's own campaign link carries `?p=` for the
+    platform this row published on, so the click it earns splits by platform
+    instead of landing under 'unknown' in `post_stats`. Instagram here, since
+    the sharer dialog itself is always a www.facebook.com URL and a naive fix
+    could easily have read the platform off the target instead of the row."""
+    from emails.spotlight_card_live import enqueue_card_live
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s",
+                   dict(e=f'live-stamp-{p["id"]}@ahavah-test.invalid', id=p['id']))
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute(
+            "UPDATE publishing_queue SET image_url = %(u)s WHERE request_key = %(rk)s AND platform = 'instagram'",
+            dict(u='https://cdn.ahavah.app/spotlight/x.png', rk=rk))
+        assert enqueue_card_live(tx, p['id'], rk, '77', 'instagram') is not None
+        key = tx.execute(
+            """SELECT key FROM campaign_link
+                WHERE kind = %(k)s AND strpos(target_url, 'sharer.php') > 0""",
+            dict(k=f'post:{rk}')).fetchone()['key']
+    body = outbox_drain(p['id'])[0]['body']
+    assert f'/s/{key}?p=instagram' in body
+    assert f'/s/{key}?p=facebook' not in body
+
+
 def test_enqueue_card_live_prefers_a_supplied_https_post_url(make_person, outbox_drain):
     """Task 6: the worker's own receipt (Instagram's permalink lookup, in
     particular) may already carry the real post URL; when it is https, it

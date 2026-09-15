@@ -1087,31 +1087,60 @@ def test_queue_row_counts_one_signup_per_person(client, make_person):
 def test_caption_edit_keeps_exactly_one_campaign_link(client, make_person):
     """Editing the caption must not drop the row's own /s/<key> link: the
     same link is what `_Q_ROWS` counts clicks and sign-ups against, so a
-    caption saved without it silently loses the post's CTA."""
+    caption saved without it silently loses the post's CTA.
+
+    Fix wave I1: and it must not drop the row's own `?p=` platform stamp
+    either. `edit_caption` used to write ONE caption string to every row of
+    the request key, so the first admin caption edit would have collapsed
+    both rows back onto a bare link and silently switched the per-platform
+    split off for that post. Each row now keeps its own stamp, and a caption
+    round-tripped back through this route (which hands the operator one row's
+    stamped caption) neither duplicates the link nor leaves a stale stamp
+    from the other platform behind."""
     from service.config import WEB_BASE_URL
 
     admin = _make_admin(make_person); tok = _session_for(admin)
     A = {'Authorization': f'Bearer {tok}'}
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='New this week', created_by='t')
-        qid = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1", dict(rk=rk)).fetchone()['id']
+        row = tx.execute(
+            "SELECT id, platform FROM publishing_queue WHERE request_key = %(rk)s ORDER BY platform LIMIT 1",
+            dict(rk=rk)).fetchone()
+        qid, platform = row['id'], row['platform']
         key = tx.execute("SELECT key FROM campaign_link WHERE kind = %(k)s", dict(k=f'post:{rk}')).fetchone()['key']
     link = f"{WEB_BASE_URL.rstrip('/')}/s/{key}"
+    stamped = f"{link}?p={platform}"
 
     r = client.post(f'/admin/growth/queue/{qid}/caption',
                      json={'caption': 'Brand new caption text with no link at all'}, headers=A)
     assert r.status_code == 200
     body = r.get_json()['caption']
     assert body.count(link) == 1
-    assert body.endswith(link)
+    assert body.endswith(stamped)
     with api_tx('read committed') as tx:
         stored = tx.execute("SELECT caption FROM publishing_queue WHERE id = %(id)s", dict(id=qid)).fetchone()['caption']
+        # Every row of the request keeps its OWN stamp, not this row's.
+        per_row = {r2['platform']: r2['caption'] for r2 in tx.execute(
+            "SELECT platform, caption FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()}
     assert stored == body
+    assert set(per_row) == {'facebook', 'instagram'}
+    for pl, cap in per_row.items():
+        assert cap.endswith(f"{link}?p={pl}")
+        assert cap.count(link) == 1
 
-    # Re-editing a caption that already ends with the link must not duplicate it.
+    # Re-editing a caption that already ends with the stamped link must not
+    # duplicate it, and must not leave the stamp it was handed in place of
+    # each row's own.
     r2 = client.post(f'/admin/growth/queue/{qid}/caption', json={'caption': body}, headers=A)
     assert r2.status_code == 200
     assert r2.get_json()['caption'].count(link) == 1
+    assert r2.get_json()['caption'].endswith(stamped)
+    with api_tx('read committed') as tx:
+        again = {r3['platform']: r3['caption'] for r3 in tx.execute(
+            "SELECT platform, caption FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()}
+    for pl, cap in again.items():
+        assert cap.endswith(f"{link}?p={pl}")
+        assert cap.count(link) == 1
 
 
 def test_queue_rows_carry_revision_and_consent_complete(client, make_person):

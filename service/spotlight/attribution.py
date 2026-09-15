@@ -153,11 +153,18 @@ def attribute_signup(tx, person_id: int, ref: Optional[str]) -> bool:
     # Legacy compatibility window ONLY, and temporary. The web app and the
     # API deploy separately, so for one deploy window an old web build will
     # still send the shared campaign_link.key instead of a receipt. Such a
-    # value stamps the person and credits no click. Wave 3b task 8, the
-    # documentation task that names the removal date, is the removal
-    # trigger: delete this branch there, and a bare key stops being
-    # accepted at all. (Not task 7, which is admin routes and operator
-    # surfaces and would never touch this.)
+    # value stamps the person and credits no click.
+    #
+    # Removal trigger: the rule and the computed date live in
+    # `docs/superpowers/handovers/2026-09-13-community-spotlight-handoff.md`,
+    # section 14, "The compatibility window". The date is seven days after
+    # this wave's WEB deploy lands (the web cookie's own 7-day lifetime), so
+    # it cannot be a constant here until that deploy has a date. Whoever
+    # deploys the web app records the landing date there; on the date that
+    # section computes, delete this branch and the two tests it names, and a
+    # bare key stops being accepted at all. This used to name "Wave 3b task
+    # 8" as the trigger, which is a task that has since finished, so the
+    # pointer named something already done and carried no date at all.
     known = tx.execute(_Q_KNOWN_KEY, dict(k=ref)).fetchone()
     if not known:
         return False

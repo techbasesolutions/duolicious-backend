@@ -492,10 +492,17 @@ class PostCheckOtp(BaseModel):
 
 
 class PostFinishOnboarding(BaseModel):
-    """POST /finish-onboarding body. `spotlight_ref` is the /s/<key>
-    campaign-link key the web app read back from its `ahavah.spotlight_ref`
-    cookie (spec 3.4) -- forwarded so `service.spotlight.attribution
-    .attribute_signup` can credit the click that led to this sign-up.
+    """POST /finish-onboarding body. `spotlight_ref` is the per-click
+    RECEIPT the web app read back from its `ahavah.spotlight_ref` cookie
+    (spec 3.4, as amended by Wave 3b) -- forwarded so
+    `service.spotlight.attribution.attribute_signup` can credit the one
+    click that led to this sign-up. The field name predates the change: it
+    used to carry the shared /s/<key> campaign-link key, which every viewer
+    of a caption can read and so could never prove a particular visitor
+    clicked. The name, the wire shape and the 32-character limit are all
+    unchanged, and for the compatibility window named in
+    `service/spotlight/attribution.py` a bare campaign-link key is still
+    accepted here (it stamps the person and credits no click).
     Optional: omitted (or invalid/unknown/stale) is a silent no-op there,
     so every existing client that doesn't send it keeps working."""
     spotlight_ref: Optional[str] = Field(default=None, max_length=32)

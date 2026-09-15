@@ -336,3 +336,42 @@ def test_post_stats_splits_clicks_and_signups_by_platform(make_person):
     by_platform = stats['by_platform']
     assert stats['clicks'] == sum(v['clicks'] for v in by_platform.values())
     assert stats['signups'] == sum(v['signups'] for v in by_platform.values())
+
+
+def test_an_unrecognised_platform_value_still_lands_in_a_bucket(make_person):
+    """Fix wave I1: the buckets are derived from `service.campaigns.PLATFORMS`
+    and `unknown` is that set's COMPLEMENT, not `platform IS NULL`.
+
+    `record_click` refuses to store an unrecognised `?p=`, so the only way a
+    third value reaches the column is a future `PLATFORMS` entry or another
+    writer. Either way the parts must still sum to the whole, which the old
+    `IS NULL` definition could not promise: a value in the column but not in
+    the hardcoded bucket list counted toward `clicks` and landed nowhere.
+    Forced here with a direct UPDATE, since nothing in the current code can
+    produce the row.
+    """
+    rk = uuid.uuid4().hex
+    with api_tx() as tx:
+        url = make_campaign_link(tx, f'post:{rk}', f'{WEB_BASE_URL}/discover', None)
+        key = url.rsplit('/', 1)[1]
+        _, receipt = record_click(tx, key, 'Mozilla/5.0 (iPhone)', platform='facebook')
+        tx.execute("UPDATE campaign_click SET platform = 'threads' WHERE receipt = %(r)s",
+                   dict(r=receipt))
+        stats = post_stats(tx, rk)
+
+    assert stats['clicks'] == 1
+    assert stats['by_platform']['facebook'] == {'clicks': 0, 'signups': 0}
+    assert stats['by_platform']['unknown'] == {'clicks': 1, 'signups': 0}
+    assert stats['clicks'] == sum(v['clicks'] for v in stats['by_platform'].values())
+
+
+def test_every_named_platform_has_its_own_bucket():
+    """The bucket names follow `PLATFORMS` rather than a literal list, so a
+    platform added there gets a bucket without a second edit here."""
+    from service.campaigns import PLATFORMS
+
+    rk = uuid.uuid4().hex
+    with api_tx() as tx:
+        make_campaign_link(tx, f'post:{rk}', f'{WEB_BASE_URL}/discover', None)
+        stats = post_stats(tx, rk)
+    assert set(stats['by_platform']) == {*PLATFORMS, 'unknown'}

@@ -5,7 +5,8 @@ from datetime import datetime
 from typing import Optional
 
 from emails.base import suppressed_sql_pattern
-from service.campaigns import suppressed_predicate_sql, unsubscribed_predicate_sql
+from service.campaigns import (PLATFORMS, suppressed_predicate_sql,
+                               unsubscribed_predicate_sql)
 
 EXCLUDED_EMAILS = ('admin@ahavah.app',)
 
@@ -210,21 +211,44 @@ def count_reinvite_cohort(tx, days: int = 30, resend_days: int = 30) -> int:
 # its own -- everything landed in one shared total. Now that a click stores
 # `campaign_click.platform` (migration 0048), the same rows are split on it
 # with FILTER, in the SAME query as the totals, so the two can never drift
-# apart the way two independently written queries could. A click whose
-# platform is null (no recognised `?p=` param, or a click recorded before
-# platform tagging existed) falls under 'unknown'. Every signup_person_id is
-# credited by exactly one click row (attribute_signup consumes one receipt
-# per person, first touch wins), so the per-platform DISTINCT counts are
-# disjoint and always sum back to the top-level `signups`.
-_Q_POST_STATS = """
+# apart. Every signup_person_id is credited by exactly one click row
+# (attribute_signup consumes one receipt per person, first touch wins), so
+# the per-platform DISTINCT counts are disjoint and always sum back to the
+# top-level `signups`.
+#
+# Fix wave I1: the bucket names are DERIVED from `service.campaigns.PLATFORMS`
+# rather than written out here, and `unknown` is that set's complement
+# (`platform IS NULL OR platform NOT IN (...)`) rather than `IS NULL` alone.
+# Before this, a third platform added to `PLATFORMS` would have been stored on
+# real click rows, counted toward `clicks` and `signups`, and landed in no
+# bucket at all, so the parts would silently stop summing to the whole.
+# Writing the complement means that holds even if some other writer ever puts
+# an unrecognised value in the column.
+
+def _platform_sql_name(platform: str) -> str:
+    """Guard: a platform name is spliced into this query both as a quoted
+    literal and as a column alias, so only a plain lowercase identifier is
+    accepted. `unknown` is refused too, since that is the complement
+    bucket's own name and a collision would silently overwrite it."""
+    if not platform.isidentifier() or platform.lower() != platform or platform == 'unknown':
+        raise ValueError(f'bad platform name for reporting: {platform!r}')
+    return platform
+
+
+_PLATFORM_BUCKETS = tuple(_platform_sql_name(p) for p in PLATFORMS)
+_KNOWN_PLATFORM_LITERALS = ', '.join(f"'{p}'" for p in _PLATFORM_BUCKETS)
+_PLATFORM_SELECT = ''.join(
+    f"""           count(*) FILTER (WHERE c.platform = '{p}')                            AS {p}_clicks,
+           count(DISTINCT c.signup_person_id) FILTER (WHERE c.platform = '{p}')  AS {p}_signups,
+"""
+    for p in _PLATFORM_BUCKETS)
+_UNKNOWN_PREDICATE = f"c.platform IS NULL OR c.platform NOT IN ({_KNOWN_PLATFORM_LITERALS})"
+
+_Q_POST_STATS = f"""
     SELECT count(*)                                                                   AS clicks,
            count(DISTINCT c.signup_person_id)                                         AS signups,
-           count(*) FILTER (WHERE c.platform = 'facebook')                            AS fb_clicks,
-           count(DISTINCT c.signup_person_id) FILTER (WHERE c.platform = 'facebook')  AS fb_signups,
-           count(*) FILTER (WHERE c.platform = 'instagram')                           AS ig_clicks,
-           count(DISTINCT c.signup_person_id) FILTER (WHERE c.platform = 'instagram') AS ig_signups,
-           count(*) FILTER (WHERE c.platform IS NULL)                                 AS unk_clicks,
-           count(DISTINCT c.signup_person_id) FILTER (WHERE c.platform IS NULL)       AS unk_signups
+{_PLATFORM_SELECT}           count(*) FILTER (WHERE {_UNKNOWN_PREDICATE})                       AS unknown_clicks,
+           count(DISTINCT c.signup_person_id) FILTER (WHERE {_UNKNOWN_PREDICATE})     AS unknown_signups
       FROM campaign_click c
       JOIN campaign_link l ON l.key = c.link_key
      WHERE l.kind = %(kind)s AND c.ua_class <> 'bot'
@@ -236,8 +260,7 @@ def post_stats(tx, request_key: str) -> dict:
         'clicks': row['clicks'],
         'signups': row['signups'],
         'by_platform': {
-            'facebook': {'clicks': row['fb_clicks'], 'signups': row['fb_signups']},
-            'instagram': {'clicks': row['ig_clicks'], 'signups': row['ig_signups']},
-            'unknown': {'clicks': row['unk_clicks'], 'signups': row['unk_signups']},
+            bucket: {'clicks': row[f'{bucket}_clicks'], 'signups': row[f'{bucket}_signups']}
+            for bucket in (*_PLATFORM_BUCKETS, 'unknown')
         },
     }

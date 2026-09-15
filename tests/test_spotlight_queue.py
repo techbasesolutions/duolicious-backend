@@ -176,30 +176,44 @@ def test_settings_roundtrip():
 
 def test_create_candidate_appends_a_campaign_link_to_the_caption(make_person):
     """I3: every card's caption carries its own /s/ link, minted once per
-    request in create_candidate so both platform rows share it and a
-    hand-written caption gets one too."""
+    request in create_candidate so both platform rows share one key, and a
+    hand-written caption gets one too.
+
+    Fix wave I1: the two rows no longer share one caption STRING. They share
+    the key, and each row's copy of the link carries that row's own `?p=`, so
+    the click the Facebook post earns can be told apart from the click the
+    Instagram post earns. The revision keeps the bare, platform-neutral form.
+    """
     from service.campaigns import record_click
     from service.config import WEB_BASE_URL
     from service.growth.queries import post_stats
 
+    base = f"{WEB_BASE_URL.rstrip('/')}/s/"
     p = _make_eligible(make_person, name='Linked')
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'],
                               caption='Welcome to Ahavah, Linked.', created_by='t')
-        captions = {r['caption'] for r in _rows(tx, rk)}
-        assert len(captions) == 1
-        caption = captions.pop()
-        assert caption.startswith('Welcome to Ahavah, Linked. ')
-        assert ' https://' in caption
-        assert f" {WEB_BASE_URL.rstrip('/')}/s/" in caption
-
-        key = caption.rsplit('/', 1)[1]
+        by_platform = {r['platform']: r['caption'] for r in _rows(tx, rk)}
+        assert set(by_platform) == {'facebook', 'instagram'}
+        for platform, caption in by_platform.items():
+            assert caption.startswith('Welcome to Ahavah, Linked. ')
+            assert f" {base}" in caption
+            assert caption.endswith(f"?p={platform}")
+        # One key, two captions: the split is in the query string, not in a
+        # second campaign link.
+        keys = {c.rsplit('/', 1)[1].split('?', 1)[0] for c in by_platform.values()}
+        assert len(keys) == 1
+        key = keys.pop()
         link = tx.execute("SELECT kind FROM campaign_link WHERE key = %(k)s", dict(k=key)).fetchone()
         assert link['kind'] == f'post:{rk}'
 
+        # The revision keeps the bare link, with no platform stamp: it is one
+        # immutable snapshot every row of the request shares.
+        rev_caption = current_revision(tx, rk)['caption']
+        assert rev_caption.endswith(f"{base}{key}")
+
         record_click(tx, key, 'Mozilla/5.0 (iPhone)')
-        # Wave 3b, task 4: post_stats also splits by platform now; this click
-        # carried no `?p=` param, so it lands under 'unknown'.
+        # A click with no `?p=` param at all still lands under 'unknown'.
         assert post_stats(tx, rk) == {
             'clicks': 1, 'signups': 0,
             'by_platform': {
@@ -208,6 +222,47 @@ def test_create_candidate_appends_a_campaign_link_to_the_caption(make_person):
                 'unknown': {'clicks': 1, 'signups': 0},
             },
         }
+
+
+def test_a_real_click_through_a_caption_link_lands_in_its_own_platform_bucket(client, make_person):
+    """Fix wave I1, the end-to-end proof: take the Instagram row's caption
+    exactly as it was written to the database, pull the URL out of it, GET
+    that URL through the real `/s/<key>` route, and check where `post_stats`
+    puts the click.
+
+    This is the test the dimension never had. Before the fix the caption
+    carried a bare link, the route saw no `?p=` param, `record_click` stored
+    a null platform and every real click landed under 'unknown'. The
+    assertion below is exact on both buckets, so a regression that stops
+    emitting `?p=` fails here rather than quietly re-labelling the numbers.
+    """
+    import re
+    from urllib.parse import urlsplit
+
+    from service.config import WEB_BASE_URL
+    from service.growth.queries import post_stats
+
+    p = _make_eligible(make_person, name='Bucketed')
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'],
+                              caption='Meet Bucketed.', created_by='t')
+        caption = {r['platform']: r['caption'] for r in _rows(tx, rk)}['instagram']
+
+    # Parse the link out of the caption the way a reader's browser would,
+    # rather than rebuilding it from the key we happen to know.
+    url = re.search(re.escape(WEB_BASE_URL.rstrip('/')) + r'/s/\S+', caption).group(0)
+    parts = urlsplit(url)
+    r = client.get(f"{parts.path}?{parts.query}", headers={'User-Agent': 'Mozilla/5.0 (iPhone)'})
+    assert r.status_code == 302
+
+    with api_tx() as tx:
+        stats = post_stats(tx, rk)
+    assert stats['clicks'] == 1
+    assert stats['by_platform']['instagram'] == {'clicks': 1, 'signups': 0}
+    assert stats['by_platform']['unknown'] == {'clicks': 0, 'signups': 0}
+    assert stats['by_platform']['facebook'] == {'clicks': 0, 'signups': 0}
+    # The parts still sum to the whole.
+    assert stats['clicks'] == sum(v['clicks'] for v in stats['by_platform'].values())
 
 
 def _tile_payload(person_id, first_name):

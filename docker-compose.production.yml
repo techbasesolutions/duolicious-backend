@@ -199,13 +199,35 @@ services:
       # so a variable missing OR blank in .env.production behaves the same:
       # env_int() already tolerates blank, this is belt and braces against the
       # substitution itself handing the process an empty string.
+      #
+      # Which direction the fallback errs: these defaults are the MODULE's
+      # defaults, not the values in .env.production.template, and the two are
+      # not the same. For several variables the module default is the shorter
+      # interval, so a blanked variable makes production poll HARDER than the
+      # template intends, not slower: email 10s against the template's 30s,
+      # photo and audio cleaner 60s against 300s, garbage records 10s against
+      # 300s. Two err the other way: autodeactivate2 600s against 300s and
+      # profile reporter 600s against 60s. The
+      # fallback is chosen to keep a cron alive rather than to match the
+      # template, so treat a blank value as a configuration bug to fix, not as
+      # a safe steady state.
+      #
+      # The three DRY_RUN flags below are not intervals and do NOT fall back
+      # to a module default. Each module reads its flag as
+      # `os.environ.get(NAME, 'true').lower() not in ['false','f','0','no']`,
+      # so an empty string parses to True: a blank value would silently put
+      # auto-deactivate and both cleaners into dry run with no crash, no
+      # traceback and a green deploy, which the deploy's cron assertion cannot
+      # see. `:-false` makes a blank or missing value mean what production
+      # means by it. This is the same blank-value root cause as the 2026-09-14
+      # incident, with a quieter symptom.
       DUO_CRON_PROFILE_REPORTER_POLL_SECONDS: ${DUO_CRON_PROFILE_REPORTER_POLL_SECONDS:-600}
       DUO_CRON_EMAIL_POLL_SECONDS: ${DUO_CRON_EMAIL_POLL_SECONDS:-10}
-      DUO_CRON_AUTODEACTIVATE2_DRY_RUN: ${DUO_CRON_AUTODEACTIVATE2_DRY_RUN}
+      DUO_CRON_AUTODEACTIVATE2_DRY_RUN: ${DUO_CRON_AUTODEACTIVATE2_DRY_RUN:-false}
       DUO_CRON_AUTODEACTIVATE2_POLL_SECONDS: ${DUO_CRON_AUTODEACTIVATE2_POLL_SECONDS:-600}
-      DUO_CRON_PHOTO_CLEANER_DRY_RUN: ${DUO_CRON_PHOTO_CLEANER_DRY_RUN}
+      DUO_CRON_PHOTO_CLEANER_DRY_RUN: ${DUO_CRON_PHOTO_CLEANER_DRY_RUN:-false}
       DUO_CRON_PHOTO_CLEANER_POLL_SECONDS: ${DUO_CRON_PHOTO_CLEANER_POLL_SECONDS:-60}
-      DUO_CRON_AUDIO_CLEANER_DRY_RUN: ${DUO_CRON_AUDIO_CLEANER_DRY_RUN}
+      DUO_CRON_AUDIO_CLEANER_DRY_RUN: ${DUO_CRON_AUDIO_CLEANER_DRY_RUN:-false}
       DUO_CRON_AUDIO_CLEANER_POLL_SECONDS: ${DUO_CRON_AUDIO_CLEANER_POLL_SECONDS:-60}
       DUO_CRON_GARBAGE_RECORDS_POLL_SECONDS: ${DUO_CRON_GARBAGE_RECORDS_POLL_SECONDS:-10}
       DUO_CRON_SPOTLIGHT_RETENTION_POLL_SECONDS: ${DUO_CRON_SPOTLIGHT_RETENTION_POLL_SECONDS:-86400}
