@@ -295,3 +295,28 @@ def outbox_drain():
         return smtp.sent
 
     return _drain
+
+
+# ---------------------------------------------------------------------------
+# Campaign link factory (Community Spotlight click receipts, wave 3b)
+# ---------------------------------------------------------------------------
+# Mints a real `/s/<key>` campaign link and hands back just the key, so a
+# test can go straight to `record_click(tx, key, ...)` without repeating the
+# make_campaign_link boilerplate every neighbouring test already had to write
+# by hand. Opens (and closes) its own transaction -- callers must not already
+# be inside one, since api_tx is never nested.
+
+@pytest.fixture
+def make_campaign_link():
+    from uuid import uuid4
+
+    from database import api_tx
+    from service.campaigns import make_campaign_link as _make_link
+    from service.config import WEB_BASE_URL
+
+    def _make() -> str:
+        with api_tx() as tx:
+            url = _make_link(tx, f'test:{uuid4()}', f'{WEB_BASE_URL}/discover', None)
+        return url.rsplit('/', 1)[1]
+
+    return _make
