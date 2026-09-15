@@ -68,12 +68,15 @@ def _clear_this_weeks_roundup(tx):
     business key, so two tests calling the route in the same calendar week
     must not see each other's row -- clear it first, the same way
     test_spotlight_controls.py's own convergence test does. The queue rows
-    go first (they hold the FK to spotlight_revision)."""
+    go first (they hold the FK to spotlight_revision); the campaign_link row
+    create_candidate mints (kind 'post:<key>') has no FK to either, but is
+    cleared too so a leftover row never confuses a click/sign-up count."""
     from datetime import datetime, timezone
     y, w, _ = datetime.now(timezone.utc).isocalendar()
     key = f"roundup:{y}-W{w:02d}"
     tx.execute("DELETE FROM publishing_queue WHERE request_key = %(k)s", dict(k=key))
     tx.execute("DELETE FROM spotlight_revision WHERE request_key = %(k)s", dict(k=key))
+    tx.execute("DELETE FROM campaign_link WHERE kind = %(k)s", dict(k=f'post:{key}'))
 
 
 def _render(tx, rk, key='k', url='https://cdn/k.png'):

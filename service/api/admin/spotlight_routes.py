@@ -47,7 +47,7 @@ from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      set_status, settings, set_setting,
                                      reap_expired_leases, record_receipt, OUTCOMES,
                                      OUTCOME_DELIVERY_STATE, PLATFORMS,
-                                     _SETTING_KEYS, _FREE_KEYS)
+                                     SETTING_KEYS, FREE_KEYS)
 from service.spotlight.revisions import attach_render, consent_complete, create_revision, edit_caption
 from service.spotlight.roundup import roundup_snapshot
 from service.spotlight.storage import _bucket, delete_images
@@ -316,7 +316,7 @@ _Q_WELCOME_CANDIDATES = """
 # NOW()) and create two. `_week_key` is the same business key
 # `post_growth_spotlight_roundup` passes to `create_candidate`, so this is
 # now an existence check on this week's key, not a rolling window.
-_Q_ROUNDUP_RECENT = """
+_Q_ROUNDUP_THIS_WEEK = """
     SELECT EXISTS (SELECT 1 FROM publishing_queue WHERE request_key = %(rk)s) AS recent
 """
 
@@ -680,7 +680,7 @@ def get_growth_candidates():
             ok, _reason = eligibility(tx, r['id'])
             if ok:
                 welcomes.append(dict(person_id=r['id'], first_name=(r['name'] or '').split(' ')[0]))
-        recent_roundup = tx.execute(_Q_ROUNDUP_RECENT, dict(rk=_week_key())).fetchone()['recent']
+        recent_roundup = tx.execute(_Q_ROUNDUP_THIS_WEEK, dict(rk=_week_key())).fetchone()['recent']
     # Monday is weekday() == 0.
     roundup_due = datetime.now(timezone.utc).weekday() == 0 and not recent_roundup
     return dict(welcomes=welcomes, roundup_due=roundup_due, invites_enabled=True)
@@ -794,7 +794,7 @@ def get_growth_settings():
     # Task 9 (F12): only the five live controls plus the two free (non-flag)
     # keys are ever answered here -- a stray row left behind by an old
     # migration or a bad write must never resurface on this surface.
-    return {k: v for k, v in cfg.items() if k in _SETTING_KEYS or k in _FREE_KEYS}
+    return {k: v for k, v in cfg.items() if k in SETTING_KEYS or k in FREE_KEYS}
 
 
 @get('/admin/growth/removals', limiter=growth_limit)

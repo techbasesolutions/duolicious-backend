@@ -46,12 +46,12 @@ OUTCOME_DELIVERY_STATE = {
 # (claiming and publishing) and `external_access_enabled` (the emergency
 # stop for every outbound platform call, removals included) join
 # `approvals_enabled` and `roundup_tiles_enabled`.
-_SETTING_KEYS = ('approvals_enabled', 'roundup_tiles_enabled', 'invites_enabled',
-                 'publication_enabled', 'external_access_enabled')
+SETTING_KEYS = ('approvals_enabled', 'roundup_tiles_enabled', 'invites_enabled',
+                'publication_enabled', 'external_access_enabled')
 # Keys whose value is not a 'true'/'false' flag. The page-token health probe
 # writes an ISO timestamp and a validity flag here, so these two accept any
 # string value; every other key stays a strict boolean.
-_FREE_KEYS = ('token_expires_at', 'token_valid')
+FREE_KEYS = ('token_expires_at', 'token_valid')
 
 # A caller-supplied business key (Task 9): letters, digits, and the three
 # separators a key like `roundup:2026-W38` needs (the ISO week number's own
@@ -69,9 +69,14 @@ def create_candidate(tx, *, kind: str, subject_person_id: Optional[int], caption
             raise ValueError('bad_request_key')
         # Converge: a caller racing its own business key (the weekly roundup
         # cron firing twice) gets the existing rows back untouched rather
-        # than a second copy.
-        if tx.execute("SELECT 1 FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
-                      dict(rk=request_key)).fetchone():
+        # than a second copy. A key collision across kinds (someone else's
+        # business key, reused by accident) is not a convergence -- it is a
+        # bad key, refused the same way an invalid pattern is.
+        existing = tx.execute("SELECT kind FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
+                              dict(rk=request_key)).fetchone()
+        if existing:
+            if existing['kind'] != kind:
+                raise ValueError('bad_request_key')
             return request_key
     if kind == 'roundup':
         if subject_person_id is not None:
@@ -282,12 +287,12 @@ def settings(tx) -> dict:
 
 
 def set_setting(tx, key: str, value: str) -> None:
-    if key in _FREE_KEYS:
+    if key in FREE_KEYS:
         if value is None:
             value = ''
         if not isinstance(value, str):
             raise ValueError('bad_setting')
-    elif key not in _SETTING_KEYS or value not in ('true', 'false'):
+    elif key not in SETTING_KEYS or value not in ('true', 'false'):
         raise ValueError('bad_setting')
     tx.execute("INSERT INTO spotlight_setting (key, value, updated_at) VALUES (%(k)s, %(v)s, NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
                dict(k=key, v=value))
