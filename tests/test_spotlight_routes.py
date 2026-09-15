@@ -408,6 +408,54 @@ def test_image_route_superseded_when_revision_changes_mid_upload(client, make_pe
     assert row['image_key'] is None and row['image_sha256'] is None
 
 
+def test_superseded_upload_of_a_key_a_row_still_uses_is_not_queued(client, monkeypatch):
+    """Fix round 1, ruling 2. Object keys are content-hashed, so re-uploading
+    identical bytes produces the identical key. If the compare-and-set misses
+    for some other reason (here the row moved to `scheduled` in between) the
+    orphan-cleanup must NOT queue that key: a live row still points at the
+    very same object, and deleting it would blank a card that is on its way
+    out. The enqueue is guarded by the same reference check the cleanup batch
+    re-runs."""
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: None)
+
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+    png = _png_bytes(colour='navy')
+    # First upload attaches; the roundup's other platform is still missing, so
+    # the revision is not completed and no asset_hash is stamped.
+    assert client.post(f'/admin/growth/queue/{rk}/image',
+                       json={'platform': 'facebook', 'png_base64': _b64(png)},
+                       headers=H).status_code == 200
+    with api_tx('read committed') as tx:
+        key = tx.execute(
+            "SELECT image_key FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
+            dict(rk=rk)).fetchone()['image_key']
+
+    def _flip(key, data, public=False):
+        # The row moves out of the uploadable statuses while the bytes are in
+        # flight, so the route's pre-check passes and the compare-and-set
+        # misses. put_png is called with no transaction held, so this one does
+        # not nest.
+        with api_tx() as tx:
+            tx.execute("UPDATE publishing_queue SET status = 'scheduled' WHERE request_key = %(rk)s",
+                       dict(rk=rk))
+
+    monkeypatch.setattr(st, 'put_png', _flip)
+    # Same bytes, same key, but the row has moved on: superseded.
+    r = client.post(f'/admin/growth/queue/{rk}/image',
+                    json={'platform': 'facebook', 'png_base64': _b64(png)},
+                    headers=H)
+    assert r.status_code == 409 and r.get_json() == {'error': 'superseded'}
+    with api_tx('read committed') as tx:
+        queued = tx.execute("SELECT id FROM cleanup_job WHERE target = %(t)s", dict(t=key)).fetchall()
+        row = tx.execute(
+            "SELECT image_key FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
+            dict(rk=rk)).fetchone()
+    assert queued == []                 # the key is still in use, so nothing is queued
+    assert row['image_key'] == key
+
+
 def test_approve_makes_the_row_image_public_after_commit(client, make_person, monkeypatch):
     import service.spotlight.storage as st
     made = []

@@ -32,9 +32,25 @@ IN_FLIGHT = ('scheduled', 'processing')
 TERMINAL = ('published', 'cancelled')
 
 
-# Rows a `create_revision` re-points, and therefore un-renders: everything of
-# the request_key that is not already published or cancelled. Wave 2 Task 5.
-_REPOINT_SCOPE = "status NOT IN ('published', 'cancelled')"
+# Rows a `create_revision` un-renders: everything of the request_key that is
+# not already published or cancelled AND whose delivery is resolved. Wave 2
+# Task 5.
+#
+# Fix round 1, ruling 3: a row parked in `review` with delivery_state
+# `attempting` (a reaped lease) or `delivery_unknown` (a receipt that could
+# not say what happened) may have a LIVE post behind it. Blanking its image
+# columns -- and queueing its artwork for deletion -- would destroy the card
+# that post shows, and nothing downstream would ever notice. So it keeps its
+# artwork through a re-point, exactly as `withdrawal._REISSUABLE` already
+# refuses to re-issue it. The re-point of `current_revision_id` itself is
+# unchanged: that pointer has always moved for every non-terminal row.
+#
+# `{q}` is the table alias the embedding query uses (empty, or 'q.'), the same
+# shape `withdrawal._REISSUABLE` uses, so neither half of the predicate can
+# drift onto the wrong table when this is embedded next to a subquery.
+_REPOINT_SCOPE = """{q}status NOT IN ('published', 'cancelled')
+       AND ({q}delivery_state IS NULL
+            OR {q}delivery_state NOT IN ('attempting', 'delivery_unknown'))"""
 
 # The old artwork of the re-pointed rows, minus anything a published sibling
 # still points at (a roundup's two platform rows can share nothing but they
@@ -42,7 +58,7 @@ _REPOINT_SCOPE = "status NOT IN ('published', 'cancelled')"
 _Q_OLD_KEYS = f"""
     SELECT DISTINCT q.image_key FROM publishing_queue q
      WHERE q.request_key = %(rk)s AND q.image_key IS NOT NULL
-       AND q.{_REPOINT_SCOPE}
+       AND {_REPOINT_SCOPE.format(q='q.')}
        AND NOT EXISTS (SELECT 1 FROM publishing_queue s
                         WHERE s.request_key = %(rk)s AND s.status = 'published'
                           AND s.image_key = q.image_key)
@@ -50,7 +66,7 @@ _Q_OLD_KEYS = f"""
 
 _Q_UNRENDER = f"""
     UPDATE publishing_queue SET image_key = NULL, image_url = NULL, image_sha256 = NULL
-     WHERE request_key = %(rk)s AND {_REPOINT_SCOPE}
+     WHERE request_key = %(rk)s AND {_REPOINT_SCOPE.format(q='')}
 """
 
 

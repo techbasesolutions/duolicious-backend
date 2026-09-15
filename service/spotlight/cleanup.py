@@ -29,6 +29,25 @@ retry with backoff rather than a silent orphan. A job that exhausts
 `MAX_ATTEMPTS` is abandoned with an alert line and LEFT in the table: nothing
 sweeps it up, because at that point a human needs to look at the bucket.
 
+KEYS COME BACK (fix round 1). Spotlight keys are content-hashed
+(`assets.asset_key`), so re-uploading identical bytes produces the identical
+key. Two consequences, and both are handled by recording WHO named the key at
+enqueue time:
+
+  * Uniqueness is over PENDING jobs only (migration 0047's partial index).
+    A done, failed or abandoned job stays as the record of what happened and
+    never blocks the key's next lifetime from being queued.
+
+  * `enqueue_asset_delete` snapshots the rows that name the key right now
+    into `evidence.owners`, and the batch re-checks every reserved job before
+    deleting. A reference that is NOT in that snapshot means the key came back
+    to life between the enqueue and the batch, so the object is left alone,
+    the queue row is not cleared, and the job is filed done with
+    `evidence.referenced`. The snapshot is what lets the retained-key rule and
+    this guard coexist: retention, a removal marked done and a withdrawal all
+    queue a key that is deliberately still ON its row, and that reference is
+    the job's own, not a new one.
+
 `settings` is imported lazily inside `run_cleanup_batch`: `service.spotlight.
 queue` imports `service.spotlight.revisions` at load time and `revisions`
 imports `enqueue_asset_delete` from here, so a top-level import back to
@@ -37,6 +56,7 @@ lazy import in `revisions.py`.
 """
 from __future__ import annotations
 
+import json
 from typing import Callable, Optional
 
 from service.spotlight.storage import delete_images
@@ -58,10 +78,27 @@ MAX_ATTEMPTS = 10
 # holds the storage call, not about the API's limits.
 BATCH = 200
 
+# Every row that can name a stored object. A key is safe to delete only when
+# nothing here points at it except the owner recorded when the job was queued.
+# `spotlight_revision.image_key` matters as much as the queue row's: a
+# revision is what an admin view and a member's preview read back.
+_Q_REFERENCES = """
+    SELECT image_key AS target, 'queue:' || id::text AS ref
+      FROM publishing_queue
+     WHERE image_key = ANY(%(k)s::text[])
+    UNION ALL
+    SELECT image_key AS target, 'revision:' || id::text AS ref
+      FROM spotlight_revision
+     WHERE image_key = ANY(%(k)s::text[])
+"""
+
+# ON CONFLICT infers migration 0047's PARTIAL unique index, so the conflict
+# arm fires only against another job that is still pending. A key whose
+# previous job is done can be queued again for its next lifetime.
 _Q_ENQUEUE = """
-    INSERT INTO cleanup_job (kind, target)
-    VALUES ('asset_delete', %(t)s)
-    ON CONFLICT (kind, target) DO NOTHING
+    INSERT INTO cleanup_job (kind, target, evidence)
+    VALUES ('asset_delete', %(t)s, %(e)s::jsonb)
+    ON CONFLICT (kind, target) WHERE state = 'pending' DO NOTHING
     RETURNING id
 """
 
@@ -70,21 +107,28 @@ _Q_ENQUEUE = """
 # this one is taking. The attempts bump is the reservation: a batch that dies
 # after the storage call but before recording results still leaves the attempt
 # counted, which is the honest reading (the delete may well have happened).
+# `%(pfx)s` is NULL in production; tests pass a per-test key prefix so a batch
+# is blind to every other test's jobs and the suite is order-independent.
 _Q_DUE = """
     UPDATE cleanup_job
        SET attempts = attempts + 1
      WHERE id IN (
         SELECT id FROM cleanup_job
          WHERE state = 'pending' AND next_attempt_at <= NOW()
+           AND (%(pfx)s::text IS NULL OR target LIKE %(pfx)s)
          ORDER BY id
          LIMIT %(n)s
          FOR UPDATE SKIP LOCKED
      )
-    RETURNING id, kind, target, attempts
+    RETURNING id, kind, target, attempts, evidence
 """
 
+# Evidence is MERGED, not replaced: the owners snapshot written at enqueue is
+# what a later reader needs to understand why a job was skipped or allowed.
 _Q_DONE = """
-    UPDATE cleanup_job SET state = 'done', done_at = NOW(), last_error = NULL
+    UPDATE cleanup_job
+       SET state = 'done', done_at = NOW(), last_error = NULL,
+           evidence = evidence || %(e)s::jsonb
      WHERE id = %(id)s
 """
 
@@ -116,42 +160,80 @@ _Q_OVERDUE_REMOVALS = """
 """
 
 
+def _references(tx, keys: list) -> dict:
+    """Every row currently naming each key, as {key: {'queue:<id>', ...}}.
+    Keys nothing names are absent rather than mapped to an empty set."""
+    out: dict = {}
+    if not keys:
+        return out
+    for r in tx.execute(_Q_REFERENCES, dict(k=list(keys))).fetchall():
+        out.setdefault(r['target'], set()).add(r['ref'])
+    return out
+
+
+def is_referenced(tx, key: str) -> bool:
+    """True when any queue row or revision still names this object. Used by
+    the image route's superseded path, which must not queue an orphan-cleanup
+    for a key that a live row happens to share (identical bytes, identical
+    content-hashed key)."""
+    return bool(key) and bool(_references(tx, [key]).get(key))
+
+
 def enqueue_asset_delete(tx, key: str) -> Optional[int]:
     """Record that one stored object is finished with. Runs inside the
     caller's transaction: this is a database write, not an outbound call, so
     it commits or rolls back with whatever decided the artwork is done.
 
-    Returns the new job id, or None when there is already a job for this key
-    (the unique `(kind, target)` index is the idempotency point, so a retried
-    request, a re-run sweep or two producers naming the same key add nothing).
-    A blank key is a no-op rather than a row: nothing to delete."""
+    The rows naming the key RIGHT NOW are snapshotted into `evidence.owners`.
+    Those are the references this job is entitled to retire -- the retained
+    key on a swept, cancelled or removed row is the normal case, not a reason
+    to refuse. Anything naming the key later is a new lifetime and stops the
+    batch (see the module docstring).
+
+    Returns the new job id, or None when a job for this key is already
+    PENDING (migration 0047's partial unique index is the idempotency point,
+    so a retried request, a re-run sweep or two producers naming the same key
+    add nothing, while a key whose previous job is finished can be queued
+    again). A blank key is a no-op rather than a row: nothing to delete."""
     if not key:
         return None
-    row = tx.execute(_Q_ENQUEUE, dict(t=key)).fetchone()
+    owners = sorted(_references(tx, [key]).get(key, set()))
+    row = tx.execute(_Q_ENQUEUE, dict(t=key, e=json.dumps(dict(owners=owners)))).fetchone()
     return row['id'] if row else None
 
 
-def due_jobs(tx, limit: int = BATCH) -> list[dict]:
+def due_jobs(tx, limit: int = BATCH, target_prefix: Optional[str] = None) -> list[dict]:
     """Reserve up to `limit` pending jobs whose next attempt has come round,
     oldest first, bumping each one's attempt count. Returns the reserved rows
-    (id, kind, target, attempts)."""
-    return tx.execute(_Q_DUE, dict(n=limit)).fetchall()
+    (id, kind, target, attempts, evidence).
+
+    `target_prefix` restricts the reservation to keys under one prefix.
+    Production passes None (one cron, one drain, the whole table); tests pass
+    their own prefix so a batch never consumes another test's jobs."""
+    pattern = None if target_prefix is None else target_prefix + '%'
+    return tx.execute(_Q_DUE, dict(n=limit, pfx=pattern)).fetchall()
 
 
-def record_result(tx, job_id, *, confirmed: bool, error: Optional[str]) -> str:
+def record_result(tx, job_id, *, confirmed: bool, error: Optional[str],
+                   evidence: Optional[dict] = None) -> str:
     """File one job's outcome. Returns 'done', 'pending' (requeued with
-    backoff) or 'abandoned'.
+    backoff), 'abandoned', or 'missing' when the row is no longer there.
+
+    'missing' is deliberately not folded into 'done' (fix round 1, ruling 4):
+    a job that vanished between its reservation and this write was not a
+    confirmed deletion, and counting it as one would overstate what the batch
+    achieved.
 
     `attempts` is read back rather than passed in because `due_jobs` already
     bumped it: the number this reads is the attempt that just happened, so
     reaching MAX_ATTEMPTS here means the job has genuinely had that many
-    goes."""
+    goes. `evidence` is merged into whatever the row already carries."""
     row = tx.execute("SELECT target, attempts FROM cleanup_job WHERE id = %(id)s",
                      dict(id=job_id)).fetchone()
     if not row:
-        return 'done'
+        return 'missing'
     if confirmed:
-        tx.execute(_Q_DONE, dict(id=job_id))
+        tx.execute(_Q_DONE, dict(id=job_id, e=json.dumps(evidence or {})))
         return 'done'
     attempts = int(row['attempts'])
     if attempts >= MAX_ATTEMPTS:
@@ -179,51 +261,79 @@ def overdue_removals(tx) -> int:
     return int(tx.execute(_Q_OVERDUE_REMOVALS).fetchone()['n'])
 
 
-def run_cleanup_batch(tx_factory, delete: Callable[[list], list] = delete_images) -> dict:
+def run_cleanup_batch(tx_factory, delete: Callable[[list], list] = delete_images,
+                       target_prefix: Optional[str] = None) -> dict:
     """Delete one batch of due objects. Returns
-    dict(reserved, done, retried, abandoned, halted=False), or
-    dict(halted=True, outstanding=<pending jobs>) when the emergency stop is
-    engaged.
+    dict(reserved, done, retried, abandoned, missing, halted), plus
+    `outstanding` when the emergency stop is engaged.
 
     Transaction shape, which is the whole point of this function: ONE
-    transaction reads the stop and reserves the due jobs; then `delete` runs
-    with NO transaction open; then ONE transaction records every result and
-    clears the queue rows for the confirmed keys. The delete call is a network
-    round trip to a third party, and holding row locks across it is how a
-    storage outage becomes a database outage.
+    transaction reads the stop, reserves the due jobs and re-checks their
+    references; then `delete` runs with NO transaction open; then ONE
+    transaction records every result and clears the queue rows for the
+    confirmed keys. The delete call is a network round trip to a third party,
+    and holding row locks across it is how a storage outage becomes a database
+    outage.
 
     `external_access_enabled` is the same emergency stop every outbound call
     obeys (Task 9, F12). Deleting an object is outbound, so a stop means no
     delete call is made at all and every job stays exactly as it is -- not
-    reserved, not attempted, not backed off."""
+    reserved, not attempted, not backed off.
+
+    `target_prefix` is None in production; tests pass their own key prefix so
+    a batch only ever sees their jobs."""
     from service.spotlight.queue import settings  # lazy: see module docstring
+    empty = dict(reserved=0, done=0, retried=0, abandoned=0, missing=0)
     with tx_factory() as tx:
         if settings(tx).get('external_access_enabled') != 'true':
-            return dict(halted=True, outstanding=outstanding_jobs(tx))
-        jobs = due_jobs(tx)
+            return dict(empty, halted=True, outstanding=outstanding_jobs(tx))
+        jobs = due_jobs(tx, target_prefix=target_prefix)
+        # Re-check inside the reservation transaction, so a key that came back
+        # to life is filed and committed whether or not the storage call that
+        # follows ever completes.
+        deletable, referenced = [], []
+        current = _references(tx, [j['target'] for j in jobs])
+        for job in jobs:
+            owners = set(((job['evidence'] or {}).get('owners')) or [])
+            if current.get(job['target'], set()) - owners:
+                referenced.append(job)
+            else:
+                deletable.append(job)
+        done = missing = 0
+        for job in referenced:
+            print(f"spotlight_cleanup: {job['target']} is referenced again, leaving the object alone")
+            if record_result(tx, job['id'], confirmed=True, error=None,
+                             evidence=dict(referenced=True)) == 'done':
+                done += 1
+            else:
+                missing += 1
     if not jobs:
-        return dict(reserved=0, done=0, retried=0, abandoned=0, halted=False)
+        return dict(empty, halted=False)
 
-    keys = [j['target'] for j in jobs]
+    keys = [j['target'] for j in deletable]
     # Outside any transaction, and the only storage call in this module.
     # `delete_images` never raises and never blocks unboundedly, but a
     # caller-supplied `delete` might, so anything it does wrong costs a batch,
     # not a held lock.
-    confirmed = set(delete(keys) or [])
+    confirmed = set(delete(keys) or []) if keys else set()
 
-    done = retried = abandoned = 0
-    with tx_factory() as tx:
-        for job in jobs:
-            key = job['target']
-            ok = key in confirmed
-            outcome = record_result(tx, job['id'], confirmed=ok,
-                                    error=None if ok else 'deletion not confirmed by storage')
-            if ok:
-                tx.execute(_Q_CLEAR_KEY, dict(k=key))
-            if outcome == 'done':
-                done += 1
-            elif outcome == 'abandoned':
-                abandoned += 1
-            else:
-                retried += 1
-    return dict(reserved=len(jobs), done=done, retried=retried, abandoned=abandoned, halted=False)
+    retried = abandoned = 0
+    if deletable:
+        with tx_factory() as tx:
+            for job in deletable:
+                key = job['target']
+                ok = key in confirmed
+                outcome = record_result(tx, job['id'], confirmed=ok,
+                                        error=None if ok else 'deletion not confirmed by storage')
+                if ok and outcome == 'done':
+                    tx.execute(_Q_CLEAR_KEY, dict(k=key))
+                if outcome == 'done':
+                    done += 1
+                elif outcome == 'abandoned':
+                    abandoned += 1
+                elif outcome == 'missing':
+                    missing += 1
+                else:
+                    retried += 1
+    return dict(reserved=len(jobs), done=done, retried=retried, abandoned=abandoned,
+                missing=missing, halted=False)

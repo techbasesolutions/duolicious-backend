@@ -8,14 +8,24 @@ re-points a rendered request) enqueues a job inside its own transaction and
 clears nothing; `run_cleanup_batch` is the only place storage deletion
 happens, and it runs OUTSIDE its own transactions.
 
+Fix round 1 adds two guards. Object keys are content-hashed, so the same key
+can be created, retired and created again: uniqueness is therefore over
+PENDING jobs only (migration 0047), and the batch re-checks every reserved
+job against the rows that name its key before handing it to storage. A
+reference that was NOT there when the job was queued means the key came back
+to life, so the object is left alone and the job is filed done with
+`evidence.referenced`.
+
 The test environment has non-blank R2 credentials and no reachable object
 store, so every test here either passes an explicit `delete=` callable to
 `run_cleanup_batch` or never lets a batch run at all. Nothing in this file
 may reach the network.
 
 The test database persists across `docker compose run` invocations (there is
-no autouse rollback fixture in this suite), so every test that uses a literal
-cleanup target deletes its own rows first to stay rerunnable.
+no autouse rollback fixture in this suite) AND the cleanup table is shared, so
+every test mints a unique key prefix with `_pfx()` and passes it to
+`run_cleanup_batch` as `target_prefix`. A batch is then blind to every other
+test's jobs, whatever order the suite runs in.
 
 Helpers `_make_eligible`, `H` and the render stand-in are copied from
 tests/test_spotlight_routes.py on purpose -- test files in this suite do not
@@ -24,6 +34,7 @@ import from each other.
 from __future__ import annotations
 
 import hashlib
+from uuid import uuid4
 
 from database import api_tx
 from service.cron.spotlightretention import retention_sweep
@@ -33,6 +44,13 @@ from service.spotlight.queue import create_candidate, set_setting
 from service.spotlight.revisions import attach_render, current_revision, edit_caption
 
 H = {'X-Growth-Cron': 'test-cron-secret'}
+
+
+def _pfx() -> str:
+    """A key namespace no other test can collide with, in this run or any
+    earlier one. Passed to `run_cleanup_batch` so the batch only ever sees
+    this test's own jobs."""
+    return f'test/{uuid4().hex}/'
 
 
 def _make_eligible(make_person, name='Elig', gender='Woman'):
@@ -50,16 +68,10 @@ def _make_eligible(make_person, name='Elig', gender='Woman'):
     return p
 
 
-def _forget(*targets):
-    """Drop any cleanup_job row for these targets so a rerun starts clean."""
-    with api_tx() as tx:
-        tx.execute("DELETE FROM cleanup_job WHERE target = ANY(%(t)s::text[])", dict(t=list(targets)))
-
-
 def _jobs(*targets) -> dict:
     with api_tx('read committed') as tx:
         return {r['target']: r for r in tx.execute(
-            """SELECT target, state, attempts, next_attempt_at > NOW() AS later
+            """SELECT target, state, attempts, evidence, next_attempt_at > NOW() AS later
                  FROM cleanup_job WHERE target = ANY(%(t)s::text[])""",
             dict(t=list(targets))).fetchall()}
 
@@ -69,49 +81,167 @@ def _jobs(*targets) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_enqueue_is_idempotent():
-    key = 'spotlight/x/1-abc-facebook.png'
-    _forget(key)
+    key = _pfx() + '1-abc-facebook.png'
     with api_tx() as tx:
         assert cleanup.enqueue_asset_delete(tx, key) is not None
         assert cleanup.enqueue_asset_delete(tx, key) is None
 
 
-def test_partial_confirmation_retains_unconfirmed_keys():
-    _forget('k-ok', 'k-bad')
+def test_a_done_job_does_not_block_a_new_one_for_the_same_key():
+    """Fix round 1, ruling 1. Keys are content-hashed, so the same key can be
+    created, retired, created again and retired again. Migration 0047 makes
+    uniqueness partial over `state = 'pending'`: two open jobs for one key
+    collapse to one, but a job that is already done blocks nothing."""
+    pfx = _pfx()
+    key = pfx + 'reusable.png'
     with api_tx() as tx:
-        cleanup.enqueue_asset_delete(tx, 'k-ok')
-        cleanup.enqueue_asset_delete(tx, 'k-bad')
-    out = cleanup.run_cleanup_batch(api_tx, delete=lambda keys: [k for k in keys if k == 'k-ok'])
-    assert out['halted'] is False and out['done'] >= 1 and out['retried'] >= 1
-    rows = _jobs('k-ok', 'k-bad')
-    assert rows['k-ok']['state'] == 'done'
-    assert rows['k-bad']['state'] == 'pending' and rows['k-bad']['later'] is True
+        first = cleanup.enqueue_asset_delete(tx, key)
+        assert first is not None
+        assert cleanup.enqueue_asset_delete(tx, key) is None     # two pending collapse to one
+    out = cleanup.run_cleanup_batch(api_tx, delete=lambda keys: list(keys), target_prefix=pfx)
+    assert out['done'] == 1 and _jobs(key)[key]['state'] == 'done'
+    with api_tx() as tx:
+        second = cleanup.enqueue_asset_delete(tx, key)
+    assert second is not None and second != first
+    with api_tx('read committed') as tx:
+        rows = tx.execute("SELECT state FROM cleanup_job WHERE target = %(t)s ORDER BY id",
+                          dict(t=key)).fetchall()
+    assert [r['state'] for r in rows] == ['done', 'pending']
+
+
+def test_partial_confirmation_retains_unconfirmed_keys():
+    pfx = _pfx()
+    ok, bad = pfx + 'ok', pfx + 'bad'
+    with api_tx() as tx:
+        cleanup.enqueue_asset_delete(tx, ok)
+        cleanup.enqueue_asset_delete(tx, bad)
+    out = cleanup.run_cleanup_batch(api_tx, delete=lambda keys: [k for k in keys if k == ok],
+                                    target_prefix=pfx)
+    assert out['halted'] is False and out['reserved'] == 2
+    assert out['done'] == 1 and out['retried'] == 1
+    rows = _jobs(ok, bad)
+    assert rows[ok]['state'] == 'done'
+    assert rows[bad]['state'] == 'pending' and rows[bad]['later'] is True
 
 
 def test_abandon_after_max_attempts(capsys):
-    _forget('k-never')
+    pfx = _pfx()
+    key = pfx + 'never'
     with api_tx() as tx:
-        cleanup.enqueue_asset_delete(tx, 'k-never')
-        tx.execute("UPDATE cleanup_job SET attempts = %(a)s, next_attempt_at = NOW() WHERE target = 'k-never'",
-                   dict(a=cleanup.MAX_ATTEMPTS - 1))
-    cleanup.run_cleanup_batch(api_tx, delete=lambda keys: [])
-    assert _jobs('k-never')['k-never']['state'] == 'abandoned'
-    assert 'ABANDONED k-never' in capsys.readouterr().out
+        cleanup.enqueue_asset_delete(tx, key)
+        tx.execute("UPDATE cleanup_job SET attempts = %(a)s, next_attempt_at = NOW() WHERE target = %(t)s",
+                   dict(a=cleanup.MAX_ATTEMPTS - 1, t=key))
+    out = cleanup.run_cleanup_batch(api_tx, delete=lambda keys: [], target_prefix=pfx)
+    assert out['abandoned'] == 1
+    assert _jobs(key)[key]['state'] == 'abandoned'
+    assert f'ABANDONED {key}' in capsys.readouterr().out
+
+
+def test_a_job_that_vanished_mid_batch_is_counted_missing():
+    """Fix round 1, ruling 4. A job deleted between the reservation and the
+    result write is not a confirmed deletion and must not be counted as one."""
+    pfx = _pfx()
+    key = pfx + 'gone'
+    with api_tx() as tx:
+        cleanup.enqueue_asset_delete(tx, key)
+
+    def _delete(keys):
+        # Runs with NO transaction open (that is the batch's contract), so
+        # opening one here is safe and also proves the contract.
+        with api_tx() as tx:
+            tx.execute("DELETE FROM cleanup_job WHERE target = ANY(%(t)s::text[])", dict(t=list(keys)))
+        return list(keys)
+
+    out = cleanup.run_cleanup_batch(api_tx, delete=_delete, target_prefix=pfx)
+    assert out['reserved'] == 1 and out['missing'] == 1 and out['done'] == 0
+
+
+def test_record_result_on_a_vanished_job_reports_missing():
+    with api_tx() as tx:
+        assert cleanup.record_result(tx, 10 ** 15, confirmed=True, error=None) == 'missing'
 
 
 def test_emergency_stop_halts_cleanup_and_counts_outstanding():
-    _forget('k-halt')
+    pfx = _pfx()
+    key = pfx + 'halt'
     with api_tx() as tx:
-        cleanup.enqueue_asset_delete(tx, 'k-halt')
+        cleanup.enqueue_asset_delete(tx, key)
         set_setting(tx, 'external_access_enabled', 'false')
     try:
         calls = []
-        out = cleanup.run_cleanup_batch(api_tx, delete=lambda keys: calls.append(keys) or [])
+        out = cleanup.run_cleanup_batch(api_tx, delete=lambda keys: calls.append(keys) or [],
+                                        target_prefix=pfx)
         assert out['halted'] is True and out['outstanding'] >= 1 and calls == []
-        assert _jobs('k-halt')['k-halt']['state'] == 'pending'
+        # Fix round 1, ruling 4: the halted answer carries the same counters
+        # as a normal batch, all zero, so a caller never has to special-case
+        # the shape.
+        assert out['reserved'] == 0 and out['done'] == 0 and out['retried'] == 0
+        assert out['abandoned'] == 0 and out['missing'] == 0
+        # Nothing was reserved, so the job is untouched: same state, same
+        # attempt count. A stop must not spend a job's retry budget.
+        row = _jobs(key)[key]
+        assert row['state'] == 'pending' and row['attempts'] == 0
     finally:
         with api_tx() as tx:
             set_setting(tx, 'external_access_enabled', 'true')
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1, ruling 2: a key that came back to life is never deleted
+# ---------------------------------------------------------------------------
+
+def test_a_key_referenced_again_after_enqueue_is_not_deleted(make_person):
+    """Object keys are content-hashed, so a re-upload of identical bytes
+    re-creates the exact key a job is already queued for. The batch re-checks
+    every reserved job against the rows naming its key and skips any reference
+    that was not there when the job was queued: the object stays, the key
+    stays, and the job is filed done with `evidence.referenced`."""
+    pfx = _pfx()
+    key = pfx + 'reborn.png'
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        # Queued while nothing references the key.
+        assert cleanup.enqueue_asset_delete(tx, key) is not None
+    with api_tx() as tx:
+        # ... and then the key comes back, on a live row.
+        tx.execute("""UPDATE publishing_queue SET image_key = %(k)s, image_url = 'https://cdn/reborn.png'
+                       WHERE request_key = %(rk)s AND platform = 'facebook'""", dict(k=key, rk=rk))
+    calls = []
+    out = cleanup.run_cleanup_batch(api_tx, delete=lambda keys: calls.append(list(keys)) or list(keys),
+                                    target_prefix=pfx)
+    assert calls == []                      # never handed to storage
+    assert out['reserved'] == 1 and out['done'] == 1
+    job = _jobs(key)[key]
+    assert job['state'] == 'done' and job['evidence'].get('referenced') is True
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            "SELECT image_key FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
+            dict(rk=rk)).fetchone()
+    assert row['image_key'] == key          # neither deleted nor cleared
+
+
+def test_the_row_that_owned_the_key_at_enqueue_does_not_block_its_own_cleanup(make_person):
+    """The counterpart to the test above. Retention, a removal marked done and
+    a withdrawal all queue a key that is still ON its row -- that is the whole
+    point of the retained-key rule. The reference recorded at enqueue time is
+    the job's own, so it never blocks; only a NEW one does."""
+    pfx = _pfx()
+    key = pfx + 'retired.png'
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute("""UPDATE publishing_queue SET image_key = %(k)s, image_url = 'https://cdn/r.png'
+                       WHERE request_key = %(rk)s AND platform = 'facebook'""", dict(k=key, rk=rk))
+        assert cleanup.enqueue_asset_delete(tx, key) is not None
+    out = cleanup.run_cleanup_batch(api_tx, delete=lambda keys: list(keys), target_prefix=pfx)
+    assert out['done'] == 1
+    assert _jobs(key)[key]['evidence'].get('referenced') is None
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            "SELECT image_key FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
+            dict(rk=rk)).fetchone()
+    assert row['image_key'] is None
 
 
 # ---------------------------------------------------------------------------
@@ -141,8 +271,9 @@ def test_retention_keeps_keys_until_the_job_confirms(make_person):
         jobs = tx.execute("SELECT target, state FROM cleanup_job WHERE target LIKE %(pfx)s",
                           dict(pfx=f'spotlight/{rk}/' + '%')).fetchall()
         assert len(jobs) == 2 and {j['state'] for j in jobs} == {'pending'}
-    out = cleanup.run_cleanup_batch(api_tx, delete=lambda keys: list(keys))    # storage confirms everything
-    assert out['done'] >= 2
+    out = cleanup.run_cleanup_batch(api_tx, delete=lambda keys: list(keys),   # storage confirms everything
+                                    target_prefix=f'spotlight/{rk}/')
+    assert out['done'] == 2
     with api_tx('read committed') as tx:
         rows = tx.execute("SELECT image_key, image_url FROM publishing_queue WHERE request_key = %(rk)s",
                           dict(rk=rk)).fetchall()
@@ -250,3 +381,36 @@ def test_caption_edit_unrenders_every_repointed_row_and_enqueues_the_old_keys(ma
     rows = _jobs(old['facebook'], old['instagram'])
     assert set(rows) == {old['facebook'], old['instagram']}
     assert {r['state'] for r in rows.values()} == {'pending'}
+
+
+def test_caption_edit_spares_a_row_whose_delivery_is_unresolved(make_person):
+    """Fix round 1, ruling 3. A row parked in `review` with an unresolved
+    delivery may have a LIVE post behind it. Un-rendering it (and queueing its
+    artwork for deletion) would destroy the card that post shows, so the
+    re-point scope skips it: its image columns survive the caption edit and
+    nothing is queued for its key. The sibling that is genuinely un-rendered
+    is still un-rendered."""
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        live = f'spotlight/{rk}/live-facebook.png'
+        pending = f'spotlight/{rk}/pending-instagram.png'
+        tx.execute("""UPDATE publishing_queue
+                         SET status = 'review', delivery_state = 'delivery_unknown',
+                             image_key = %(k)s, image_url = 'https://cdn/live.png', image_sha256 = 'livesha'
+                       WHERE request_key = %(rk)s AND platform = 'facebook'""", dict(rk=rk, k=live))
+        tx.execute("""UPDATE publishing_queue
+                         SET status = 'awaiting_render', image_key = %(k)s,
+                             image_url = 'https://cdn/pending.png', image_sha256 = 'pendingsha'
+                       WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk, k=pending))
+        edit_caption(tx, rk, 'a different caption', 't')
+        rows = {r['platform']: r for r in tx.execute(
+            "SELECT platform, image_key, image_url, image_sha256 FROM publishing_queue WHERE request_key = %(rk)s",
+            dict(rk=rk)).fetchall()}
+    assert rows['facebook']['image_key'] == live
+    assert rows['facebook']['image_url'] == 'https://cdn/live.png'
+    assert rows['facebook']['image_sha256'] == 'livesha'
+    assert rows['instagram']['image_key'] is None and rows['instagram']['image_sha256'] is None
+    jobs = _jobs(live, pending)
+    assert live not in jobs
+    assert jobs[pending]['state'] == 'pending'

@@ -51,7 +51,8 @@ from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      OUTCOME_DELIVERY_STATE, PLATFORMS,
                                      SETTING_KEYS, FREE_KEYS)
 from service.spotlight.assets import asset_key, attach_platform_image, complete_render_if_ready
-from service.spotlight.cleanup import enqueue_asset_delete, outstanding_jobs, overdue_removals
+from service.spotlight.cleanup import (enqueue_asset_delete, is_referenced,
+                                       outstanding_jobs, overdue_removals)
 from service.spotlight.revisions import consent_complete, create_revision, edit_caption
 from service.spotlight.roundup import roundup_snapshot
 from service.spotlight.storage import InvalidImage
@@ -680,12 +681,18 @@ def post_growth_queue_image(request_key: str):
     # behind.
     with api_tx() as tx:
         outcome = attach_platform_image(tx, request_key, platform, revision_id, key, url, sha256)
-        if outcome == 'superseded':
+        if outcome == 'superseded' and not is_referenced(tx, key):
             # Nothing points at the just-uploaded object and nothing ever
             # will, so it is queued for deletion (Wave 2 Task 5) rather than
             # deleted inline: enqueueing is a database write and commits with
             # this transaction, where a storage call would have held the api
             # connection lock across a network round trip.
+            #
+            # Fix round 1, ruling 2: guarded by the same reference check the
+            # cleanup batch re-runs. The key is content-hashed, so a re-upload
+            # of identical bytes lands on the identical key -- if a live row
+            # or revision still names it, the object is in use and there is no
+            # orphan to clean up.
             enqueue_asset_delete(tx, key)
         if outcome == 'attached':
             if complete_render_if_ready(tx, request_key, revision_id):
