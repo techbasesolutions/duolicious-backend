@@ -12,6 +12,7 @@ from service.cron.verificationjobrunner import verify_forever
 from service.cron.profilereporter import report_profiles_forever
 from service.cron.fireholbuilder import build_firehol_forever
 from service.cron.spotlightretention import spotlight_retention_forever
+from service.cron.spotlightcleanup import spotlight_cleanup_forever
 from service.cron.emailoutbox import email_outbox_forever
 import asyncio
 from http.server import SimpleHTTPRequestHandler
@@ -78,10 +79,15 @@ async def main():
         # zero callers) until this task. Runs hourly.
         entitlements_forever(),
 
-        # Community Spotlight: nulls image_key/image_url on published rows
-        # older than RETENTION_DAYS (90) after deleting the object from
-        # storage. Runs once a day.
+        # Community Spotlight: enqueues a cleanup job for the artwork of
+        # published rows older than RETENTION_DAYS (90). Clears nothing
+        # itself. Runs once a day.
         spotlight_retention_forever(),
+
+        # The single drain of the spotlight cleanup job table: the only
+        # place a card image is deleted from the object store, and the only
+        # place a row's image_key is cleared. Every 10 minutes.
+        spotlight_cleanup_forever(),
 
         # The single drain of the durable email outbox: the only place SMTP
         # is spoken anywhere in the system. Every 30 seconds.

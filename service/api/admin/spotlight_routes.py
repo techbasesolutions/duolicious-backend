@@ -51,9 +51,10 @@ from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      OUTCOME_DELIVERY_STATE, PLATFORMS,
                                      SETTING_KEYS, FREE_KEYS)
 from service.spotlight.assets import asset_key, attach_platform_image, complete_render_if_ready
+from service.spotlight.cleanup import enqueue_asset_delete, outstanding_jobs, overdue_removals
 from service.spotlight.revisions import consent_complete, create_revision, edit_caption
 from service.spotlight.roundup import roundup_snapshot
-from service.spotlight.storage import InvalidImage, delete_images
+from service.spotlight.storage import InvalidImage
 import service.spotlight.storage as st
 
 
@@ -641,9 +642,17 @@ def post_growth_queue_image(request_key: str):
     # still pinned to the exact revision this upload was rendered against and
     # still in a status that may have its artwork replaced. 'superseded'
     # means the just-uploaded object is now an orphan -- nothing points at it
-    # and nothing ever will -- so it is deleted rather than left behind.
+    # and nothing ever will -- so it is queued for deletion rather than left
+    # behind.
     with api_tx() as tx:
         outcome = attach_platform_image(tx, request_key, platform, revision_id, key, url, sha256)
+        if outcome == 'superseded':
+            # Nothing points at the just-uploaded object and nothing ever
+            # will, so it is queued for deletion (Wave 2 Task 5) rather than
+            # deleted inline: enqueueing is a database write and commits with
+            # this transaction, where a storage call would have held the api
+            # connection lock across a network round trip.
+            enqueue_asset_delete(tx, key)
         if outcome == 'attached':
             if complete_render_if_ready(tx, request_key, revision_id):
                 # A roundup (no subject) row is ready to schedule as soon as
@@ -656,10 +665,6 @@ def post_growth_queue_image(request_key: str):
                     dict(rk=request_key))
             _audit(tx, s, 'growth.queue.image', request_key=request_key, platform=platform)
     if outcome == 'superseded':
-        # Wave 2 Task 5 replaces this with enqueue_asset_delete (a durable
-        # cleanup_job row); until it lands this is a direct best-effort
-        # delete, same as every other storage cleanup in this file.
-        st.delete_images([key])
         return dict(error='superseded'), 409
     return dict(image_url=url)
 
@@ -809,7 +814,15 @@ def get_growth_removals():
         # hand them to the worker while the stop is engaged.
         halted = settings(tx).get('external_access_enabled') != 'true'
         rows = [] if halted else tx.execute(_Q_REMOVALS, dict(pending=pending)).fetchall()
-    return jsonify({'tasks': [_row(r) for r in rows], 'halted': halted})
+        # Both counts are read even under the stop, and deliberately: they
+        # are plain database reads, and a stop that has been engaged for a
+        # while is exactly when a growing removal backlog or a pile of
+        # undeleted artwork must stay visible rather than disappear with the
+        # task list (Wave 2 Task 5, F09).
+        overdue = overdue_removals(tx)
+        outstanding_cleanup = outstanding_jobs(tx)
+    return jsonify({'tasks': [_row(r) for r in rows], 'halted': halted,
+                    'overdue': overdue, 'outstanding_cleanup': outstanding_cleanup})
 
 
 @post('/admin/growth/removals/<int:removal_id>/done', limiter=growth_limit)
@@ -824,19 +837,15 @@ def post_growth_removal_done(removal_id: int):
         updated = tx.execute(
             "UPDATE spotlight_removal_task SET done_at = NOW() WHERE id = %(i)s AND done_at IS NULL",
             dict(i=removal_id)).rowcount
+        # Wave 2 Task 5 (F09): the key is NOT cleared here and nothing is
+        # deleted here. A cleanup job is enqueued in this same transaction,
+        # so it commits with the task being marked done; the key stays on the
+        # row until the cleanup batch has storage's confirmation that the
+        # object is really gone. Clearing it first is what used to leave
+        # artwork in the bucket that nothing in the database named any more.
         if updated and row and row['image_key']:
-            tx.execute(
-                """UPDATE publishing_queue SET image_key = NULL, image_url = NULL, image_sha256 = NULL
-                    WHERE id = (SELECT queue_id FROM spotlight_removal_task WHERE id = %(i)s)""",
-                dict(i=removal_id))
+            enqueue_asset_delete(tx, row['image_key'])
         _audit(tx, s, 'growth.removal.done', removal_id=removal_id)
-    # Storage is best-effort and outside the transaction's success/failure:
-    # a Spaces error here must never undo the removal task being marked done.
-    # Task 5 moves this onto the cleanup job; for now only the confirmed
-    # count is logged.
-    if updated and row and row['image_key']:
-        confirmed = delete_images([row['image_key']])
-        print(f'admin.growth.removal.done: confirmed {len(confirmed)}/1 image(s) deleted')
     return dict(ok=True, updated=updated)
 
 

@@ -105,6 +105,18 @@ def test_every_status_is_handled(make_person, status, expected_status, stamped):
             assert out['left_attempting'] == 2 and out['cancelled'] == 0
         if expected_status == 'cancelled':
             assert out['cancelled'] == 2
+            # Wave 2 Task 5 (F09): a cancelled row's artwork is QUEUED for
+            # deletion inside this transaction, never deleted inline, and its
+            # key stays on the row until the cleanup batch confirms the object
+            # is gone. `withdraw_member` now makes no outbound call at all.
+            jobs = tx.execute(
+                """SELECT target, state FROM cleanup_job
+                    WHERE kind = 'asset_delete' AND target LIKE %(pfx)s""",
+                dict(pfx=f'spotlight/{rk}-' + '%')).fetchall()
+            assert len(jobs) == 2 and {j['state'] for j in jobs} == {'pending'}
+            keys = tx.execute("SELECT image_key FROM publishing_queue WHERE request_key = %(rk)s",
+                              dict(rk=rk)).fetchall()
+            assert all(r['image_key'] for r in keys)
         assert out['epoch'] == 1
 
 
@@ -212,6 +224,12 @@ def test_reissue_leaves_a_published_sibling_row_untouched(make_person):
         assert rows['instagram']['status'] == 'awaiting_render'
         assert rows['instagram']['image_key'] is None
         assert rows['instagram']['current_revision_id'] != rev2['id']
+        # Wave 2 Task 5: the re-issued row's old artwork is queued for
+        # deletion by `create_revision`; the published sibling's object is
+        # what is actually live, so its key is never queued.
+        queued = {r['target'] for r in tx.execute(
+            "SELECT target FROM cleanup_job WHERE kind = 'asset_delete' AND state = 'pending'").fetchall()}
+        assert 'spotlight/pending.png' in queued and 'spotlight/live.png' not in queued
         tasks = tx.execute("SELECT platform, external_post_id FROM spotlight_removal_task WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()
         assert [(t['platform'], t['external_post_id']) for t in tasks] == [('facebook', 'fb-1')]
 

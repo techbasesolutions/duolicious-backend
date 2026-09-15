@@ -382,8 +382,6 @@ def test_image_route_uses_content_hashed_key_and_private_acl(client, make_person
 def test_image_route_superseded_when_revision_changes_mid_upload(client, make_person, monkeypatch):
     import service.spotlight.storage as st
     from service.spotlight.revisions import edit_caption
-    deleted = []
-    monkeypatch.setattr(st, 'delete_images', lambda keys: deleted.extend(keys) or list(keys))
     p = _make_eligible(make_person)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
@@ -396,11 +394,17 @@ def test_image_route_superseded_when_revision_changes_mid_upload(client, make_pe
     monkeypatch.setattr(st, 'put_png', put_then_edit)
     r = client.post(f'/admin/growth/queue/{rk}/image', json=dict(platform='facebook', png_base64=_b64(_png_bytes())), headers=H)
     assert r.status_code == 409 and r.get_json() == dict(error='superseded')
-    assert len(deleted) == 1 and deleted[0].startswith(f'spotlight/{rk}/{rev1}-')
+    # Wave 2 Task 5: the orphaned object is queued for deletion in the same
+    # transaction as the compare-and-set that orphaned it, not deleted inline.
     with api_tx('read committed') as tx:
+        queued = tx.execute(
+            """SELECT target FROM cleanup_job
+                WHERE kind = 'asset_delete' AND state = 'pending' AND target LIKE %(pfx)s""",
+            dict(pfx=f'spotlight/{rk}/{rev1}-' + '%')).fetchall()
         row = tx.execute(
             "SELECT image_key, image_sha256 FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
             dict(rk=rk)).fetchone()
+    assert len(queued) == 1
     assert row['image_key'] is None and row['image_sha256'] is None
 
 
@@ -552,31 +556,34 @@ def test_removals_listed_and_marked_done(client, make_person):
                    for r in client.get('/admin/growth/removals?pending=1', headers=H).get_json()['tasks'])
 
 
-def test_removal_done_deletes_stored_image(client, make_person, monkeypatch):
-    import service.api.admin.spotlight_routes as sr
-    deleted = []
-    # Wave 2 Task 2: delete_images now returns the list of confirmed keys
-    # (not a requested count), and post_growth_removal_done logs len() of it.
-    monkeypatch.setattr(sr, 'delete_images', lambda keys: deleted.extend(keys) or keys)
+def test_removal_done_queues_the_stored_image_and_keeps_the_key(client, make_person):
+    """Wave 2 Task 5 (F09): marking a removal done enqueues a cleanup job for
+    the row's artwork and clears nothing. The key stays on the row until the
+    cleanup batch has storage's confirmation that the object is gone -- the
+    old inline delete cleared the key whether or not anything was deleted,
+    which is how orphaned objects were left in the bucket. Nothing here
+    touches storage, so nothing here needs monkeypatching."""
     p = _make_eligible(make_person)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        key = f'spotlight/{rk}/removed.png'
         tx.execute("""UPDATE publishing_queue
                          SET status = 'published', external_post_id = 'ig-2',
-                             image_key = 'spotlight/removed.png', image_url = 'https://cdn/removed.png',
+                             image_key = %(k)s, image_url = 'https://cdn/removed.png',
                              image_sha256 = 'removedsha'
-                       WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk))
+                       WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk, k=key))
         set_spotlight_opt_in(tx, p['id'], False)
     H = {'X-Growth-Cron': 'test-cron-secret'}
     task = [r for r in client.get('/admin/growth/removals?pending=1', headers=H).get_json()['tasks'] if r['request_key'] == rk][0]
     assert client.post(f"/admin/growth/removals/{task['id']}/done", json={}, headers=H).status_code == 200
-    assert deleted == ['spotlight/removed.png']
     with api_tx('read committed') as tx:
         row = tx.execute("""SELECT image_key, image_url, image_sha256 FROM publishing_queue
                              WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk)).fetchone()
-    assert row['image_key'] is None and row['image_url'] is None
-    # Fix round 1 (ruling 2): image_sha256 is cleared wherever image_key is.
-    assert row['image_sha256'] is None
+        job = tx.execute("SELECT state FROM cleanup_job WHERE kind = 'asset_delete' AND target = %(k)s",
+                         dict(k=key)).fetchone()
+    assert job is not None and job['state'] == 'pending'
+    assert row['image_key'] == key and row['image_url'] == 'https://cdn/removed.png'
+    assert row['image_sha256'] == 'removedsha'
 
 
 def test_candidates_and_welcome(client, make_person, monkeypatch):
@@ -825,14 +832,12 @@ def test_image_upload_refuses_a_row_that_moved_during_the_upload(client, monkeyp
     trip, so attach_platform_image's own WHERE repeats both checks. A row
     that was approved (moved out of the uploadable statuses) while the bytes
     were in flight keeps its old artwork; the just-uploaded object is now an
-    orphan and is deleted rather than left behind -- reported the same as any
-    other compare-and-set miss, 409 superseded."""
+    orphan and is queued for deletion rather than left behind -- reported the
+    same as any other compare-and-set miss, 409 superseded."""
     import service.spotlight.storage as st
 
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
-
-    deleted = []
 
     def _flip(key, data, public=False):
         # Stands in for the approve that lands while the bytes are in flight.
@@ -843,16 +848,19 @@ def test_image_upload_refuses_a_row_that_moved_during_the_upload(client, monkeyp
                        dict(rk=rk))
 
     monkeypatch.setattr(st, 'put_png', _flip)
-    monkeypatch.setattr(st, 'delete_images', lambda keys: deleted.extend(keys) or list(keys))
     r = client.post(f'/admin/growth/queue/{rk}/image',
                     json={'platform': 'facebook', 'png_base64': _b64(_png_bytes())},
                     headers=H)
     assert r.status_code == 409 and r.get_json() == {'error': 'superseded'}
-    assert len(deleted) == 1
     with api_tx('read committed') as tx:
+        queued = tx.execute(
+            """SELECT target FROM cleanup_job
+                WHERE kind = 'asset_delete' AND state = 'pending' AND target LIKE %(pfx)s""",
+            dict(pfx=f'spotlight/{rk}/' + '%')).fetchall()
         rows = tx.execute(
             """SELECT status, image_key, image_url FROM publishing_queue
                 WHERE request_key = %(rk)s""", dict(rk=rk)).fetchall()
+    assert len(queued) == 1
     assert {row['status'] for row in rows} == {'scheduled'}
     assert all(row['image_key'] is None and row['image_url'] is None for row in rows)
 

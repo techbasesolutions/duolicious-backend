@@ -6,7 +6,9 @@ cancellation, a retention sweep, a removal being marked done, or (Wave 1
 F03) a member withdrawal. Every failure is printed, never raised -- and,
 per `_bucket`'s bounded connect/read timeouts and `_configured`'s
 unconfigured-environment no-op below, "failure" can never mean "blocks
-forever" either.
+forever" either. Since Wave 2 Task 5 a failure is not a loss either: the
+single caller of `delete_images` is the cleanup batch, which retries the
+keys this did not confirm and leaves them on their rows meanwhile.
 
 Uploads (`put_png`) are private by default (Wave 2 F09: a card must not be
 publicly reachable before a member has approved it); an admin action that
@@ -178,13 +180,14 @@ def delete_images(keys: list[str]) -> list[str]:
     raises outright, and an unconfigured object store all confirm nothing
     for the keys involved; nothing here ever raises.
 
-    Called from inside the caller's transaction today (see
-    `service.spotlight.withdrawal.withdraw_member` and the retention sweep).
-    That is deliberate for now and a known follow-up: the right place is
-    after the commit, so a rolled back cancellation cannot leave the object
-    already deleted. It is safe in the meantime because deletion never
-    raises (and, per `_bucket`'s bounded timeouts, never hangs) and the rows
-    it deletes for are ones no live post points at."""
+    Wave 2 Task 5 closed the known follow-up this docstring used to record:
+    there is now exactly ONE production caller,
+    `service.spotlight.cleanup.run_cleanup_batch`, and it calls this with no
+    transaction open. Everything that used to delete inline (a withdrawal, a
+    cancellation, the retention sweep, a removal marked done, a superseded
+    upload) enqueues a `cleanup_job` inside its own transaction instead, and
+    the confirmed keys this returns are what let that batch clear the rows'
+    image columns. Nothing else should call this directly."""
     if not keys:
         return []
     if not _configured():

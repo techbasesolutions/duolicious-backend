@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from service.spotlight.cleanup import enqueue_asset_delete
 from service.spotlight.revisions import TERMINAL, create_revision, current_revision
-from service.spotlight.storage import delete_images
 
 REASONS = ('opt_out', 'account_deletion', 'admin_delete', 'ban', 'hard_delete', 'moderation')
 
@@ -234,17 +234,13 @@ def withdraw_member(tx, person_id: int, reason: str) -> dict:
     reissue_keys = [r['request_key'] for r in tx.execute(_Q_REISSUE_CANDIDATES, params).fetchall()]
     for request_key in reissue_keys:
         rev = current_revision(tx, request_key)
-        # Scoped to the same three reissuable statuses as the candidate
-        # query above: a published or cancelled sibling row of the SAME
-        # request_key (e.g. one platform already posted before the other
-        # was withdrawn) must keep its own status, external_post_id and
-        # image_key untouched -- it was already handled by step 2's
-        # removal-task filing if published, or is simply done if cancelled.
-        old_keys = [r['image_key'] for r in tx.execute(
-            f"""SELECT image_key FROM publishing_queue
-                WHERE request_key = %(rk)s AND {_REISSUABLE.format(q='')}
-                  AND image_key IS NOT NULL""",
-            dict(rk=request_key)).fetchall()]
+        # Wave 2 Task 5: the old artwork is no longer collected or deleted
+        # here. `create_revision` clears the image columns of every row it
+        # re-points and enqueues an `asset_delete` job for each old key that
+        # no published sibling still references, so a published or cancelled
+        # sibling row of the SAME request_key (e.g. one platform already
+        # posted before the other was withdrawn) keeps its status,
+        # external_post_id, image_key and its object.
         create_revision(
             tx, request_key, caption=rev['caption'], photo_uuid=None,
             participants=[p for p in (rev['participants'] or []) if p['person_id'] != person_id],
@@ -260,28 +256,22 @@ def withdraw_member(tx, person_id: int, reason: str) -> dict:
                       image_sha256 = NULL, updated_at = NOW()
                 WHERE request_key = %(rk)s AND {_REISSUABLE.format(q='')}""",
             dict(rk=request_key))
-        # Task 5 moves this onto the cleanup job; for now the confirmed
-        # count (out of `_configured`'s new list-of-confirmed-keys return)
-        # is only logged, the same as `delete_images` always was best-effort.
-        confirmed = delete_images(old_keys)
-        print(f'spotlight.withdrawal: confirmed {len(confirmed)}/{len(old_keys)} '
-              f'reissue image(s) deleted for {request_key}')
     roundups_reissued = len(reissue_keys)
 
     # Step 5: everything else naming the member -- not published, not
     # already cancelled, not mid-publish, and not just re-issued above --
-    # is cancelled outright. Collect image keys before the UPDATEs blank
-    # them; storage deletion is best-effort and must never affect whether
-    # the cancellation itself succeeds.
+    # is cancelled outright. Their artwork is queued for deletion rather than
+    # deleted here (Wave 2 Task 5): enqueueing is a plain database write, so
+    # it belongs in this transaction and rolls back with it, and this whole
+    # function now makes no outbound call at all. The keys stay on the rows
+    # until the cleanup batch confirms the objects are actually gone.
     cancel_params = dict(params, reissued=reissue_keys, terminal=list(TERMINAL))
     image_keys = [r['image_key'] for r in tx.execute(_Q_CANCEL_IMAGE_KEYS, cancel_params).fetchall()]
     cancelled = tx.execute(_Q_CANCEL_SUBJECT_ROWS, dict(cancel_params, reason=reason)).rowcount
     cancelled += tx.execute(_Q_CANCEL_TILE_OR_PARTICIPANT_ROWS,
                             dict(cancel_params, reason=f'tile_member_{reason}')).rowcount
-    # Task 5 moves this onto the cleanup job; for now only the confirmed
-    # count is logged.
-    confirmed = delete_images(image_keys)
-    print(f'spotlight.withdrawal: confirmed {len(confirmed)}/{len(image_keys)} cancelled image(s) deleted')
+    for key in image_keys:
+        enqueue_asset_delete(tx, key)
 
     # Step 6: always bumps, whether or not anything above changed a row --
     # a withdrawal is itself a consent event.

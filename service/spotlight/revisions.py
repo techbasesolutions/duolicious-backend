@@ -15,7 +15,8 @@ Every function here runs inside the caller's api_tx; none opens one.
 `settings` is imported lazily from `service.spotlight.queue` inside
 `approve_card`, since `queue.py` imports `create_revision` from this
 module at load time -- a top-level import back the other way would be a
-cycle.
+cycle. `service.spotlight.cleanup` is safe to import at the top: it reaches
+`queue` only through its own lazy import, so nothing closes the loop.
 """
 from __future__ import annotations
 
@@ -23,11 +24,34 @@ import json
 from typing import Optional
 
 from service.config import WEB_BASE_URL
+from service.spotlight.cleanup import enqueue_asset_delete
 
 IN_FLIGHT = ('scheduled', 'processing')
 # A published or cancelled request is done: its content is either already
 # out in the world or dead, and neither state may be quietly rewritten.
 TERMINAL = ('published', 'cancelled')
+
+
+# Rows a `create_revision` re-points, and therefore un-renders: everything of
+# the request_key that is not already published or cancelled. Wave 2 Task 5.
+_REPOINT_SCOPE = "status NOT IN ('published', 'cancelled')"
+
+# The old artwork of the re-pointed rows, minus anything a published sibling
+# still points at (a roundup's two platform rows can share nothing but they
+# can share a key after a re-render, and a live post's object must survive).
+_Q_OLD_KEYS = f"""
+    SELECT DISTINCT q.image_key FROM publishing_queue q
+     WHERE q.request_key = %(rk)s AND q.image_key IS NOT NULL
+       AND q.{_REPOINT_SCOPE}
+       AND NOT EXISTS (SELECT 1 FROM publishing_queue s
+                        WHERE s.request_key = %(rk)s AND s.status = 'published'
+                          AND s.image_key = q.image_key)
+"""
+
+_Q_UNRENDER = f"""
+    UPDATE publishing_queue SET image_key = NULL, image_url = NULL, image_sha256 = NULL
+     WHERE request_key = %(rk)s AND {_REPOINT_SCOPE}
+"""
 
 
 def _statuses(tx, request_key: str) -> set:
@@ -61,12 +85,36 @@ def create_revision(tx, request_key: str, *, caption: str, photo_uuid: Optional[
     image_key are separate `publishing_queue` columns this function never
     touches regardless. `edit_caption`/`approve_card` never pass this flag,
     so admin-driven edits keep the original whole-request guard AND the
-    original whole-request repoint."""
+    original whole-request repoint.
+
+    Wave 2 Task 5 (Task 3 re-review): every row this call re-points also
+    loses its `image_key`, `image_url` and `image_sha256`, and each old key
+    no published sibling still references is queued for deletion. A caption
+    edit on a fully rendered request therefore leaves BOTH platform rows
+    un-rendered, and `complete_render_if_ready` cannot pass on one fresh
+    upload paired with the other platform's stale image."""
     statuses = _statuses(tx, request_key)
     if statuses & set(IN_FLIGHT):
         raise ValueError('in_flight')
     if statuses & set(TERMINAL) and not ignore_terminal_siblings:
         raise ValueError('terminal')
+    # Wave 2 Task 5 (Task 3 re-review): the artwork a row carries was
+    # rendered for the revision it is being moved OFF. Leaving it in place
+    # would let `complete_render_if_ready` pass on a single fresh upload,
+    # pairing one newly rendered platform with the other platform's stale
+    # image -- a card showing the old caption going out beside the new one.
+    # So every row this call re-points is un-rendered here, and the old keys
+    # are queued for deletion. A key a published sibling still points at is
+    # left alone: that object is what is actually live.
+    #
+    # One scope serves both branches below. With `ignore_terminal_siblings`
+    # set, the repoint is already scoped away from published/cancelled rows,
+    # so those are not re-pointed and must not be un-rendered. Without it, the
+    # terminal guard above has already refused the whole call if any such row
+    # exists, so the scope simply matches every row of the request_key --
+    # which is exactly the set the default repoint touches.
+    old_keys = [r['image_key'] for r in tx.execute(
+        _Q_OLD_KEYS, dict(rk=request_key)).fetchall()]
     next_rev = tx.execute(
         "SELECT COALESCE(MAX(revision), 0) + 1 AS n FROM spotlight_revision WHERE request_key = %(rk)s",
         dict(rk=request_key)).fetchone()['n']
@@ -92,6 +140,13 @@ def create_revision(tx, request_key: str, *, caption: str, photo_uuid: Optional[
         tx.execute(
             "UPDATE publishing_queue SET current_revision_id = %(rid)s, updated_at = NOW() WHERE request_key = %(rk)s",
             dict(rid=revision_id, rk=request_key))
+    # Un-render the re-pointed rows and queue their old artwork for deletion
+    # (see the comment above the `old_keys` read). Enqueueing is a plain
+    # database write, so it belongs in this transaction: if the caller rolls
+    # back, the revision and the cleanup jobs go together.
+    tx.execute(_Q_UNRENDER, dict(rk=request_key))
+    for key in old_keys:
+        enqueue_asset_delete(tx, key)
     return revision_id
 
 

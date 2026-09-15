@@ -131,25 +131,29 @@ def test_cancel_for_member_creates_removal_tasks(make_person):
         assert [(t['platform'], t['reason']) for t in tasks] == [('instagram', 'manual_instagram')]
 
 
-def test_cancel_for_member_deletes_stored_images(make_person, monkeypatch):
-    # The actual deletion now happens inside withdraw_member
-    # (service/spotlight/withdrawal.py), which cancel_for_member wraps
-    # (Wave 1 F03) -- patch delete_images where it is actually called.
-    import service.spotlight.withdrawal as w
-    deleted = []
-    # Wave 2 Task 2: delete_images now returns the list of confirmed keys
-    # (not a requested count), and withdraw_member logs len() of it.
-    monkeypatch.setattr(w, 'delete_images', lambda keys: deleted.extend(keys) or keys)
+def test_cancel_for_member_queues_stored_images_for_cleanup(make_person):
+    """Wave 2 Task 5 (F09): cancelling a member's rows no longer deletes
+    anything inline -- `withdraw_member` (which `cancel_for_member` wraps,
+    Wave 1 F03) enqueues an asset_delete job per cancelled key inside its own
+    transaction and makes no outbound call at all. A published row's artwork
+    is still live, so it is not queued; the cancelled row's is."""
     p = _make_eligible(make_person)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        pub_key = f'spotlight/{rk}/published.png'
+        sched_key = f'spotlight/{rk}/scheduled.png'
         tx.execute("""UPDATE publishing_queue SET status = 'published', external_post_id = '123',
-                             image_key = 'spotlight/published.png'
-                       WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk))
-        tx.execute("""UPDATE publishing_queue SET status = 'scheduled', image_key = 'spotlight/scheduled.png'
-                       WHERE request_key = %(rk)s AND platform = 'facebook'""", dict(rk=rk))
+                             image_key = %(k)s
+                       WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk, k=pub_key))
+        tx.execute("""UPDATE publishing_queue SET status = 'scheduled', image_key = %(k)s
+                       WHERE request_key = %(rk)s AND platform = 'facebook'""", dict(rk=rk, k=sched_key))
         cancel_for_member(tx, p['id'], 'opt_out')
-    assert deleted == ['spotlight/scheduled.png']
+    with api_tx('read committed') as tx:
+        queued = {r['target'] for r in tx.execute(
+            """SELECT target FROM cleanup_job
+                WHERE kind = 'asset_delete' AND target = ANY(%(t)s::text[])""",
+            dict(t=[pub_key, sched_key])).fetchall()}
+    assert queued == {sched_key}
 
 
 def test_opt_out_cancels(make_person):

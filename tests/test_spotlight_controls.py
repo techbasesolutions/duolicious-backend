@@ -86,7 +86,11 @@ def test_removals_halted_by_emergency_stop_only(client, make_person):
         assert body['halted'] is False and any(t['request_key'] == rk for t in body['tasks'])   # paused publication does not pause cleanup
         with api_tx() as tx: _set(tx, external_access_enabled='false')
         body = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
-        assert body == dict(tasks=[], halted=True)
+        # Wave 2 Task 5: the task list is withheld under the stop, but the two
+        # counts are not -- a stop that has been engaged for a while is
+        # exactly when a removal backlog must stay visible.
+        assert body['tasks'] == [] and body['halted'] is True
+        assert isinstance(body['overdue'], int) and isinstance(body['outstanding_cleanup'], int)
     finally:
         with api_tx() as tx: _restore_defaults(tx)
 
