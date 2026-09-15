@@ -4,23 +4,19 @@
 Instagram permalink note: the admin worker (Task 6) resolves Instagram's
 real web permalink via a separate Graph lookup (the id alone is not enough
 to build one) and sends it through the `/complete` receipt's `post_url`
-field, alongside Facebook's own id-derived path. `send_card_live` below uses
-that `post_url` as-is whenever it is an `https://` string. `post_url_for
+field, alongside Facebook's own id-derived path. `enqueue_card_live` below
+uses that `post_url` as-is whenever it is an `https://` string. `post_url_for
 ('instagram', ...)` is only the FALLBACK for a receipt that arrives with no
 usable `post_url` (an older worker, or a failed lookup): it links to the
 public Ahavah Instagram profile instead of guessing a shortcode from the
 media id, which would produce a broken link."""
 from __future__ import annotations
 
-import threading
-import traceback
 from html import escape as html_escape
 from urllib.parse import quote
 
-from database import api_tx
 from emails.base import render, button, chip, title_image, INK_SOFT, MUTED, SANS
-from service.campaigns import make_campaign_link
-from service.campaigns.runner import run_campaign
+from service.campaigns import make_campaign_link, outbox
 from service.config import EMAIL_DOMAIN, WEB_BASE_URL
 from service.unsubscribe import make_url as unsub_url
 
@@ -104,11 +100,20 @@ You're receiving this because you opted in to Community Spotlight.
     )
 
 
-def send_card_live(person_id: int, request_key: str, external_post_id: str, platform: str,
-                    post_url: str | None = None) -> bool:
-    """Synchronous send for one platform's publish. `campaign_id` includes
-    the platform since facebook and instagram publish (and so E5-fire)
-    independently for the same request_key.
+def enqueue_card_live(tx, person_id: int, request_key: str, external_post_id: str, platform: str,
+                      post_url: str | None = None) -> int | None:
+    """Queue E5 inside the CALLER'S transaction (F07). Returns the outbox row
+    id, or None when there is nothing to send.
+
+    This used to be a synchronous send fired from a daemon thread after the
+    receipt had already committed, so a restart between the two lost the
+    email outright. Enqueuing on the receipt's own transaction means the
+    publish and the "your card is live" message commit together, and the
+    cron drains it afterwards. The /s/ campaign link is minted on the same
+    `tx` for the same reason: no link row for a message that rolled back.
+
+    `campaign_id` includes the platform since facebook and instagram publish
+    (and so E5-fire) independently for the same request_key.
 
     `post_url`: the worker's own receipt (Task 6) may carry the real post
     URL it got back from the platform (Instagram's permalink lookup, in
@@ -125,45 +130,24 @@ def send_card_live(person_id: int, request_key: str, external_post_id: str, plat
     plain post link is. The plain "see the post" link stays the unwrapped,
     plain post URL, so a reader can always reach the post directly even if
     campaign-link redirects are ever unavailable."""
-    with api_tx('read committed') as tx:
-        person = tx.execute(_Q_PERSON, dict(id=person_id)).fetchone()
-        card = tx.execute(_Q_CARD, dict(rk=request_key, pl=platform)).fetchone()
+    person = tx.execute(_Q_PERSON, dict(id=person_id)).fetchone()
+    card = tx.execute(_Q_CARD, dict(rk=request_key, pl=platform)).fetchone()
     if not person or not card or not card['image_url']:
-        return False
+        return None
     if isinstance(post_url, str) and post_url.startswith('https://'):
         resolved_post_url = post_url
     else:
         resolved_post_url = post_url_for(platform, external_post_id)
-    post_url = resolved_post_url
-
-    def build(row: dict) -> tuple[str, str]:
-        with api_tx() as tx:
-            # external_ok=True: the sharer dialog lives on www.facebook.com,
-            # not our own web app, which make_campaign_link otherwise
-            # refuses (spec 3.4/3.5 CTA attribution for E5).
-            wrapped = make_campaign_link(tx, f'post:{request_key}', share_url_for(post_url),
-                                        person_id, external_ok=True)
-        html = card_live_html(row['first_name'], card['image_url'], post_url, wrapped,
-                              unsub_url(UNSUB_SCOPE, row['email'], WEB_BASE_URL))
-        return SUBJECT, html
-
-    recipient = dict(person_id=person_id, email=person['email'], first_name=person['first_name'])
-    result = run_campaign(
-        api_tx, 'e5', f'e5-{request_key}-{platform}', [recipient], build, send=True,
-        from_addr=FROM_ADDR, unsub_scope=UNSUB_SCOPE,
-        list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{unsub_url(UNSUB_SCOPE, e, WEB_BASE_URL)}>",
+    # external_ok=True: the sharer dialog lives on www.facebook.com, not our
+    # own web app, which make_campaign_link otherwise refuses (spec 3.4/3.5
+    # CTA attribution for E5).
+    wrapped = make_campaign_link(tx, f'post:{request_key}', share_url_for(resolved_post_url),
+                                 person_id, external_ok=True)
+    unsub = unsub_url(UNSUB_SCOPE, person['email'], WEB_BASE_URL)
+    html = card_live_html(person['first_name'], card['image_url'], resolved_post_url, wrapped, unsub)
+    return outbox.enqueue(
+        tx, campaign='e5', campaign_id=f'e5-{request_key}-{platform}', person_id=person_id,
+        email=person['email'], subject=SUBJECT, html=html, from_addr=FROM_ADDR,
+        unsub_scope=UNSUB_SCOPE,
+        list_unsubscribe=f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{unsub}>",
         exempt=True)
-    return result['sent'] == 1
-
-
-def send_card_live_async(person_id: int, request_key: str, external_post_id: str, platform: str,
-                          post_url: str | None = None) -> None:
-    """Fire-and-forget from the admin/growth spotlight routes; failures are
-    swallowed (the post is already live, the email is a nicety)."""
-    def _go() -> None:
-        try:
-            send_card_live(person_id, request_key, external_post_id, platform, post_url)
-        except Exception:
-            print(traceback.format_exc())
-
-    threading.Thread(target=_go, daemon=True).start()

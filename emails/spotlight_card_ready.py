@@ -3,13 +3,10 @@ own Spotlight card (spec 3.1, 3.4, 3.5, section 2). Canonical shell.
 Copy rules: NO em dashes. Sentence case."""
 from __future__ import annotations
 
-import threading
-import traceback
 from html import escape as html_escape
 
-from database import api_tx
 from emails.base import render, button, chip, title_image, callout, INK_SOFT, MUTED, SANS
-from service.campaigns.runner import run_campaign
+from service.campaigns import outbox
 from service.config import EMAIL_DOMAIN, WEB_BASE_URL
 from service.spotlight.approval import CARD_TOKEN_TTL_SECONDS, card_url
 from service.unsubscribe import make_url as unsub_url
@@ -71,52 +68,46 @@ You're receiving this because you opted in to Community Spotlight.
     )
 
 
-def send_card_ready(person_id: int, request_key: str) -> bool:
-    """Synchronous send. Reads the member's live email/name and the
-    request's kind inside one read-committed transaction, then runs the
-    E4 campaign for that single recipient. `exempt=True` because this is
-    member-triggered (a new welcome/member-of-week card is a direct
-    consequence of the member's own eligibility, not a broadcast), and the
-    campaign_id is keyed on request_key so a retried caller cannot double
-    send for the same request."""
-    with api_tx('read committed') as tx:
-        person = tx.execute(_Q_PERSON, dict(id=person_id)).fetchone()
-        candidate = tx.execute(_Q_KIND, dict(rk=request_key)).fetchone()
+def enqueue_card_ready(tx, person_id: int, request_key: str) -> int | None:
+    """Queue E4 inside the CALLER'S transaction (F07). Returns the outbox row
+    id, or None when there is nothing to send.
+
+    This used to be a synchronous send fired from a daemon thread, which
+    meant the invite could be lost three separate ways: the thread died with
+    the process, an SMTP hiccup dropped it, and a retried request could send
+    it twice. Enqueuing here instead ties the invite to the very transaction
+    that created (or re-confirmed) the candidate: either both land or
+    neither does, and the cron drains it afterwards.
+
+    The card nonce is minted on this same `tx` for the same reason -- a token
+    must never exist for a message that was rolled back.
+
+    `exempt=True` because this is member-triggered (a new welcome or
+    member-of-week card is a direct consequence of the member's own
+    eligibility, not a broadcast), and the campaign_id is keyed on
+    request_key so a retried caller cannot double send for the same request.
+
+    None is returned rather than raised for the three ordinary "nothing to
+    send" cases: no activated person, no candidate, or no card token. The
+    caller is mid-transaction, and aborting a candidate creation because an
+    email could not be addressed would be the wrong trade."""
+    person = tx.execute(_Q_PERSON, dict(id=person_id)).fetchone()
+    candidate = tx.execute(_Q_KIND, dict(rk=request_key)).fetchone()
     if not person or not candidate:
-        return False
+        return None
+    cu = card_url(tx, request_key, person['email'])
+    if cu is None:
+        # No activated person matches this email any more, so there is no
+        # nonce to mint against. Queuing anyway would send a card with
+        # href="None".
+        return None
     kind_label = _KIND_LABELS.get(candidate['kind'], candidate['kind'])
-
-    def build(row: dict) -> tuple[str, str]:
-        with api_tx() as tx:
-            cu = card_url(tx, request_key, row['email'])
-        if cu is None:
-            # No activated person matches this email any more (the member
-            # was deactivated between the lookup above and this build call,
-            # or the recipient row is otherwise stale) -- raising here
-            # makes run_campaign count this as a failure instead of
-            # sending, or dry-running, a card with href="None".
-            raise ValueError('no_person')
-        unsub = unsub_url(UNSUB_SCOPE, row['email'], WEB_BASE_URL)
-        html = card_ready_html(row['first_name'], kind_label, cu,
-                               CARD_TOKEN_TTL_SECONDS // 86400, unsub)
-        return SUBJECT, html
-
-    recipient = dict(person_id=person_id, email=person['email'], first_name=person['first_name'])
-    result = run_campaign(
-        api_tx, 'e4', f'e4-{request_key}', [recipient], build, send=True,
-        from_addr=FROM_ADDR, unsub_scope=UNSUB_SCOPE,
-        list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{unsub_url(UNSUB_SCOPE, e, WEB_BASE_URL)}>",
+    unsub = unsub_url(UNSUB_SCOPE, person['email'], WEB_BASE_URL)
+    html = card_ready_html(person['first_name'], kind_label, cu,
+                           CARD_TOKEN_TTL_SECONDS // 86400, unsub)
+    return outbox.enqueue(
+        tx, campaign='e4', campaign_id=f'e4-{request_key}', person_id=person_id,
+        email=person['email'], subject=SUBJECT, html=html, from_addr=FROM_ADDR,
+        unsub_scope=UNSUB_SCOPE,
+        list_unsubscribe=f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{unsub}>",
         exempt=True)
-    return result['sent'] == 1
-
-
-def send_card_ready_async(person_id: int, request_key: str) -> None:
-    """Fire-and-forget from the admin/growth spotlight routes; failures are
-    swallowed (the candidate row already exists, the email is a nicety)."""
-    def _go() -> None:
-        try:
-            send_card_ready(person_id, request_key)
-        except Exception:
-            print(traceback.format_exc())
-
-    threading.Thread(target=_go, daemon=True).start()

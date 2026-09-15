@@ -187,7 +187,7 @@ def test_welcome_creates_candidate_without_invite_when_approvals_disabled(client
     import service.api.admin.spotlight_routes as sr
     sent = []
     audited = []
-    monkeypatch.setattr(sr, '_send_card_ready', lambda pid, rk: sent.append((pid, rk)))
+    monkeypatch.setattr(sr, '_enqueue_card_ready', lambda tx, pid, rk: sent.append((pid, rk)))
     monkeypatch.setattr(sr, '_audit', lambda tx, s, action, **metadata: audited.append((action, metadata)))
     p = _make_eligible(make_person)
     try:

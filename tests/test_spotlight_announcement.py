@@ -25,21 +25,17 @@ def test_build_for_raises_for_a_deactivated_recipient(make_person):
         build_for(dict(person_id=p['id'], email=email, name='Deactivated'))
 
 
-def test_deactivated_recipient_produces_no_send_and_a_counted_failure(make_person, monkeypatch):
+def test_deactivated_recipient_produces_no_send_and_a_counted_failure(make_person, outbox_drain):
     """The email is a non-suppressed `ahavah-test.invalid` address (not the
     `make_person` fixture's default `@example.com`) so this test actually
     exercises build_for's `no_person` guard rather than run_campaign's
     unrelated suppression check, which would otherwise skip an
     `@example.com` recipient before build_for ever runs and report
-    `error=None` regardless of the fix under test."""
-    import service.campaigns.runner as r
-    sent = []
+    `error=None` regardless of the fix under test.
 
-    class _S:
-        def send(self, **kw):
-            sent.append(kw)
-            return 'mid'
-    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+    A build that raises stops the run before anything is queued (F07), so
+    "no send" is now proved twice over: nothing reaches the outbox, and a
+    drain afterwards hands SMTP nothing."""
     p = make_person(name='Deactivated2')
     with api_tx() as tx:
         tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'deactivated-{p["id"]}@ahavah-test.invalid', id=p['id']))
@@ -48,6 +44,10 @@ def test_deactivated_recipient_produces_no_send_and_a_counted_failure(make_perso
     result = run_campaign(
         api_tx, 'e1', 'no-person-e1', [dict(person_id=p['id'], email=email, name='Deactivated2')],
         build_for, send=True, from_addr='support@ahavah.app', unsub_scope='notifications')
-    assert result['sent'] == 0 and result['error'] == 'no_person'
+    assert result['queued'] == 0 and result['error'] == 'no_person'
+    with api_tx('read committed') as tx:
+        assert tx.execute("SELECT count(*) AS n FROM email_outbox WHERE person_id = %(id)s",
+                          dict(id=p['id'])).fetchone()['n'] == 0
+    sent = outbox_drain(p['id'])
     assert sent == []
     assert not any('href="None"' in s['body'] for s in sent)

@@ -581,7 +581,7 @@ def test_removal_done_deletes_stored_image(client, make_person, monkeypatch):
 
 def test_candidates_and_welcome(client, make_person, monkeypatch):
     import service.api.admin.spotlight_routes as sr
-    monkeypatch.setattr(sr, '_send_card_ready', lambda pid, rk: None)
+    monkeypatch.setattr(sr, '_enqueue_card_ready', lambda tx, pid, rk: None)
     p = _make_eligible(make_person)
     H = {'X-Growth-Cron': 'test-cron-secret'}
     c = client.get('/admin/growth/candidates', headers=H).get_json()
@@ -1034,7 +1034,7 @@ def test_reconcile_publishes_a_reaped_row_and_sends_the_live_email(client, make_
     the operator's word, with no lease, and the card-live email fires once."""
     import service.api.admin.spotlight_routes as sr
     sent = []
-    monkeypatch.setattr(sr, '_send_card_live', lambda *a: sent.append(a))
+    monkeypatch.setattr(sr, '_enqueue_card_live', lambda tx, *a: sent.append(a))
     admin = _make_admin(make_person); A = {'Authorization': f'Bearer {_session_for(admin)}'}
     p = _make_eligible(make_person, name='Reconcile')
     with api_tx() as tx:
@@ -1058,7 +1058,7 @@ def test_reconcile_of_a_withdrawn_member_files_the_removal_task_and_sends_nothin
     import service.api.admin.spotlight_routes as sr
     from service.spotlight.withdrawal import withdraw_member
     sent = []
-    monkeypatch.setattr(sr, '_send_card_live', lambda *a: sent.append(a))
+    monkeypatch.setattr(sr, '_enqueue_card_live', lambda tx, *a: sent.append(a))
     admin = _make_admin(make_person); A = {'Authorization': f'Bearer {_session_for(admin)}'}
     p = _make_eligible(make_person, name='ReconcileGone')
     with api_tx() as tx:
@@ -1140,7 +1140,7 @@ def test_member_of_week_withholds_the_invite_while_approvals_are_paused(client, 
     must never be invited to approve a card they cannot act on."""
     import service.api.admin.spotlight_routes as sr
     sent = []
-    monkeypatch.setattr(sr, '_send_card_ready', lambda *a: sent.append(a))
+    monkeypatch.setattr(sr, '_enqueue_card_ready', lambda tx, *a: sent.append(a))
     admin = _make_admin(make_person); A = {'Authorization': f'Bearer {_session_for(admin)}'}
     paused_member = _make_eligible(make_person, name='MowPaused')
     r = client.post('/admin/growth/spotlight/member-of-week', json={'person_id': paused_member['id']}, headers=A)

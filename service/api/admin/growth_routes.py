@@ -64,6 +64,10 @@ def post_admin_growth_email_preview(s: t.SessionInfo, campaign: str):
 
 @apost('/admin/growth/emails/<campaign>/send')
 def post_admin_growth_email_send(s: t.SessionInfo, campaign: str):
+    """Queue a run and return immediately (F07). Nothing here talks to SMTP
+    any more: the response reports how many messages were QUEUED, and the
+    `emailoutbox` cron sends them. Progress is read back from
+    `/admin/growth/emails/<campaign>/status/<campaign_id>`."""
     require_admin(s)
     mod = _CAMPAIGNS.get(campaign) or abort(404)
     body = request.get_json(silent=True) or {}
@@ -85,3 +89,16 @@ def post_admin_growth_email_send(s: t.SessionInfo, campaign: str):
     with api_tx() as tx:
         record_audit(tx, s, 'growth.email.send', metadata=dict(campaign=campaign, **res))
     return res
+
+
+@aget('/admin/growth/emails/<campaign>/status/<campaign_id>')
+def get_admin_growth_email_status(s: t.SessionInfo, campaign: str, campaign_id: str):
+    """Where a queued run actually got to. `acceptance_unknown` is the one
+    that needs a human: those messages were reserved by a drain that never
+    reported back, so whether they reached the member is genuinely unknown
+    and the outbox refuses to guess (F08)."""
+    require_admin(s)
+    _CAMPAIGNS.get(campaign) or abort(404)
+    from service.campaigns import outbox
+    with api_tx('read committed') as tx:
+        return outbox.status(tx, campaign, campaign_id)

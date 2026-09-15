@@ -223,7 +223,12 @@ def make_person():
 
     created: list[int] = []
 
-    def _make(name: str = 'Test', gender: str = 'Man') -> dict:
+    def _make(name: str = 'Test', gender: str = 'Man', email: str | None = None) -> dict:
+        # `email` defaults to the fixture's own @example.com address, which
+        # emails.base.is_suppressed_send blocks on purpose. Pass a
+        # @ahavah-test.invalid address when the test needs a MAILABLE person
+        # (anything that reaches the outbox drain or a campaign send).
+        address = email or f'fixture-{uuid4()}@example.com'
         with api_tx() as tx:
             row = tx.execute(
                 """
@@ -241,8 +246,7 @@ def make_person():
                 )
                 RETURNING id, uuid::text AS uuid
                 """,
-                dict(email=f'fixture-{uuid4()}@example.com',
-                     name=name, gender=gender),
+                dict(email=address, name=name, gender=gender),
             ).fetchone()
         created.append(row['id'])
         return row
@@ -252,3 +256,42 @@ def make_person():
     with api_tx() as tx:
         for pid in created:
             tx.execute('DELETE FROM person WHERE id = %(p)s', dict(p=pid))
+
+
+# ---------------------------------------------------------------------------
+# Email outbox (F07)
+# ---------------------------------------------------------------------------
+# Nothing in the codebase sends email synchronously any more: a campaign run,
+# a welcome invite and a "your card is live" receipt all write an
+# `email_outbox` row, and the `emailoutbox` cron drains it. A test that used
+# to assert on a captured SMTP call now queues, drains here with a stub
+# client, and asserts on what the drain handed SMTP.
+
+@pytest.fixture
+def outbox_drain():
+    """Drain the outbox with a stub SMTP client; returns the list of send
+    kwargs. Pass the person ids the test queued for: every OTHER due row is
+    parked first, so one test's drain can never pick up another's leftovers
+    (the suite shares one database and one outbox table)."""
+    from database import api_tx
+    from service.campaigns import outbox
+
+    class _StubSmtp:
+        def __init__(self):
+            self.sent: list[dict] = []
+
+        def send(self, **kw):
+            self.sent.append(kw)
+            return f'mid-{len(self.sent)}'
+
+    def _drain(*person_ids: int) -> list[dict]:
+        with api_tx() as tx:
+            tx.execute(
+                """UPDATE email_outbox SET next_attempt_at = NOW() + interval '1 hour'
+                    WHERE state = 'queued' AND NOT (person_id = ANY(%(ids)s))""",
+                dict(ids=list(person_ids)))
+        smtp = _StubSmtp()
+        outbox.drain(api_tx, smtp)
+        return smtp.sent
+
+    return _drain

@@ -140,7 +140,11 @@ def test_dry_run_send_returns_the_result_and_writes_one_audit_row(client, admin,
     body = r.get_json()
     assert body['dry_run'] is True
     assert body['campaign_id'] == cid
-    assert body['sent'] == 1
+    # A dry run builds every message and queues none (F07), so `built` is
+    # what carries the "one recipient made it through every check" intent
+    # the old `sent` counter carried here.
+    assert body['built'] == 1
+    assert body['queued'] == 0
     assert body['error'] is None
 
     with api_tx('read committed') as tx:
@@ -151,13 +155,14 @@ def test_dry_run_send_returns_the_result_and_writes_one_audit_row(client, admin,
     assert len(rows) == 1
     assert rows[0]['metadata']['campaign'] == 'e1'
     assert rows[0]['metadata']['dry_run'] is True
-    assert rows[0]['metadata']['sent'] == 1
+    assert rows[0]['metadata']['built'] == 1
 
 
-def test_e1_send_sets_the_notifications_list_unsubscribe_header(client, admin, make_person, monkeypatch):
-    import service.campaigns.runner as runner
-    smtp = _CapturingSmtp()
-    monkeypatch.setattr(runner, 'make_aws_smtp', lambda: smtp)
+def test_e1_send_sets_the_notifications_list_unsubscribe_header(client, admin, make_person,
+                                                                monkeypatch, outbox_drain):
+    """The header is built at enqueue time and rides the outbox payload, so
+    it is asserted on what the DRAIN hands SMTP -- the send endpoint itself
+    no longer touches SMTP at all (F07)."""
     p = make_person(name='E1Target')
     email = _sendable_email(p['id'], 'growth-e1')
     monkeypatch.setattr(e1, 'recipients',
@@ -165,15 +170,14 @@ def test_e1_send_sets_the_notifications_list_unsubscribe_header(client, admin, m
 
     r = client.post('/admin/growth/emails/e1/send', headers=admin['headers'],
                     json=dict(campaign_id=f'e1-real-{uuid.uuid4().hex[:8]}', dry_run=False))
-    assert r.status_code == 200 and r.get_json()['sent'] == 1
-    assert len(smtp.calls) == 1
-    assert '/u/notifications.' in smtp.calls[0]['list_unsubscribe']
+    assert r.status_code == 200 and r.get_json()['queued'] == 1
+    sent = outbox_drain(p['id'])
+    assert len(sent) == 1
+    assert '/u/notifications.' in sent[0]['list_unsubscribe']
 
 
-def test_e2_send_sets_the_community_list_unsubscribe_header(client, admin, make_person, monkeypatch):
-    import service.campaigns.runner as runner
-    smtp = _CapturingSmtp()
-    monkeypatch.setattr(runner, 'make_aws_smtp', lambda: smtp)
+def test_e2_send_sets_the_community_list_unsubscribe_header(client, admin, make_person,
+                                                            monkeypatch, outbox_drain):
     p = make_person(name='E2Target')
     email = _sendable_email(p['id'], 'growth-e2')
     # preview_row() carries the per-run week context that build_for() reads.
@@ -182,9 +186,39 @@ def test_e2_send_sets_the_community_list_unsubscribe_header(client, admin, make_
 
     r = client.post('/admin/growth/emails/e2/send', headers=admin['headers'],
                     json=dict(campaign_id=f'e2-real-{uuid.uuid4().hex[:8]}', dry_run=False))
-    assert r.status_code == 200 and r.get_json()['sent'] == 1
-    assert len(smtp.calls) == 1
-    assert '/u/community.' in smtp.calls[0]['list_unsubscribe']
+    assert r.status_code == 200 and r.get_json()['queued'] == 1
+    sent = outbox_drain(p['id'])
+    assert len(sent) == 1
+    assert '/u/community.' in sent[0]['list_unsubscribe']
+
+
+def test_send_endpoint_is_idempotent_and_status_reports_the_run(client, admin, make_person,
+                                                                monkeypatch, outbox_drain):
+    """An admin who clicks send twice queues one message, not two, and the
+    status endpoint reports where that run got to (F07/F08)."""
+    p = make_person(name='StatusTarget')
+    email = _sendable_email(p['id'], 'growth-status')
+    monkeypatch.setattr(e1, 'recipients',
+                        lambda: [dict(person_id=p['id'], email=email, name='StatusTarget')])
+    cid = f'e1-status-{uuid.uuid4().hex[:8]}'
+
+    first = client.post('/admin/growth/emails/e1/send', headers=admin['headers'],
+                        json=dict(campaign_id=cid, dry_run=False))
+    second = client.post('/admin/growth/emails/e1/send', headers=admin['headers'],
+                         json=dict(campaign_id=cid, dry_run=False))
+    assert first.get_json()['queued'] == 1 and second.get_json()['queued'] == 0
+
+    r = client.get(f'/admin/growth/emails/e1/status/{cid}', headers=admin['headers'])
+    assert r.status_code == 200
+    assert r.get_json() == dict(queued=1, reserved=0, accepted=0, acceptance_unknown=0,
+                                failed=0, skipped=0)
+
+    assert len(outbox_drain(p['id'])) == 1
+    after = client.get(f'/admin/growth/emails/e1/status/{cid}', headers=admin['headers']).get_json()
+    assert after == dict(queued=0, reserved=0, accepted=1, acceptance_unknown=0,
+                         failed=0, skipped=0)
+    assert client.get(f'/admin/growth/emails/nope/status/{cid}',
+                      headers=admin['headers']).status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -294,5 +328,5 @@ def test_e2_dry_run_send_endpoint_respects_the_six_day_cap(client, admin, make_p
 
     assert r.status_code == 200
     body = r.get_json()
-    assert body['sent'] == 1
+    assert body['built'] == 1
     assert body['skipped_cap'] == 1

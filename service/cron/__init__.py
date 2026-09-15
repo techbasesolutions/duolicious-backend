@@ -12,6 +12,7 @@ from service.cron.verificationjobrunner import verify_forever
 from service.cron.profilereporter import report_profiles_forever
 from service.cron.fireholbuilder import build_firehol_forever
 from service.cron.spotlightretention import spotlight_retention_forever
+from service.cron.emailoutbox import email_outbox_forever
 import asyncio
 from http.server import SimpleHTTPRequestHandler
 from socketserver import TCPServer
@@ -81,6 +82,10 @@ async def main():
         # older than RETENTION_DAYS (90) after deleting the object from
         # storage. Runs once a day.
         spotlight_retention_forever(),
+
+        # The single drain of the durable email outbox: the only place SMTP
+        # is spoken anywhere in the system. Every 30 seconds.
+        email_outbox_forever(),
 
         check_connections_forever(),
 

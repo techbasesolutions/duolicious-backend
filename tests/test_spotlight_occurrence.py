@@ -109,7 +109,7 @@ def test_first_confirmation_only_once(make_person):
 def test_complete_route_sends_e5_once_with_post_url(make_person, client, monkeypatch):
     import service.api.admin.spotlight_routes as routes
     sent = []
-    monkeypatch.setattr(routes, '_send_card_live', lambda *a: sent.append(a))
+    monkeypatch.setattr(routes, '_enqueue_card_live', lambda tx, *a: sent.append(a))
     p = _make_eligible(make_person); photo = _photo(p['id'])
     with _publication_on():
         with api_tx() as tx:

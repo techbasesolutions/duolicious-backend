@@ -40,8 +40,13 @@ def build_for(row: dict) -> tuple[str, str]:
 def preview_row(to: str) -> dict:
     return dict(person_id=0, email=to, name='Preview', newcomers=[dict(first_name='Rivka', country='GB')], total_new=1)
 
-def post_send(tx, row: dict) -> None:
-    tx.execute("UPDATE person SET reinvite_sent_at = NOW() WHERE id = %(id)s", dict(id=row['person_id']))
+# The name of the `service.campaigns.outbox.POST_SEND_HOOKS` entry that
+# stamps `person.reinvite_sent_at`. It is a NAME, not the callable it used to
+# be: the stamp has to run in the same transaction as the SMTP ACCEPTANCE,
+# which now happens in the outbox drain (a different process from the run
+# that queued the message), so nothing that is merely queued and later
+# skipped or failed can mark a member as re-invited.
+post_send = 'reinvite_sent_at'
 
 def main() -> None:
     ap = argparse.ArgumentParser()

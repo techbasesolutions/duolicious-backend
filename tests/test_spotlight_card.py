@@ -195,77 +195,102 @@ def test_e4_and_e5_html_are_on_template_and_escaped():
     assert post_url_for('facebook', '123_456') == 'https://www.facebook.com/123_456'
 
 
-def test_send_card_ready_uses_runner_exempt(make_person, monkeypatch):
-    import service.campaigns.runner as r
-    sent = []
-    class _S:
-        def send(self, **kw): sent.append(kw); return 'mid'
-    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+def test_enqueue_card_ready_queues_once_and_is_exempt(make_person, outbox_drain):
+    """E4 is queued, not sent (F07). The row is written on the CALLER'S
+    transaction, `exempt=True` keeps it outside the 7-day cap (it is
+    member-triggered), and the campaign_id is keyed on request_key so a
+    retried caller queues nothing the second time."""
+    from emails.spotlight_card_ready import enqueue_card_ready
     p = _make_eligible(make_person)
     with api_tx() as tx:
         tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'card-{p["id"]}@ahavah-test.invalid', id=p['id']))
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
-    from emails.spotlight_card_ready import send_card_ready
-    assert send_card_ready(p['id'], rk) is True
+        first = enqueue_card_ready(tx, p['id'], rk)
+        second = enqueue_card_ready(tx, p['id'], rk)      # same campaign id, idempotent
+    assert first is not None and second is None
+    with api_tx('read committed') as tx:
+        row = tx.execute("SELECT campaign, campaign_id, exempt, state FROM email_outbox WHERE id = %(i)s",
+                         dict(i=first)).fetchone()
+    assert (row['campaign'], row['campaign_id'], row['exempt'], row['state']) == ('e4', f'e4-{rk}', True, 'queued')
+    sent = outbox_drain(p['id'])
     assert len(sent) == 1 and '/spotlight/card/' in sent[0]['body']
-    assert send_card_ready(p['id'], rk) is False      # same campaign id, idempotent
 
 
-def test_send_card_ready_produces_no_send_for_a_deactivated_recipient(make_person, monkeypatch):
-    """Wave 1 F11 fix round 1: `_Q_PERSON` now filters on `activated`, so a
+def test_enqueue_card_ready_queues_nothing_for_a_deactivated_recipient(make_person, outbox_drain):
+    """Wave 1 F11 fix round 1: `_Q_PERSON` filters on `activated`, so a
     member deactivated after their card candidate was created never even
-    reaches the campaign runner -- no send, and no card-ready email is
-    ever built for them.
+    reaches the message builder -- nothing is queued, and nothing is sent.
 
     The email is a non-suppressed `ahavah-test.invalid` address (not the
     `make_person` fixture's default `@example.com`) so this test actually
-    discriminates on the `activated` gate rather than on run_campaign's
-    unrelated suppression check, which would otherwise skip an
-    `@example.com` recipient before `build` ever runs and mask a
-    regression here."""
-    import service.campaigns.runner as r
-    sent = []
-    class _S:
-        def send(self, **kw): sent.append(kw); return 'mid'
-    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+    discriminates on the `activated` gate rather than on the outbox drain's
+    unrelated suppression check, which would skip an `@example.com` row at
+    send time and mask a regression here."""
+    from emails.spotlight_card_ready import enqueue_card_ready
     p = _make_eligible(make_person)
     with api_tx() as tx:
         tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'deactivated-{p["id"]}@ahavah-test.invalid', id=p['id']))
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         tx.execute("UPDATE person SET activated = FALSE WHERE id = %(id)s", dict(id=p['id']))
-    from emails.spotlight_card_ready import send_card_ready
-    assert send_card_ready(p['id'], rk) is False
-    assert sent == []
+        assert enqueue_card_ready(tx, p['id'], rk) is None
+    assert outbox_drain(p['id']) == []
 
 
-def test_send_card_ready_build_is_a_counted_failure_when_the_token_is_none(make_person, monkeypatch):
-    """Decoupled from the `activated` gate above: `build`'s own defensive
-    check (card_url returning None) must also stop a link-less email from
-    going out, and run_campaign must count it as a failure rather than
-    send it."""
-    import service.campaigns.runner as r
+def test_enqueue_card_ready_queues_nothing_when_the_token_is_none(make_person, monkeypatch, outbox_drain):
+    """Decoupled from the `activated` gate above: the builder's own defensive
+    check (card_url returning None) must also stop a link-less email, and it
+    must do so by queuing nothing rather than by queuing a card with
+    href="None"."""
     import emails.spotlight_card_ready as card_ready_mod
-    sent = []
-    class _S:
-        def send(self, **kw): sent.append(kw); return 'mid'
-    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
     monkeypatch.setattr(card_ready_mod, 'card_url', lambda tx, rk, email: None)
     p = _make_eligible(make_person)
     with api_tx() as tx:
         tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'none-token-{p["id"]}@ahavah-test.invalid', id=p['id']))
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
-    from emails.spotlight_card_ready import send_card_ready
-    assert send_card_ready(p['id'], rk) is False
+        assert card_ready_mod.enqueue_card_ready(tx, p['id'], rk) is None
+    sent = outbox_drain(p['id'])
     assert sent == []
-    assert not any('href="None"' in s['body'] for s in sent)
+    assert not any('href="None"' in x['body'] for x in sent)
 
 
-def test_send_card_live_wraps_share_link_and_is_idempotent(make_person, monkeypatch):
-    import service.campaigns.runner as r
-    sent = []
-    class _S:
-        def send(self, **kw): sent.append(kw); return 'mid'
-    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+def test_e4_is_enqueued_in_the_candidate_transaction_and_survives_restart(client, make_person,
+                                                                          monkeypatch, outbox_drain):
+    """The route-level guarantee F07 buys: POSTing the welcome leaves a
+    DURABLE queued row, written inside the candidate's own transaction, and
+    no thread anywhere. The old implementation fired a daemon thread after
+    the commit, so an api restart in that window lost the invite silently."""
+    import threading
+
+    import emails.spotlight_card_ready as card_ready_mod
+    assert not hasattr(card_ready_mod, 'send_card_ready_async')
+    p = _make_eligible(make_person, name='E4Route')
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s",
+                   dict(e=f'e4-route-{p["id"]}@ahavah-test.invalid', id=p['id']))
+        set_setting(tx, 'approvals_enabled', 'true')
+    try:
+        def _no_threads(*a, **kw):
+            raise AssertionError('the invite must not be sent from a thread')
+        monkeypatch.setattr(threading, 'Thread', _no_threads)
+        r = client.post('/admin/growth/spotlight/welcome', json={'person_id': p['id']},
+                        headers={'X-Growth-Cron': 'test-cron-secret'})
+        monkeypatch.undo()
+        assert r.status_code == 200
+        rk = r.get_json()['request_key']
+        with api_tx('read committed') as tx:
+            row = tx.execute(
+                """SELECT campaign, campaign_id, state, payload FROM email_outbox
+                    WHERE person_id = %(p)s ORDER BY id DESC LIMIT 1""", dict(p=p['id'])).fetchone()
+        assert (row['campaign'], row['campaign_id'], row['state']) == ('e4', f'e4-{rk}', 'queued')
+        assert '/spotlight/card/' in row['payload']['html']
+        assert len(outbox_drain(p['id'])) == 1
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')
+
+
+def test_enqueue_card_live_wraps_share_link_and_is_idempotent(make_person, outbox_drain):
+    from emails.spotlight_card_live import enqueue_card_live
     p = _make_eligible(make_person)
     with api_tx() as tx:
         tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'live-{p["id"]}@ahavah-test.invalid', id=p['id']))
@@ -273,23 +298,20 @@ def test_send_card_live_wraps_share_link_and_is_idempotent(make_person, monkeypa
         tx.execute(
             "UPDATE publishing_queue SET image_url = %(u)s WHERE request_key = %(rk)s AND platform = 'facebook'",
             dict(u='https://cdn.ahavah.app/spotlight/x.png', rk=rk))
-    from emails.spotlight_card_live import send_card_live
-    assert send_card_live(p['id'], rk, '123_456', 'facebook') is True
+        assert enqueue_card_live(tx, p['id'], rk, '123_456', 'facebook') is not None
+        # same campaign id, idempotent
+        assert enqueue_card_live(tx, p['id'], rk, '123_456', 'facebook') is None
+    sent = outbox_drain(p['id'])
     assert len(sent) == 1
     body = sent[0]['body']
     assert '/s/' in body and 'https://www.facebook.com/123_456' in body
-    assert send_card_live(p['id'], rk, '123_456', 'facebook') is False   # same campaign id, idempotent
 
 
-def test_send_card_live_prefers_a_supplied_https_post_url(make_person, monkeypatch):
+def test_enqueue_card_live_prefers_a_supplied_https_post_url(make_person, outbox_drain):
     """Task 6: the worker's own receipt (Instagram's permalink lookup, in
     particular) may already carry the real post URL; when it is https, it
     wins over `post_url_for`'s Instagram-profile fallback."""
-    import service.campaigns.runner as r
-    sent = []
-    class _S:
-        def send(self, **kw): sent.append(kw); return 'mid'
-    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+    from emails.spotlight_card_live import enqueue_card_live
     p = _make_eligible(make_person)
     with api_tx() as tx:
         tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'live-ig-{p["id"]}@ahavah-test.invalid', id=p['id']))
@@ -297,19 +319,15 @@ def test_send_card_live_prefers_a_supplied_https_post_url(make_person, monkeypat
         tx.execute(
             "UPDATE publishing_queue SET image_url = %(u)s WHERE request_key = %(rk)s AND platform = 'instagram'",
             dict(u='https://cdn.ahavah.app/spotlight/x.png', rk=rk))
-    from emails.spotlight_card_live import send_card_live
-    assert send_card_live(p['id'], rk, '77', 'instagram', post_url='https://www.instagram.com/p/abc/') is True
-    body = sent[0]['body']
+        assert enqueue_card_live(tx, p['id'], rk, '77', 'instagram',
+                                 post_url='https://www.instagram.com/p/abc/') is not None
+    body = outbox_drain(p['id'])[0]['body']
     assert 'https://www.instagram.com/p/abc/' in body
     assert 'https://www.instagram.com/ahavah.app/' not in body
 
 
-def test_send_card_live_falls_back_when_post_url_is_not_https(make_person, monkeypatch):
-    import service.campaigns.runner as r
-    sent = []
-    class _S:
-        def send(self, **kw): sent.append(kw); return 'mid'
-    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+def test_enqueue_card_live_falls_back_when_post_url_is_not_https(make_person, outbox_drain):
+    from emails.spotlight_card_live import enqueue_card_live, post_url_for
     p = _make_eligible(make_person)
     with api_tx() as tx:
         tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'live-ig2-{p["id"]}@ahavah-test.invalid', id=p['id']))
@@ -317,9 +335,8 @@ def test_send_card_live_falls_back_when_post_url_is_not_https(make_person, monke
         tx.execute(
             "UPDATE publishing_queue SET image_url = %(u)s WHERE request_key = %(rk)s AND platform = 'instagram'",
             dict(u='https://cdn.ahavah.app/spotlight/x.png', rk=rk))
-    from emails.spotlight_card_live import send_card_live, post_url_for
-    assert send_card_live(p['id'], rk, '77', 'instagram', post_url='not-a-url') is True
-    body = sent[0]['body']
+        assert enqueue_card_live(tx, p['id'], rk, '77', 'instagram', post_url='not-a-url') is not None
+    body = outbox_drain(p['id'])[0]['body']
     assert post_url_for('instagram', '77') in body
 
 
@@ -358,15 +375,11 @@ def test_choosing_another_photo_keeps_the_card_link_usable(client, make_person, 
             set_setting(tx, 'approvals_enabled', 'false')
 
 
-def test_send_card_live_skips_a_member_who_left_spotlight(make_person, monkeypatch):
+def test_enqueue_card_live_skips_a_member_who_left_spotlight(make_person, outbox_drain):
     """The recipient query carries the consent check: a member who has opted
     out (or been deactivated) between the publish and the receipt never gets
-    "your card is live"."""
-    import service.campaigns.runner as r
-    sent = []
-    class _S:
-        def send(self, **kw): sent.append(kw); return 'mid'
-    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+    "your card is live" -- nothing is even queued for them."""
+    from emails.spotlight_card_live import enqueue_card_live
     p = _make_eligible(make_person, name='LiveGone')
     with api_tx() as tx:
         tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'live-gone-{p["id"]}@ahavah-test.invalid', id=p['id']))
@@ -374,9 +387,8 @@ def test_send_card_live_skips_a_member_who_left_spotlight(make_person, monkeypat
         tx.execute("UPDATE publishing_queue SET image_url = %(u)s WHERE request_key = %(rk)s AND platform = 'facebook'",
                    dict(u='https://cdn.ahavah.app/spotlight/x.png', rk=rk))
         tx.execute("UPDATE person SET spotlight_opt_in = FALSE WHERE id = %(id)s", dict(id=p['id']))
-    from emails.spotlight_card_live import send_card_live
-    assert send_card_live(p['id'], rk, '123_456', 'facebook') is False
-    assert sent == []
+        assert enqueue_card_live(tx, p['id'], rk, '123_456', 'facebook') is None
+    assert outbox_drain(p['id']) == []
 
 
 def test_card_state_presigns_private_preview(make_person, monkeypatch):

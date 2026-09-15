@@ -161,21 +161,9 @@ def test_invalid_token_errors_identically_on_get_and_post(client):
 # UNSUB_SCOPE, not a single hardcoded scope (fix round 1, Important #2).
 # ---------------------------------------------------------------------------
 
-class _CapturingSmtp:
-    def __init__(self):
-        self.calls = []
-
-    def send(self, **kw):
-        self.calls.append(kw)
-        return f'mid-{len(self.calls)}'
-
-
-def test_e2_list_unsubscribe_header_uses_community_scope(make_person, monkeypatch):
-    import service.campaigns.runner as r
+def test_e2_list_unsubscribe_header_uses_community_scope(make_person, outbox_drain):
     import emails.send_community_weekly as e2
 
-    smtp = _CapturingSmtp()
-    monkeypatch.setattr(r, 'make_aws_smtp', lambda: smtp)
     p = make_person(name='E2Header')
     email = f"e2-header-{p['id']}@ahavah-test.invalid"
     list_unsubscribe = lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url(e2.UNSUB_SCOPE, e, WEB_BASE_URL)}>"
@@ -184,16 +172,16 @@ def test_e2_list_unsubscribe_header_uses_community_scope(make_person, monkeypatc
                 lambda row: ('Subj', '<p>hi</p>'), send=True, from_addr='support@ahavah.app',
                 list_unsubscribe=list_unsubscribe, unsub_scope=e2.UNSUB_SCOPE)
 
-    assert len(smtp.calls) == 1
-    assert '/u/community.' in smtp.calls[0]['list_unsubscribe']
+    # The run only QUEUES now (F07): the header is built at enqueue time and
+    # rides the outbox payload, so it is asserted on what the drain hands SMTP.
+    calls = outbox_drain(p['id'])
+    assert len(calls) == 1
+    assert '/u/community.' in calls[0]['list_unsubscribe']
 
 
-def test_e1_list_unsubscribe_header_uses_notifications_scope(make_person, monkeypatch):
-    import service.campaigns.runner as r
+def test_e1_list_unsubscribe_header_uses_notifications_scope(make_person, outbox_drain):
     import emails.send_spotlight_announcement as e1
 
-    smtp = _CapturingSmtp()
-    monkeypatch.setattr(r, 'make_aws_smtp', lambda: smtp)
     p = make_person(name='E1Header')
     email = f"e1-header-{p['id']}@ahavah-test.invalid"
     list_unsubscribe = lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url(e1.UNSUB_SCOPE, e, WEB_BASE_URL)}>"
@@ -202,5 +190,6 @@ def test_e1_list_unsubscribe_header_uses_notifications_scope(make_person, monkey
                 lambda row: ('Subj', '<p>hi</p>'), send=True, from_addr='support@ahavah.app',
                 list_unsubscribe=list_unsubscribe, unsub_scope=e1.UNSUB_SCOPE)
 
-    assert len(smtp.calls) == 1
-    assert '/u/notifications.' in smtp.calls[0]['list_unsubscribe']
+    calls = outbox_drain(p['id'])
+    assert len(calls) == 1
+    assert '/u/notifications.' in calls[0]['list_unsubscribe']

@@ -18,8 +18,10 @@ bearer, so the decorator's 400 is the correct answer for a missing one.
 
 Transaction rule: nothing here opens an `api_tx` inside another one. The api
 connection lock is not reentrant (Phase A deadlocked exactly this way), so
-`_session()`, `require_admin()`, object-store uploads and the outbound E4/E5
-sends all happen strictly outside the handler's own transaction.
+`_session()`, `require_admin()` and object-store uploads all happen strictly
+outside the handler's own transaction. E4/E5 are the opposite case: since the
+durable outbox landed they are QUEUED, not sent, so they take the handler's
+own `tx` and commit with it. No SMTP runs anywhere in this module.
 """
 from __future__ import annotations
 
@@ -209,26 +211,26 @@ def _default_slot(now: Optional[datetime] = None) -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# Side effects (object store + the E4/E5 emails Task 4 lands)
+# Side effects (object store + the E4/E5 emails)
 # ---------------------------------------------------------------------------
 
-def _send_card_ready(person_id: int, request_key: str) -> None:
-    try:
-        from emails.spotlight_card_ready import send_card_ready_async
-    except ImportError:
-        print(f'E4 not available yet; card ready for person {person_id} key {request_key}')
-        return
-    send_card_ready_async(person_id, request_key)
+# Both helpers take the CALLER'S transaction and only queue: the message is
+# an `email_outbox` row that commits with whatever decided to send it, and
+# the `emailoutbox` cron does the actual SMTP (F07). They replace the old
+# fire-and-forget daemon threads, which lost the email on any api restart and
+# could not be retried. Queuing failures are swallowed the same way the old
+# thread swallowed send failures -- the candidate, or the publish receipt,
+# matters more than the email that accompanies it.
+
+def _enqueue_card_ready(tx, person_id: int, request_key: str) -> None:
+    from emails.spotlight_card_ready import enqueue_card_ready
+    enqueue_card_ready(tx, person_id, request_key)
 
 
-def _send_card_live(person_id: int, request_key: str, external_post_id: str, platform: str,
-                     post_url: Optional[str] = None) -> None:
-    try:
-        from emails.spotlight_card_live import send_card_live_async
-    except ImportError:
-        print(f'E5 not available yet; card live for person {person_id} key {request_key}')
-        return
-    send_card_live_async(person_id, request_key, external_post_id, platform, post_url)
+def _enqueue_card_live(tx, person_id: int, request_key: str, external_post_id: str, platform: str,
+                       post_url: Optional[str] = None) -> None:
+    from emails.spotlight_card_live import enqueue_card_live
+    enqueue_card_live(tx, person_id, request_key, external_post_id, platform, post_url)
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +505,6 @@ def post_growth_queue_complete(qid: str):
     post_url = body.get('post_url')
     error = body.get('error')
     queue_id = _qid(qid)
-    live = None
     occurrences = None
     first_confirmation = None
     with api_tx() as tx:
@@ -539,6 +540,10 @@ def post_growth_queue_complete(qid: str):
                     and row['cancellation_requested_at'] is None):
                 live = (row['subject_person_id'], row['request_key'],
                         external_post_id or '', row['platform'], post_url)
+                # Inside the transaction on purpose (F07): the email is now a
+                # queued row, and it must commit with the receipt that earned
+                # it or not at all.
+                _enqueue_card_live(tx, *live)
         # A duplicate ('already') receipt changed nothing -- record_receipt's
         # own no-writes guarantee -- so it earns no audit row either; only a
         # receipt that actually moved the row is logged.
@@ -549,9 +554,6 @@ def post_growth_queue_complete(qid: str):
                 audit_metadata['occurrences'] = occurrences
                 audit_metadata['first_confirmation'] = first_confirmation
             _audit(tx, s, 'growth.queue.complete', **audit_metadata)
-    # Outside the transaction on purpose: the mail path opens its own api_tx.
-    if live is not None:
-        _send_card_live(*live)
     return dict(ok=True, status=status, already=(result == 'already'))
 
 
@@ -717,9 +719,11 @@ def post_growth_spotlight_welcome():
         # approve the card yet, so the candidate is created (ready the
         # moment approvals resume) but E4 is withheld.
         invite_sent = cfg.get('approvals_enabled') == 'true'
+        if invite_sent:
+            # Inside the transaction on purpose (F07): the candidate and the
+            # invite that announces it either both land or neither does.
+            _enqueue_card_ready(tx, person_id, rk)
         _audit(tx, s, 'growth.queue.welcome', person_id=person_id, request_key=rk, invite_sent=invite_sent)
-    if invite_sent:
-        _send_card_ready(person_id, rk)
     return dict(request_key=rk)
 
 
@@ -1039,7 +1043,6 @@ def post_growth_queue_reconcile(s: t.SessionInfo, qid: str):
     if not external_post_id or not isinstance(external_post_id, str):
         abort(400)
     queue_id = _qid(qid)
-    live = None
     with api_tx() as tx:
         rows = lock_request_rows(tx, queue_id)
         row = next((r for r in rows if r['id'] == queue_id), None)
@@ -1055,12 +1058,12 @@ def post_growth_queue_reconcile(s: t.SessionInfo, qid: str):
                 and row['cancellation_requested_at'] is None):
             live = (row['subject_person_id'], row['request_key'], external_post_id,
                     row['platform'], post_url)
+            # Inside the transaction on purpose (F07), same as the complete
+            # route: the queued email commits with the reconciliation.
+            _enqueue_card_live(tx, *live)
         _audit(tx, s, 'growth.queue.reconcile', queue_id=str(queue_id),
                external_post_id=external_post_id, occurrences=occurrences,
                first_confirmation=first_confirmation)
-    # Outside the transaction on purpose: the mail path opens its own api_tx.
-    if live is not None:
-        _send_card_live(*live)
     return dict(ok=True, status='published', external_post_id=external_post_id)
 
 
@@ -1132,10 +1135,12 @@ def post_growth_spotlight_member_of_week(s: t.SessionInfo):
         # on, so with approvals off the candidate is created (ready the
         # moment approvals resume) but E4 is withheld.
         invite_sent = settings(tx).get('approvals_enabled') == 'true'
+        if invite_sent:
+            # Inside the transaction on purpose (F07), same as the welcome
+            # route above.
+            _enqueue_card_ready(tx, person_id, rk)
         _audit(tx, s, 'growth.queue.member_of_week', person_id=person_id, request_key=rk,
                invite_sent=invite_sent)
-    if invite_sent:
-        _send_card_ready(person_id, rk)
     return dict(request_key=rk)
 
 

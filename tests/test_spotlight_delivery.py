@@ -136,7 +136,7 @@ def test_set_status_cannot_leave_processing(make_person):
 def test_complete_route_requires_lease_and_maps_conflicts(make_person, client, monkeypatch):
     import service.api.admin.spotlight_routes as routes
     sent = []
-    monkeypatch.setattr(routes, '_send_card_live', lambda *a: sent.append(a))
+    monkeypatch.setattr(routes, '_enqueue_card_live', lambda tx, *a: sent.append(a))
     p = _make_eligible(make_person)
     with api_tx() as tx:
         rk, rows = _claimed(tx, p['id'])
