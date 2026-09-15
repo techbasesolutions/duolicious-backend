@@ -670,6 +670,42 @@ def test_removal_failed_on_done_task_is_404(client, make_person):
     assert client.post(f'/admin/growth/removals/{tid}/failed', json=dict(error='x', permission=False), headers=H).status_code == 404
 
 
+def test_removal_failed_rejects_a_non_integer_code(client, make_person):
+    """Fix round 1 ruling 3: code/subcode ride into a jsonb column via an
+    explicit ::int cast, so a non-int (including a JSON bool, which Python
+    treats as an int subtype) is rejected before the update rather than
+    surfacing as a database error."""
+    tid = _open_task(make_person)
+    r = client.post(f'/admin/growth/removals/{tid}/failed',
+                    json=dict(error='x', code='oops', permission=False), headers=H)
+    assert r.status_code == 400 and r.get_json() == dict(error='bad_request')
+    r = client.post(f'/admin/growth/removals/{tid}/failed',
+                    json=dict(error='x', code=4, subcode=True, permission=False), headers=H)
+    assert r.status_code == 400 and r.get_json() == dict(error='bad_request')
+    with api_tx('read committed') as tx:
+        assert tx.execute("SELECT attempts FROM spotlight_removal_task WHERE id = %(i)s",
+                          dict(i=tid)).fetchone()['attempts'] == 0
+
+
+def test_queue_render_blocked_when_a_sibling_is_parked_with_unresolved_delivery(client, make_person):
+    """Fix round 1 ruling 2: a request stuck behind a sibling parked with its
+    delivery unresolved is surfaced on the queue view (the row that could
+    still be re-rendered) and counted on the removals view (an operator
+    concern, same as overdue removals and the cleanup backlog)."""
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        tx.execute(
+            """UPDATE publishing_queue SET status = 'review', delivery_state = 'delivery_unknown'
+                WHERE request_key = %(rk)s AND platform = 'facebook'""", dict(rk=rk))
+    rows = [r for r in client.get('/admin/growth/queue', headers=H).get_json() if r['request_key'] == rk]
+    ig = next(r for r in rows if r['platform'] == 'instagram')
+    fb = next(r for r in rows if r['platform'] == 'facebook')
+    assert ig['render_blocked'] is True
+    assert fb['render_blocked'] is False
+    body = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
+    assert body['render_blocked'] >= 1
+
+
 def test_candidates_and_welcome(client, make_person, monkeypatch):
     import service.api.admin.spotlight_routes as sr
     monkeypatch.setattr(sr, '_enqueue_card_ready', lambda tx, pid, rk: None)

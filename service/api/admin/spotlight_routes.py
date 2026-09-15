@@ -148,6 +148,12 @@ def _actor(s: Optional[t.SessionInfo]) -> str:
     return s.email if s is not None else 'cron'
 
 
+def _is_int_or_none(v) -> bool:
+    """`bool` is a subtype of `int` in Python; JSON's `true`/`false` must
+    never pass a validation meant for a Graph error code or subcode."""
+    return v is None or (isinstance(v, int) and not isinstance(v, bool))
+
+
 def _audit(tx, s, action, **metadata):
     """Human mutations write an audit row inside the mutation's transaction.
     Cron has no actor to attribute, so it logs a line instead.
@@ -269,13 +275,30 @@ def _enqueue_card_live(tx, person_id: int, request_key: str, external_post_id: s
 # Queries
 # ---------------------------------------------------------------------------
 
+# Fix round 1 ruling 2: a row cannot be re-rendered while a sibling of the
+# same request_key is parked with its delivery unresolved --
+# `assets.complete_render_if_ready`'s own residual fix refuses to complete
+# the set at all in that state, so this surfaces the same fact rather than
+# leaving an operator to infer it from a row stuck in awaiting_render or a
+# review row with no render attached. `{q}` is the table alias the embedding
+# query uses, the same shape `withdrawal._REISSUABLE` already establishes.
+_RENDER_BLOCKED_PREDICATE = """(
+    ({q}status = 'awaiting_render'
+      OR ({q}status = 'review' AND NOT EXISTS (
+            SELECT 1 FROM spotlight_revision rb
+             WHERE rb.id = {q}current_revision_id AND rb.asset_hash IS NOT NULL)))
+    AND EXISTS (SELECT 1 FROM publishing_queue rbs
+                 WHERE rbs.request_key = {q}request_key AND rbs.id <> {q}id
+                   AND rbs.delivery_state IN ('attempting', 'delivery_unknown'))
+)"""
+
 # Clicks and sign-ups are per REQUEST (both platform rows share the campaign
 # link), counted off campaign_link.kind = 'post:<request_key>' and excluding
 # the bot user-agent class so previews and crawlers don't inflate the number.
 # q.member_approved_at and q.approved_photo_uuid (the pre-Wave-1 columns) are
 # left untouched but no longer written by anything -- both are now sourced
 # from the current revision and its consent row instead (Task 2).
-_Q_ROWS = """
+_Q_ROWS = f"""
     SELECT q.id::text AS id,
            q.request_key,
            q.kind,
@@ -290,6 +313,7 @@ _Q_ROWS = """
            q.current_revision_id,
            r.revision AS revision_number,
            r.asset_hash AS revision_asset_hash,
+           {_RENDER_BLOCKED_PREDICATE.format(q='q.')} AS render_blocked,
            (SELECT sc.approved_at FROM spotlight_revision_consent sc
               WHERE sc.revision_id = q.current_revision_id
                 AND sc.role = 'subject' AND sc.person_id = q.subject_person_id) AS member_approved_at,
@@ -372,6 +396,20 @@ _Q_INVITES_PENDING_ROWS = f"""
      ORDER BY MIN(q.created_at)
      LIMIT 50
 """
+
+
+def _cancel_invite_pending_request(tx, request_key: str, error: str) -> None:
+    """Fix round 1 ruling 1: a withheld invite that can never become sendable
+    (the subject is no longer eligible, or there is nobody/no nonce to send
+    it to) is cancelled outright rather than left to be re-considered and
+    re-skipped by every future tick. `create_candidate` fans a welcome or
+    member-of-week request out to one `publishing_queue` row per platform
+    (same as a roundup), so every still-`awaiting_member` row of the key is
+    cancelled here, not just one."""
+    for row in tx.execute(
+            "SELECT id::text AS id FROM publishing_queue WHERE request_key = %(rk)s AND status = 'awaiting_member'",
+            dict(rk=request_key)).fetchall():
+        set_status(tx, row['id'], 'cancelled', error=error)
 
 
 def _week_key() -> str:
@@ -473,6 +511,7 @@ def _queue_row(r, consent_ok: Optional[bool] = None) -> dict:
         signups=r['signups'],
         revision=r['revision_number'],
         consent_complete=consent_ok,
+        render_blocked=bool(r['render_blocked']),
     )
     # Only kind 'roundup' rows carry a payload snapshot (stamped at creation
     # by post_growth_spotlight_roundup); every other kind leaves these keys
@@ -753,7 +792,7 @@ def get_growth_candidates():
         # Task 9 (F12): invites off means no new welcome or roundup should
         # even be suggested, not just refused on creation.
         if settings(tx).get('invites_enabled') != 'true':
-            return dict(welcomes=[], roundup_due=False, invites_enabled=False)
+            return dict(welcomes=[], roundup_due=False, invites_enabled=False, invites_pending=0)
         rows = tx.execute(_Q_WELCOME_CANDIDATES).fetchall()
         welcomes = []
         for r in rows:
@@ -868,7 +907,19 @@ def post_growth_spotlight_invite_pending():
     `post_growth_spotlight_member_of_week` both create the candidate but skip
     E4 when approvals are off, so nothing ever comes back and asks the member
     to act -- this is what drains that backlog once approvals resume, and the
-    tick calls it every run `candidates.invites_pending` is above zero."""
+    tick calls it every run `candidates.invites_pending` is above zero.
+
+    Fix round 1 ruling 1: the backlog must reach a TERMINAL state, not sit in
+    `invites_pending` forever. A subject that is no longer eligible (opted
+    out, reported, aged out of the 30-day cooldown check's own window, etc)
+    is never going to become sendable by trying again next tick, so its
+    request is cancelled outright -- same for the rarer case where
+    `enqueue_card_ready` itself cannot address the invite (no activated
+    person, no card nonce) and left no outbox row behind. A `None` WITH an
+    outbox row already present is the ordinary idempotent case (a retried
+    call, or a race with another producer) and is simply skipped: the
+    predicate that built `rows` will drop it on its own the moment that row
+    exists."""
     s = _gate()
     with api_tx('read committed') as tx:
         cfg = settings(tx)
@@ -877,22 +928,34 @@ def post_growth_spotlight_invite_pending():
         if cfg.get('invites_enabled') != 'true':
             return dict(error='invites_paused'), 409
         rows = tx.execute(_Q_INVITES_PENDING_ROWS).fetchall()
-    queued = skipped = 0
+    queued = skipped = cancelled = 0
     for r in rows:
+        rk = r['request_key']
         # One transaction per request (the brief's rule): the eligibility
-        # re-check and the enqueue either both land or neither does, and one
-        # ineligible or already-sent request never blocks the rest of the
-        # batch.
+        # re-check and the enqueue (or the cancellation) either both land or
+        # neither does, and one ineligible or already-sent request never
+        # blocks the rest of the batch.
         with api_tx() as tx:
-            ok, _reason = eligibility(tx, r['subject_person_id']) if r['subject_person_id'] else (False, None)
-            oid = _enqueue_card_ready(tx, r['subject_person_id'], r['request_key']) if ok else None
-        if oid is not None:
-            queued += 1
-        else:
-            skipped += 1
+            ok, reason = eligibility(tx, r['subject_person_id'], exclude_request_key=rk)
+            if not ok:
+                _cancel_invite_pending_request(tx, rk, f'invite_skipped:{reason}')
+                cancelled += 1
+                continue
+            oid = _enqueue_card_ready(tx, r['subject_person_id'], rk)
+            if oid is not None:
+                queued += 1
+                continue
+            has_outbox = tx.execute(
+                "SELECT 1 FROM email_outbox WHERE campaign = 'e4' AND campaign_id = %(cid)s LIMIT 1",
+                dict(cid=f'e4-{rk}')).fetchone()
+            if has_outbox:
+                skipped += 1
+            else:
+                _cancel_invite_pending_request(tx, rk, 'invite_skipped:no_person')
+                cancelled += 1
     with api_tx() as tx:
-        _audit(tx, s, 'growth.invite_pending', queued=queued, skipped=skipped)
-    return dict(queued=queued, skipped=skipped)
+        _audit(tx, s, 'growth.invite_pending', queued=queued, skipped=skipped, cancelled=cancelled)
+    return dict(queued=queued, skipped=skipped, cancelled=cancelled)
 
 
 @post('/admin/growth/queue/expire-approvals', limiter=growth_limit)
@@ -921,6 +984,11 @@ def get_growth_settings():
     return {k: v for k, v in cfg.items() if k in SETTING_KEYS or k in FREE_KEYS}
 
 
+_Q_RENDER_BLOCKED_COUNT = f"""
+    SELECT count(DISTINCT q.request_key) AS n FROM publishing_queue q WHERE {_RENDER_BLOCKED_PREDICATE.format(q='q.')}
+"""
+
+
 @get('/admin/growth/removals', limiter=growth_limit)
 def get_growth_removals():
     _gate()
@@ -940,8 +1008,13 @@ def get_growth_removals():
         # task list (Wave 2 Task 5, F09).
         overdue = overdue_removals(tx)
         outstanding_cleanup = outstanding_jobs(tx)
+        # Fix round 1 ruling 2: same reasoning -- a render stuck behind a
+        # parked sibling is exactly the kind of backlog that must stay
+        # visible under the stop, not disappear along with the task list.
+        render_blocked = int(tx.execute(_Q_RENDER_BLOCKED_COUNT).fetchone()['n'])
     return jsonify({'tasks': [_row(r) for r in rows], 'halted': halted,
-                    'overdue': overdue, 'outstanding_cleanup': outstanding_cleanup})
+                    'overdue': overdue, 'outstanding_cleanup': outstanding_cleanup,
+                    'render_blocked': render_blocked})
 
 
 @post('/admin/growth/removals/<int:removal_id>/failed', limiter=growth_limit)
@@ -959,9 +1032,18 @@ def post_growth_removal_failed(removal_id: int):
     code = body.get('code')
     subcode = body.get('subcode')
     permission = bool(body.get('permission'))
+    # Fix round 1 ruling 3: code/subcode ride into a jsonb column via an
+    # explicit ::int cast below, so anything that is not an int or null is
+    # rejected here rather than surfacing as an opaque database error.
+    if not _is_int_or_none(code) or not _is_int_or_none(subcode):
+        return dict(error='bad_request'), 400
     with api_tx() as tx:
+        # Fix round 1 ruling 3: FOR UPDATE so a concurrent report against the
+        # same task (two worker retries racing) serialises on this row rather
+        # than both reading the same `attempts` and computing the same
+        # backoff from it.
         row = tx.execute(
-            "SELECT attempts, reason FROM spotlight_removal_task WHERE id = %(i)s AND done_at IS NULL",
+            "SELECT attempts, reason FROM spotlight_removal_task WHERE id = %(i)s AND done_at IS NULL FOR UPDATE",
             dict(i=removal_id)).fetchone()
         if not row:
             abort(404)
@@ -980,10 +1062,16 @@ def post_growth_removal_failed(removal_id: int):
                                         'error', %(error)s::text)),
                       next_attempt_at = NOW() + make_interval(secs => %(backoff)s),
                       reason = %(reason)s
-                WHERE id = %(i)s
+                -- Fix round 1 ruling 3: `done_at IS NULL` repeated here (not
+                -- just in the SELECT above) so this write stays a no-op, by
+                -- its own WHERE and not only the row lock, on a task that is
+                -- already done.
+                WHERE id = %(i)s AND done_at IS NULL
               RETURNING attempts, next_attempt_at, reason""",
             dict(i=removal_id, attempts=attempts, error=error, code=code, subcode=subcode,
                  backoff=backoff, reason=reason)).fetchone()
+        if not updated:
+            abort(404)
         _audit(tx, s, 'growth.removal.failed', removal_id=removal_id, attempts=updated['attempts'],
                reason=updated['reason'], permission=permission)
     return dict(ok=True, attempts=updated['attempts'], next_attempt_at=_plain(updated['next_attempt_at']),

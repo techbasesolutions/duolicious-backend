@@ -100,7 +100,7 @@ def test_invites_gate_candidates_and_creation(client, make_person):
     try:
         with api_tx() as tx: _set(tx, invites_enabled='false')
         body = client.get('/admin/growth/candidates', headers=H).get_json()
-        assert body == dict(welcomes=[], roundup_due=False, invites_enabled=False)
+        assert body == dict(welcomes=[], roundup_due=False, invites_enabled=False, invites_pending=0)
         r = client.post('/admin/growth/spotlight/welcome', json=dict(person_id=p['id']), headers=H)
         assert r.status_code == 409 and r.get_json() == dict(error='invites_paused')
         assert client.post('/admin/growth/spotlight/roundup', json={}, headers=H).status_code == 409
@@ -226,5 +226,32 @@ def test_invites_withheld_during_pause_are_sent_when_approvals_open(client, make
         assert first['queued'] >= 2 and second['queued'] == 0
         with api_tx('read committed') as tx:
             assert tx.execute("SELECT count(*) AS n FROM email_outbox WHERE campaign = 'e4' AND person_id = ANY(%(ids)s) AND state = 'queued'", dict(ids=[a['id'], b['id']])).fetchone()['n'] == 2
+    finally:
+        with api_tx() as tx: _restore_defaults(tx)
+
+
+def test_invite_pending_cancels_a_request_whose_subject_became_ineligible(client, make_person):
+    """Fix round 1 ruling 1: a withheld invite that can never become sendable
+    reaches a terminal state instead of sitting in invites_pending forever --
+    an ineligible subject's request is cancelled outright, drops out of the
+    backlog, and a second call finds nothing left to do for it."""
+    p = _make_eligible(make_person)
+    with api_tx() as tx: _set(tx, approvals_enabled='false', invites_enabled='true')
+    try:
+        assert client.post('/admin/growth/spotlight/welcome', json=dict(person_id=p['id']), headers=H).status_code == 200
+        with api_tx() as tx:
+            tx.execute("UPDATE person SET date_of_birth = (NOW() - interval '17 years')::date WHERE id = %(id)s",
+                      dict(id=p['id']))
+        with api_tx() as tx: _set(tx, approvals_enabled='true')
+        r = client.post('/admin/growth/spotlight/invite-pending', json={}, headers=H).get_json()
+        assert r['cancelled'] >= 1 and r['queued'] == 0
+        with api_tx('read committed') as tx:
+            statuses = {row['status'] for row in tx.execute(
+                "SELECT status FROM publishing_queue WHERE subject_person_id = %(p)s", dict(p=p['id'])).fetchall()}
+            errors = {row['error'] for row in tx.execute(
+                "SELECT error FROM publishing_queue WHERE subject_person_id = %(p)s", dict(p=p['id'])).fetchall()}
+        assert statuses == {'cancelled'} and errors == {'invite_skipped:under_18'}
+        second = client.post('/admin/growth/spotlight/invite-pending', json={}, headers=H).get_json()
+        assert second == dict(queued=0, skipped=0, cancelled=0)
     finally:
         with api_tx() as tx: _restore_defaults(tx)
