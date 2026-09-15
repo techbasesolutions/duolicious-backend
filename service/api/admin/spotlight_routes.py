@@ -24,7 +24,6 @@ sends all happen strictly outside the handler's own transaction.
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import uuid as uuid_mod
 from datetime import date, datetime, timedelta, timezone
@@ -49,11 +48,11 @@ from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      record_receipt, OUTCOMES,
                                      OUTCOME_DELIVERY_STATE, PLATFORMS,
                                      SETTING_KEYS, FREE_KEYS)
-from service.spotlight.revisions import attach_render, consent_complete, create_revision, edit_caption
+from service.spotlight.assets import asset_key, attach_platform_image, complete_render_if_ready
+from service.spotlight.revisions import consent_complete, create_revision, edit_caption
 from service.spotlight.roundup import roundup_snapshot
-from service.spotlight.storage import _bucket, delete_images
-
-_PNG_SIG = b'\x89PNG\r\n\x1a\n'
+from service.spotlight.storage import InvalidImage, delete_images
+import service.spotlight.storage as st
 
 
 def _growth_limit_exempt() -> bool:
@@ -212,13 +211,6 @@ def _default_slot(now: Optional[datetime] = None) -> datetime:
 # ---------------------------------------------------------------------------
 # Side effects (object store + the E4/E5 emails Task 4 lands)
 # ---------------------------------------------------------------------------
-
-def _put_png(key: str, data: bytes) -> None:
-    """Upload one rendered card through the same bucket resolver
-    `service.spotlight.storage.delete_images` uses, so upload and delete
-    share one set of credentials and one endpoint override."""
-    _bucket().put_object(Key=key, Body=data, ACL='public-read', ContentType='image/png')
-
 
 def _send_card_ready(person_id: int, request_key: str) -> None:
     try:
@@ -587,16 +579,18 @@ def post_growth_queue_image(request_key: str):
     if platform not in PLATFORMS:
         abort(400)
     # Validate the payload BEFORE anything reaches the object store: a
-    # mislabelled or truncated upload must not leave a half-written key behind.
+    # mislabelled, truncated or wrong-size upload must not leave a
+    # half-written key behind. sha256 is the accepted bytes' content hash,
+    # used below both as the immutable key's identity and as the row's own
+    # dedup stamp.
     try:
         data = base64.b64decode(body.get('png_base64') or '', validate=True)
     except Exception:
         abort(400)
-    if not data.startswith(_PNG_SIG):
-        abort(400)
-
-    key = f'spotlight/{request_key}-{platform}.png'
-    url = f'{USER_IMAGES_BASE_URL}/spotlight/{request_key}-{platform}.png'
+    try:
+        sha256 = st.validate_png(data)
+    except InvalidImage as e:
+        return dict(error='invalid_image', reason=str(e)), 400
 
     with api_tx('read committed') as tx:
         known = tx.execute(
@@ -620,49 +614,27 @@ def post_growth_queue_image(request_key: str):
     if known['status'] not in ('awaiting_member', 'awaiting_render', 'review'):
         return dict(error='bad_status'), 409
 
-    # Upload outside any transaction: a network round trip must not hold the
-    # api connection lock.
-    _put_png(key, data)
+    revision_id = known['current_revision_id']
+    key = asset_key(request_key, revision_id, sha256, platform)
+    url = f'{USER_IMAGES_BASE_URL}/{key}'
 
-    # The status was read before the upload, and the upload is a network round
-    # trip: an approve or a cancel can land in between. The write repeats the
-    # check as part of its own WHERE, so the row is only stamped if it is still
-    # in a state that may have its artwork replaced. Zero rows updated means it
-    # moved, and the answer is the same 409 the pre-check gives.
-    moved = False
+    # Upload outside any transaction: a network round trip must not hold the
+    # api connection lock. Private by default (Wave 2 F09) -- the object is
+    # not publicly reachable until the card is approved and scheduled.
+    st.put_png(key, data)
+
+    # The revision id and status were read before the upload, and the upload
+    # is a network round trip: a caption edit (new revision), an approve or a
+    # cancel can land in between. attach_platform_image's own WHERE repeats
+    # both checks as a compare-and-set, so the row is only stamped if it is
+    # still pinned to the exact revision this upload was rendered against and
+    # still in a status that may have its artwork replaced. 'superseded'
+    # means the just-uploaded object is now an orphan -- nothing points at it
+    # and nothing ever will -- so it is deleted rather than left behind.
     with api_tx() as tx:
-        cur = tx.execute(
-            """UPDATE publishing_queue SET image_key = %(k)s, image_url = %(u)s, updated_at = NOW()
-                WHERE request_key = %(rk)s AND platform = %(pl)s
-                  AND status IN ('awaiting_member', 'awaiting_render', 'review')""",
-            dict(k=key, u=url, rk=request_key, pl=platform))
-        if not cur.rowcount:
-            moved = True
-        else:
-            rows = tx.execute(
-                """SELECT platform, image_key, image_url, current_revision_id
-                     FROM publishing_queue WHERE request_key = %(rk)s""",
-                dict(rk=request_key)).fetchall()
-            if rows and all(r['image_url'] for r in rows):
-                # One render per revision (Task 2): the platform image that
-                # completes the set stamps the revision's asset_hash/image
-                # columns, once. Pinned to the facebook row's own upload when
-                # one exists, so the member's preview never depends on which
-                # platform happened to finish uploading last -- this call may
-                # be for instagram, completing a set whose facebook image was
-                # uploaded by an earlier, separate call, so facebook's raw
-                # bytes are not in hand here; asset_hash is a one-shot dedup
-                # marker, not a content hash of pixel bytes, so hashing the
-                # pinned row's own storage key keeps it deterministic and
-                # available regardless of upload order. Each row's own
-                # image_key/image_url was already stamped by the per-platform
-                # UPDATE above (this call's own row) or by an earlier call
-                # (the other platform's row), so nothing further needs
-                # restoring here.
-                pinned = next((r for r in rows if r['platform'] == 'facebook'), rows[0])
-                rev_id = pinned['current_revision_id']
-                asset_hash = hashlib.sha256(pinned['image_key'].encode()).hexdigest()
-                attach_render(tx, rev_id, asset_hash, pinned['image_key'], pinned['image_url'])
+        outcome = attach_platform_image(tx, request_key, platform, revision_id, key, url, sha256)
+        if outcome == 'attached':
+            if complete_render_if_ready(tx, request_key, revision_id):
                 # A roundup (no subject) row is ready to schedule as soon as
                 # it is rendered. A subject row stays `awaiting_member` even
                 # once rendered -- approve_card is what moves it on to
@@ -672,8 +644,12 @@ def post_growth_queue_image(request_key: str):
                         WHERE request_key = %(rk)s AND status = 'awaiting_render'""",
                     dict(rk=request_key))
             _audit(tx, s, 'growth.queue.image', request_key=request_key, platform=platform)
-    if moved:
-        return dict(error='bad_status'), 409
+    if outcome == 'superseded':
+        # Wave 2 Task 5 replaces this with enqueue_asset_delete (a durable
+        # cleanup_job row); until it lands this is a direct best-effort
+        # delete, same as every other storage cleanup in this file.
+        st.delete_images([key])
+        return dict(error='superseded'), 409
     return dict(image_url=url)
 
 
@@ -893,11 +869,20 @@ def post_growth_settings(s: t.SessionInfo):
 
 @apost('/admin/growth/queue/<qid>/approve')
 def post_growth_queue_approve(s: t.SessionInfo, qid: str):
+    """Approves ONE platform row (its sibling is approved separately, in its
+    own call, when it in turn is ready). The object behind this row's own
+    image_key is private until this point (Wave 2 F09); it is only made
+    public here, AFTER the status/scheduling transaction commits, so a
+    Spaces call never runs inside a transaction. A storage failure at that
+    point answers 503 and reverts this row alone back to `review` in a
+    second, short transaction -- the scheduling decision that already
+    committed is undone rather than left to lie about what is actually
+    reachable."""
     require_admin(s)
     queue_id = _qid(qid)
     requested = _parse_dt(_body().get('scheduled_for'))
     with api_tx() as tx:
-        row = tx.execute("SELECT scheduled_for FROM publishing_queue WHERE id = %(id)s",
+        row = tx.execute("SELECT scheduled_for, image_key FROM publishing_queue WHERE id = %(id)s",
                          dict(id=queue_id)).fetchone()
         if not row:
             abort(404)
@@ -913,6 +898,16 @@ def post_growth_queue_approve(s: t.SessionInfo, qid: str):
             dict(w=when, id=queue_id))
         _audit(tx, s, 'growth.queue.approve', queue_id=str(queue_id),
                scheduled_for=when.isoformat())
+    if row['image_key']:
+        try:
+            st.make_public(row['image_key'])
+        except Exception:
+            with api_tx() as tx:
+                tx.execute(
+                    "UPDATE publishing_queue SET status = 'review', updated_at = NOW() WHERE id = %(id)s",
+                    dict(id=queue_id))
+                _audit(tx, s, 'growth.queue.approve.reverted', queue_id=str(queue_id))
+            return dict(error='storage_unavailable'), 503
     return dict(status='scheduled', scheduled_for=when.isoformat())
 
 

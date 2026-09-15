@@ -7,15 +7,32 @@ on purpose -- test files in this suite do not import from each other.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import secrets
 
 import pytest
+from PIL import Image
 
 from database import api_tx
 from service.spotlight import set_spotlight_opt_in
 from service.spotlight.queue import create_candidate, set_status, set_setting
 from service.spotlight.revisions import current_revision, attach_render, create_revision, record_consent, consent_complete
+
+# Shared cron header (Task 3): most tests below define their own local `H`,
+# left as-is; new tests use this module-level one instead of repeating it.
+H = {'X-Growth-Cron': 'test-cron-secret'}
+
+
+def _png_bytes(w=1080, h=1080, colour='white'):
+    buf = io.BytesIO()
+    Image.new('RGB', (w, h), colour).save(buf, 'PNG')
+    return buf.getvalue()
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
 
 
 def _session_for(p, signed_in: bool = True) -> str:
@@ -180,41 +197,49 @@ def test_queue_due_filter(client, make_person):
 
 
 def test_image_upload_attaches_and_moves_to_review(client, monkeypatch, make_person):
-    import base64
+    import service.spotlight.storage as st
     calls = []
-    import service.api.admin.spotlight_routes as sr
-    monkeypatch.setattr(sr, '_put_png', lambda key, data: calls.append((key, len(data))))
+    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: calls.append((key, len(data), public)))
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
-    png = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'0' * 100).decode()
-    H = {'X-Growth-Cron': 'test-cron-secret'}
+        rev_id = current_revision(tx, rk)['id']
+    data = _png_bytes()
+    sha = hashlib.sha256(data).hexdigest()
+    png = _b64(data)
     assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'facebook', 'png_base64': png}, headers=H).status_code == 200
     assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'instagram', 'png_base64': png}, headers=H).status_code == 200
-    assert [c[0] for c in calls] == [f'spotlight/{rk}-facebook.png', f'spotlight/{rk}-instagram.png']
+    assert [c[0] for c in calls] == [
+        f'spotlight/{rk}/{rev_id}-{sha[:16]}-facebook.png',
+        f'spotlight/{rk}/{rev_id}-{sha[:16]}-instagram.png',
+    ]
+    # Private by default (Wave 2 F09): nobody may reach the card before a
+    # member has approved it.
+    assert all(c[2] is False for c in calls)
     with api_tx('read committed') as tx:
-        rows = tx.execute("SELECT platform, status, image_url FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()
+        rows = tx.execute(
+            "SELECT platform, status, image_url, image_sha256 FROM publishing_queue WHERE request_key = %(rk)s",
+            dict(rk=rk)).fetchall()
     assert {r['status'] for r in rows} == {'review'}
     # attach_render stamps one url on the revision (Task 2); each row must
-    # still end up pointing at its OWN rendered file.
+    # still end up pointing at its OWN rendered file, and its own content hash.
     for r in rows:
-        assert r['image_url'].endswith(f"/spotlight/{rk}-{r['platform']}.png")
-    bad = base64.b64encode(b'notpng').decode()
-    assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'facebook', 'png_base64': bad}, headers=H).status_code == 400
+        assert r['image_sha256'] == sha
+        assert r['image_url'].endswith(f"/spotlight/{rk}/{rev_id}-{sha[:16]}-{r['platform']}.png")
+    r = client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'facebook', 'png_base64': _b64(b'notpng')}, headers=H)
+    assert r.status_code == 400 and r.get_json() == {'error': 'invalid_image', 'reason': 'not_png'}
 
 
 def test_image_upload_refuses_a_published_row(client, monkeypatch):
-    import base64
+    import service.spotlight.storage as st
     calls = []
-    import service.api.admin.spotlight_routes as sr
-    monkeypatch.setattr(sr, '_put_png', lambda key, data: calls.append(key))
+    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: calls.append(key))
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
         tx.execute("""UPDATE publishing_queue SET status = 'published', image_key = 'original.png'
                        WHERE request_key = %(rk)s AND platform = 'facebook'""", dict(rk=rk))
-    png = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'0' * 100).decode()
     r = client.post(f'/admin/growth/queue/{rk}/image',
-                    json={'platform': 'facebook', 'png_base64': png},
-                    headers={'X-Growth-Cron': 'test-cron-secret'})
+                    json={'platform': 'facebook', 'png_base64': _b64(_png_bytes())},
+                    headers=H)
     assert r.status_code == 409 and r.get_json() == {'error': 'bad_status'}
     assert calls == []
     with api_tx('read committed') as tx:
@@ -229,14 +254,12 @@ def test_image_upload_refuses_a_second_render_of_the_same_revision(client, monke
     refused outright -- no upload attempted, no row or revision column
     touched -- rather than silently re-rendering (which used to be a no-op
     swallowed by a blanket except ValueError: pass)."""
-    import base64
+    import service.spotlight.storage as st
     calls = []
-    import service.api.admin.spotlight_routes as sr
-    monkeypatch.setattr(sr, '_put_png', lambda key, data: calls.append(key))
+    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: calls.append(key))
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
-    png = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'0' * 100).decode()
-    H = {'X-Growth-Cron': 'test-cron-secret'}
+    png = _b64(_png_bytes())
     assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'facebook', 'png_base64': png}, headers=H).status_code == 200
     assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'instagram', 'png_base64': png}, headers=H).status_code == 200
     with api_tx('read committed') as tx:
@@ -263,20 +286,21 @@ def test_image_upload_pins_render_to_facebook_regardless_of_upload_order(client,
     """Fix round 1: the revision's image_key/image_url/asset_hash always
     reflect the facebook row's own upload when one exists, even when
     instagram is uploaded first and completes the set."""
-    import base64
-    import service.api.admin.spotlight_routes as sr
-    monkeypatch.setattr(sr, '_put_png', lambda key, data: None)
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: None)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
-    png = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'0' * 100).decode()
-    H = {'X-Growth-Cron': 'test-cron-secret'}
+        rev_id = current_revision(tx, rk)['id']
+    data = _png_bytes()
+    sha = hashlib.sha256(data).hexdigest()
+    png = _b64(data)
     # instagram first, facebook second (completes the set).
     assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'instagram', 'png_base64': png}, headers=H).status_code == 200
     assert client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'facebook', 'png_base64': png}, headers=H).status_code == 200
     with api_tx('read committed') as tx:
         rev = current_revision(tx, rk)
-    assert rev['image_key'] == f'spotlight/{rk}-facebook.png'
-    assert rev['image_url'].endswith(f'/spotlight/{rk}-facebook.png')
+    assert rev['image_key'] == f'spotlight/{rk}/{rev_id}-{sha[:16]}-facebook.png'
+    assert rev['image_url'].endswith(f'/spotlight/{rk}/{rev_id}-{sha[:16]}-facebook.png')
 
 
 def test_image_upload_refuses_when_no_revision_is_assigned(client, monkeypatch):
@@ -284,21 +308,116 @@ def test_image_upload_refuses_when_no_revision_is_assigned(client, monkeypatch):
     any upload -- this should not happen for a request created through
     create_candidate, but the route must fail closed rather than upload
     against nothing."""
-    import base64
+    import service.spotlight.storage as st
     calls = []
-    import service.api.admin.spotlight_routes as sr
-    monkeypatch.setattr(sr, '_put_png', lambda key, data: calls.append(key))
+    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: calls.append(key))
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
         tx.execute("UPDATE publishing_queue SET current_revision_id = NULL WHERE request_key = %(rk)s", dict(rk=rk))
-    png = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'0' * 100).decode()
-    r = client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'facebook', 'png_base64': png},
-                    headers={'X-Growth-Cron': 'test-cron-secret'})
+    r = client.post(f'/admin/growth/queue/{rk}/image', json={'platform': 'facebook', 'png_base64': _b64(_png_bytes())},
+                    headers=H)
     assert r.status_code == 409 and r.get_json() == {'error': 'no_revision'}
     assert calls == []
 
 
-def test_admin_approve_default_slot_and_purge(client, make_person):
+def test_image_route_rejects_invalid_png(client, make_person, monkeypatch):
+    import service.spotlight.storage as st
+    puts = []
+    monkeypatch.setattr(st, 'put_png', lambda *a, **k: puts.append(a))
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+    r = client.post(f'/admin/growth/queue/{rk}/image',
+                    json=dict(platform='facebook', png_base64=_b64(_png_bytes(800, 800))), headers=H)
+    assert r.status_code == 400 and r.get_json() == dict(error='invalid_image', reason='bad_dimensions')
+    assert puts == []
+
+
+def test_image_route_uses_content_hashed_key_and_private_acl(client, make_person, monkeypatch):
+    import service.spotlight.storage as st
+    puts = []
+    monkeypatch.setattr(st, 'put_png',
+                         lambda key, data, public=False: puts.append((key, hashlib.sha256(data).hexdigest(), public)))
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        rev = current_revision(tx, rk)
+    fb = _png_bytes(colour='white')
+    ig = _png_bytes(colour='black')
+    assert client.post(f'/admin/growth/queue/{rk}/image', json=dict(platform='facebook', png_base64=_b64(fb)), headers=H).status_code == 200
+    assert client.post(f'/admin/growth/queue/{rk}/image', json=dict(platform='instagram', png_base64=_b64(ig)), headers=H).status_code == 200
+    fb_sha = hashlib.sha256(fb).hexdigest()
+    assert puts[0] == (f"spotlight/{rk}/{rev['id']}-{fb_sha[:16]}-facebook.png", fb_sha, False)
+    with api_tx('read committed') as tx:
+        rows = {r['platform']: r for r in tx.execute(
+            "SELECT platform, image_key, image_sha256 FROM publishing_queue WHERE request_key = %(rk)s",
+            dict(rk=rk)).fetchall()}
+        rev2 = current_revision(tx, rk)
+    assert rows['facebook']['image_sha256'] == fb_sha and rows['instagram']['image_sha256'] == hashlib.sha256(ig).hexdigest()
+    assert rev2['asset_hash'] == fb_sha and rev2['image_key'] == rows['facebook']['image_key']
+
+
+def test_image_route_superseded_when_revision_changes_mid_upload(client, make_person, monkeypatch):
+    import service.spotlight.storage as st
+    from service.spotlight.revisions import edit_caption
+    deleted = []
+    monkeypatch.setattr(st, 'delete_images', lambda keys: deleted.extend(keys) or list(keys))
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        rev1 = current_revision(tx, rk)['id']
+
+    def put_then_edit(key, data, public=False):
+        with api_tx() as tx:            # the route holds no transaction while put_png runs, so this does not nest
+            edit_caption(tx, rk, 'changed', 't')
+
+    monkeypatch.setattr(st, 'put_png', put_then_edit)
+    r = client.post(f'/admin/growth/queue/{rk}/image', json=dict(platform='facebook', png_base64=_b64(_png_bytes())), headers=H)
+    assert r.status_code == 409 and r.get_json() == dict(error='superseded')
+    assert len(deleted) == 1 and deleted[0].startswith(f'spotlight/{rk}/{rev1}-')
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            "SELECT image_key, image_sha256 FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
+            dict(rk=rk)).fetchone()
+    assert row['image_key'] is None and row['image_sha256'] is None
+
+
+def test_approve_makes_the_row_image_public_after_commit(client, make_person, monkeypatch):
+    import service.spotlight.storage as st
+    made = []
+    monkeypatch.setattr(st, 'make_public', lambda key: made.append(key))
+    admin = _make_admin(make_person)
+    A = {'Authorization': f'Bearer {_session_for(admin)}'}
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        _render(tx, rk, key=f'spotlight/{rk}/1-abc-facebook.png')
+        record_consent(tx, current_revision(tx, rk)['id'], p['id'], 'subject')
+        qid = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
+                         dict(rk=rk)).fetchone()['id']
+    assert client.post(f'/admin/growth/queue/{qid}/approve', json={}, headers=A).status_code == 200
+    assert made == [f'spotlight/{rk}/1-abc-facebook.png']
+
+    def boom(key):
+        raise RuntimeError('spaces down')
+
+    monkeypatch.setattr(st, 'make_public', boom)
+    with api_tx() as tx:
+        qid2 = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'instagram'",
+                          dict(rk=rk)).fetchone()['id']
+    r = client.post(f'/admin/growth/queue/{qid2}/approve', json={}, headers=A)
+    assert r.status_code == 503 and r.get_json() == dict(error='storage_unavailable')
+    with api_tx('read committed') as tx:
+        assert tx.execute("SELECT status FROM publishing_queue WHERE id = %(id)s",
+                          dict(id=qid2)).fetchone()['status'] == 'review'
+
+
+def test_admin_approve_default_slot_and_purge(client, make_person, monkeypatch):
+    import service.spotlight.storage as st
+    # This test does not care about the object store; it only needs the
+    # approve route to not attempt a real network call against the row's
+    # (test-fixture, non-real) image key.
+    monkeypatch.setattr(st, 'make_public', lambda key: None)
     admin = _make_admin(make_person); tok = _session_for(admin)
     A = {'Authorization': f'Bearer {tok}'}
     with api_tx() as tx:
@@ -639,29 +758,35 @@ def test_eligible_without_lease_token_fails_closed(client, make_person):
 
 
 def test_image_upload_refuses_a_row_that_moved_during_the_upload(client, monkeypatch):
-    """I9: the status is read before the upload and the upload is a network
-    round trip, so the write repeats the check in its own WHERE. A row that
-    was approved in between keeps its old artwork and gets the same 409."""
-    import base64
-    import service.api.admin.spotlight_routes as sr
+    """I9, carried into the compare-and-set world (Task 3): the revision id
+    and status are read before the upload, and the upload is a network round
+    trip, so attach_platform_image's own WHERE repeats both checks. A row
+    that was approved (moved out of the uploadable statuses) while the bytes
+    were in flight keeps its old artwork; the just-uploaded object is now an
+    orphan and is deleted rather than left behind -- reported the same as any
+    other compare-and-set miss, 409 superseded."""
+    import service.spotlight.storage as st
 
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
 
-    def _flip(key, data):
+    deleted = []
+
+    def _flip(key, data, public=False):
         # Stands in for the approve that lands while the bytes are in flight.
-        # Safe to open a transaction here: `_put_png` is called outside the
+        # Safe to open a transaction here: put_png is called outside the
         # handler's own, exactly so a round trip never holds the lock.
         with api_tx() as tx:
             tx.execute("UPDATE publishing_queue SET status = 'scheduled' WHERE request_key = %(rk)s",
                        dict(rk=rk))
 
-    monkeypatch.setattr(sr, '_put_png', _flip)
-    png = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'0' * 100).decode()
+    monkeypatch.setattr(st, 'put_png', _flip)
+    monkeypatch.setattr(st, 'delete_images', lambda keys: deleted.extend(keys) or list(keys))
     r = client.post(f'/admin/growth/queue/{rk}/image',
-                    json={'platform': 'facebook', 'png_base64': png},
-                    headers={'X-Growth-Cron': 'test-cron-secret'})
-    assert r.status_code == 409 and r.get_json() == {'error': 'bad_status'}
+                    json={'platform': 'facebook', 'png_base64': _b64(_png_bytes())},
+                    headers=H)
+    assert r.status_code == 409 and r.get_json() == {'error': 'superseded'}
+    assert len(deleted) == 1
     with api_tx('read committed') as tx:
         rows = tx.execute(
             """SELECT status, image_key, image_url FROM publishing_queue

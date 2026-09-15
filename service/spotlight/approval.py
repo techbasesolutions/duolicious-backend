@@ -19,6 +19,7 @@ import hmac
 import time
 from urllib.parse import quote
 
+import service.spotlight.storage as st
 from service.config import WEB_BASE_URL
 from service.spotlight.eligibility import photo_url
 from service.spotlight.nonce import issue_nonce
@@ -134,6 +135,11 @@ def card_state(tx, request_key: str) -> dict | None:
         photo_uuid=rev['photo_uuid'] if rev else None,
         revision=rev['revision'] if rev else None,
         preview_available=bool(rev and rev['asset_hash']),
-        image_url=rev['image_url'] if rev else None,
+        # The object is private until the card is scheduled (Wave 2 F09), so
+        # the member's own preview link is a short-lived presigned read, not
+        # the (not yet public) stored URL -- minted fresh on every GET rather
+        # than cached, since a 15-minute link handed out on an earlier read
+        # could already be expired by the time this one is served.
+        image_url=(st.presign(rev['image_key']) if rev and rev['image_key'] else None),
         consented=consented,
     )

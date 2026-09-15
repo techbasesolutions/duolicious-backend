@@ -47,7 +47,12 @@ def test_token_roundtrip_and_expiry(monkeypatch, make_person):
         assert '/spotlight/card/' in card_url(tx, 'abc', email)
 
 
-def test_get_is_read_only_and_post_approves(client, make_person):
+def test_get_is_read_only_and_post_approves(client, make_person, monkeypatch):
+    import service.spotlight.storage as st
+    # The object is private until scheduled (Wave 2 F09): card_state's
+    # image_url is a presigned read, not the raw stored URL, so this is
+    # mocked rather than pointed at a real object store.
+    monkeypatch.setattr(st, 'presign', lambda key, seconds=900: f'https://signed/{key}')
     p = _make_eligible(make_person)
     with api_tx() as tx:
         set_setting(tx, 'approvals_enabled', 'true')
@@ -62,7 +67,7 @@ def test_get_is_read_only_and_post_approves(client, make_person):
         r = client.get(f'/spotlight/card/{tok}')
         body = r.get_json()
         assert r.status_code == 200 and body['status'] == 'awaiting_member' and body['photos'][0]['uuid'] == photo
-        assert body['revision'] == 1 and body['preview_available'] is True and body['image_url'] == 'https://cdn/k.png'
+        assert body['revision'] == 1 and body['preview_available'] is True and body['image_url'] == 'https://signed/k'
         assert body['photo_uuid'] == photo and body['stale'] is False
         with api_tx('read committed') as tx:
             assert {x['status'] for x in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'awaiting_member'}
@@ -80,7 +85,7 @@ def test_get_is_read_only_and_post_approves(client, make_person):
             set_setting(tx, 'approvals_enabled', 'false')
 
 
-def test_post_approve_is_gated_on_settings_and_render(client, make_person):
+def test_post_approve_is_gated_on_settings_and_render(client, make_person, monkeypatch):
     """Route-level coverage of the two new 409s: approvals off (the owner
     decision in force for this wave), and approvals on but nothing rendered
     yet. Both return a JSON {"error": "<reason>"} body -- never a plain-text
@@ -90,6 +95,8 @@ def test_post_approve_is_gated_on_settings_and_render(client, make_person):
     itself lands, so a routine 409 must NOT burn it -- the very same token
     is replayed across every step below, first against two failing
     conditions and then, once both clear, against a real approve."""
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, 'presign', lambda key, seconds=900: f'https://signed/{key}')
     p = _make_eligible(make_person)
     email = _email(p['id'])
     with api_tx() as tx:
@@ -149,7 +156,9 @@ def test_bad_tokens(client, make_person):
     assert client.get(f'/spotlight/card/{tok}').status_code == 404
 
 
-def test_card_token_replay_after_withdrawal_is_rejected(make_person, client):
+def test_card_token_replay_after_withdrawal_is_rejected(make_person, client, monkeypatch):
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, 'presign', lambda key, seconds=900: f'https://signed/{key}')
     p = _make_eligible(make_person)
     photo = None
     with api_tx() as tx:
@@ -314,10 +323,12 @@ def test_send_card_live_falls_back_when_post_url_is_not_https(make_person, monke
     assert post_url_for('instagram', '77') in body
 
 
-def test_choosing_another_photo_keeps_the_card_link_usable(client, make_person):
+def test_choosing_another_photo_keeps_the_card_link_usable(client, make_person, monkeypatch):
     """Fix wave item 5: picking a different photo is not the member's final
     decision, so it must not burn the single-use nonce. The same link still
     GETs (not stale) and, once the new revision is rendered, approves."""
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, 'presign', lambda key, seconds=900: f'https://signed/{key}')
     p = _make_eligible(make_person, name='PhotoSwap')
     email = _email(p['id'])
     with api_tx() as tx:
@@ -366,3 +377,13 @@ def test_send_card_live_skips_a_member_who_left_spotlight(make_person, monkeypat
     from emails.spotlight_card_live import send_card_live
     assert send_card_live(p['id'], rk, '123_456', 'facebook') is False
     assert sent == []
+
+
+def test_card_state_presigns_private_preview(make_person, monkeypatch):
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, 'presign', lambda key, seconds=900: 'https://signed/' + key)
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        attach_render(tx, current_revision(tx, rk)['id'], 'h', f'spotlight/{rk}/1-abc-facebook.png', 'https://cdn/x.png')
+        assert card_state(tx, rk)['image_url'] == f'https://signed/spotlight/{rk}/1-abc-facebook.png'
