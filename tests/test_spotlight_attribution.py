@@ -1,9 +1,11 @@
+import secrets
 import uuid
 
+import psycopg
 import pytest
 from pydantic import ValidationError
 
-from database import api_tx
+from database import _api_conninfo, api_tx
 from service.campaigns import make_campaign_link, record_click
 from service.config import WEB_BASE_URL
 from service.spotlight.attribution import attribute_signup
@@ -33,7 +35,7 @@ def test_attribute_stamps_person_and_credits_that_receipts_own_click(make_person
         assert attribute_signup(tx, joiner['id'], None) is False
 
 
-# Rides the legacy campaign-key branch on purpose (removed in task 7); the
+# Rides the legacy campaign-key branch on purpose (removed in task 8); the
 # first-touch rule itself is re-proved on receipts in
 # test_first_touch_wins_and_does_not_consume_the_second_receipt below.
 def test_attribute_does_not_overwrite(make_person):
@@ -206,3 +208,83 @@ def test_the_legacy_campaign_key_still_stamps_but_credits_nothing(make_campaign_
         assert tx.execute("SELECT spotlight_ref FROM person WHERE id = %(p)s", dict(p=pid)).fetchone()['spotlight_ref'] == key
         credited = tx.execute("SELECT count(*) AS n FROM campaign_click WHERE link_key = %(k)s AND signup_person_id IS NOT NULL", dict(k=key)).fetchone()['n']
     assert credited == 0
+
+
+# ---------------------------------------------------------------------------
+# Wave 3b, task 3, fix round 1. Two clauses the first cut asserted in prose
+# but never actually exercised.
+# ---------------------------------------------------------------------------
+
+def test_a_bot_click_that_somehow_carries_a_receipt_is_still_refused(make_campaign_link, make_person):
+    # The `ua_class <> 'bot'` clause in the consuming UPDATE was untestable
+    # through normal minting, because record_click gives a bot no receipt at
+    # all, so `receipt = %(ref)s` never reached it and the clause would have
+    # survived deletion. Force the case the clause exists for: a bot row
+    # that does carry a receipt must still earn nothing.
+    key = make_campaign_link(); pid = make_person()['id']
+    with api_tx() as tx:
+        _, minted = record_click(tx, key, 'facebookexternalhit/1.1')
+    assert minted is None
+
+    forced = secrets.token_urlsafe(24)
+    with api_tx() as tx:
+        tx.execute(
+            "UPDATE campaign_click SET receipt = %(r)s WHERE link_key = %(k)s AND ua_class = 'bot'",
+            dict(r=forced, k=key))
+
+    with api_tx() as tx:
+        assert attribute_signup(tx, pid, forced) is False
+        assert tx.execute("SELECT spotlight_ref FROM person WHERE id = %(p)s", dict(p=pid)).fetchone()['spotlight_ref'] is None
+        row = tx.execute("SELECT signup_person_id, consumed_at FROM campaign_click WHERE receipt = %(r)s", dict(r=forced)).fetchone()
+    assert row['signup_person_id'] is None and row['consumed_at'] is None
+
+
+def test_losing_a_concurrent_claim_declines_instead_of_failing_the_signup(make_campaign_link, make_person):
+    # api_tx shares one global connection behind a lock, so two api_tx
+    # blocks can never overlap. A genuinely concurrent claim therefore needs
+    # a second connection of its own, opened on the same conninfo so it
+    # inherits the same REPEATABLE READ default.
+    key = make_campaign_link()
+    winner, loser = make_person()['id'], make_person()['id']
+    with api_tx() as tx:
+        _, r = record_click(tx, key, 'Mozilla/5.0 (iPhone)')
+
+    rival = psycopg.Connection.connect(conninfo=_api_conninfo, row_factory=psycopg.rows.dict_row)
+    try:
+        with api_tx() as tx:
+            # Take our REPEATABLE READ snapshot BEFORE the rival commits.
+            tx.execute('SELECT 1')
+
+            # The rival claims the one receipt and commits.
+            rival_cur = rival.cursor()
+            assert attribute_signup(rival_cur, winner, r) is True
+            rival.commit()
+
+            # We lose the race. Under REPEATABLE READ this is a
+            # SerializationFailure inside the consuming UPDATE, not a
+            # zero-row match. It must be answered with False, not an
+            # exception.
+            assert attribute_signup(tx, loser, r) is False
+
+            # And, the whole point: our transaction must still be alive.
+            # Without the savepoint the connection would be in
+            # InFailedSqlTransaction here and this would raise, taking the
+            # entire finish-onboarding request down with it.
+            assert tx.execute("SELECT 42 AS n").fetchone()['n'] == 42
+            tx.execute(
+                "UPDATE person SET about = %(a)s WHERE id = %(p)s",
+                dict(a='still writable after a lost race', p=loser))
+        # Leaving the block committed cleanly. If it had not, this test
+        # would have raised rather than reached here.
+    finally:
+        rival.close()
+
+    # Exactly one claimant, and the loser's sign-up survived unattributed.
+    with api_tx() as tx:
+        click = tx.execute("SELECT signup_person_id FROM campaign_click WHERE receipt = %(r)s", dict(r=r)).fetchone()
+        w = tx.execute("SELECT spotlight_ref FROM person WHERE id = %(p)s", dict(p=winner)).fetchone()
+        l = tx.execute("SELECT spotlight_ref, about FROM person WHERE id = %(p)s", dict(p=loser)).fetchone()
+    assert click['signup_person_id'] == winner
+    assert w['spotlight_ref'] == key
+    assert l['spotlight_ref'] is None
+    assert l['about'] == 'still writable after a lost race'
