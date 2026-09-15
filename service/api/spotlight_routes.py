@@ -15,7 +15,7 @@ still-unused nonce -- see service.spotlight.withdrawal.withdraw_member).
 """
 from __future__ import annotations
 
-from flask import abort, jsonify
+from flask import abort
 
 from database import api_tx
 from emails.base import mask_email
@@ -42,6 +42,15 @@ def _resolve(token: str) -> tuple[str, str]:
     return email, nonce
 
 
+def _used_response(opted_in: bool) -> tuple[dict, int] | dict:
+    # A used nonce with the member now opted out means a withdrawal
+    # happened through a path that did not bump the epoch -- fail closed
+    # rather than silently re-confirming.
+    if opted_in:
+        return dict(ok=True, already=True)
+    return dict(error='stale'), 410
+
+
 @get('/spotlight/confirm/<token>', limiter=spotlight_limit)
 def get_spotlight_confirm(token: str):
     email, nonce = _resolve(token)
@@ -50,8 +59,8 @@ def get_spotlight_confirm(token: str):
         if not row:
             abort(400)
         state = check_nonce(tx, nonce, row['id'], 'confirm')
-    return jsonify(email_masked=mask_email(email), already=bool(row['spotlight_opt_in']),
-                   stale=state in ('stale', 'invalid'))
+    return dict(email_masked=mask_email(email), already=bool(row['spotlight_opt_in']),
+                stale=state in ('stale', 'invalid'))
 
 
 @post('/spotlight/confirm/<token>', limiter=spotlight_limit)
@@ -63,16 +72,17 @@ def post_spotlight_confirm(token: str):
             abort(400)
         state = check_nonce(tx, nonce, row['id'], 'confirm')
         if state == 'ok':
-            consume_nonce(tx, nonce)
+            if not consume_nonce(tx, nonce):
+                # Raced with another use of the same nonce inside this
+                # window (defensive: unreachable under today's single
+                # shared connection, but not guaranteed by the nonce
+                # table itself); fall back to the same idempotent
+                # handling as an already-used nonce.
+                return _used_response(row['spotlight_opt_in'])
             set_spotlight_opt_in(tx, row['id'], True)
-            return jsonify(ok=True, already=False)
+            return dict(ok=True, already=False)
         if state == 'used':
-            # A used nonce with the member now opted out means a withdrawal
-            # happened through a path that did not bump the epoch -- fail
-            # closed rather than silently re-confirming.
-            if row['spotlight_opt_in']:
-                return jsonify(ok=True, already=True)
-            return jsonify(error='stale'), 410
+            return _used_response(row['spotlight_opt_in'])
         if state == 'stale':
-            return jsonify(error='stale'), 410
+            return dict(error='stale'), 410
         abort(400)  # invalid

@@ -11,9 +11,13 @@ epoch, so a replayed link reads back 'stale' once the member withdraws
 even though the signature and TTL still check out. GET only decodes the
 token and reports the current state -- it never mutates, not even the
 nonce's `used_at`. POST is the only endpoint that records a decision; the
-nonce is consumed on the first successful attempt, and a repeat POST with
-the same (now-used) token returns the current state idempotently rather
-than re-running the decision.
+nonce is consumed only after the decision itself lands (approve_card
+returns, or the skip cancellation runs), never before -- a routine 409
+(approvals disabled, nothing rendered yet, a photo the member does not
+own) leaves the token usable for a retry once the condition clears,
+rather than burning a legitimate link on a failed attempt. A repeat POST
+with the same (now-used) token returns the current state idempotently
+rather than re-running the decision.
 """
 from __future__ import annotations
 
@@ -54,6 +58,17 @@ def _status_of(row: dict) -> str:
     if row['status'] == 'cancelled':
         return 'skipped'
     return 'awaiting_member'
+
+
+def _already(tx, rk: str, row: dict) -> dict:
+    """The idempotent shape for 'this token's decision was already
+    resolved' -- reached both when check_nonce reports the nonce is
+    already used, and when consume_nonce itself reports it lost a race to
+    mark the nonce used (defensive: the shared single-connection api_tx
+    makes this unreachable today, but a future multi-connection deployment
+    would not get that guarantee for free)."""
+    fresh = card_state(tx, rk) or row
+    return dict(ok=True, already=True, status=_status_of(fresh))
 
 
 def _card_json(row: dict, token: str, *, stale: bool) -> dict:
@@ -97,46 +112,57 @@ def post_spotlight_card(token: str):
     if decision not in ('approve', 'skip'):
         abort(400)
 
-    with api_tx() as tx:
-        row = card_state(tx, rk)
-        if not row:
-            abort(404)
-        if (row['email'] or '').strip().lower() != email:
-            abort(403)
+    # The `with api_tx()` block is inside the try, not the other way round:
+    # a ValueError from approve_card (or set_status) must propagate out of
+    # the block first, so its __exit__ rolls the transaction back, before
+    # this catches it and turns it into a 409. Catching it INSIDE the block
+    # would let the block exit normally and commit whatever ran before the
+    # raise (Wave 1 F11 fix round 1: that previously left a consumed nonce
+    # committed underneath a failed decision).
+    try:
+        with api_tx() as tx:
+            row = card_state(tx, rk)
+            if not row:
+                abort(404)
+            if (row['email'] or '').strip().lower() != email:
+                abort(403)
 
-        state = check_nonce(tx, nonce, row['subject_person_id'], 'card')
+            state = check_nonce(tx, nonce, row['subject_person_id'], 'card')
 
-        if state == 'used':
-            # No writes: report the current state idempotently rather than
-            # re-running (or erroring on) a decision already made.
-            fresh = card_state(tx, rk) or row
-            return dict(ok=True, already=True, status=_status_of(fresh))
-        if state == 'stale':
-            return dict(error='stale'), 410
-        if state != 'ok':
-            abort(400)  # invalid
+            if state == 'used':
+                # No writes: report the current state idempotently rather
+                # than re-running (or erroring on) a decision already made.
+                return _already(tx, rk, row)
+            if state == 'stale':
+                return dict(error='stale'), 410
+            if state != 'ok':
+                abort(400)  # invalid
 
-        consume_nonce(tx, nonce)
-
-        if decision == 'approve':
-            photo_uuid = body.get('photo_uuid')
-            if not photo_uuid:
-                abort(400)
-            try:
+            if decision == 'approve':
+                photo_uuid = body.get('photo_uuid')
+                if not photo_uuid:
+                    abort(400)
                 result = approve_card(tx, rk, row['subject_person_id'], photo_uuid, nonce=nonce)
-            except ValueError as e:
-                return dict(error=str(e)), 409
-            return dict(ok=True, result=result)
+                if not consume_nonce(tx, nonce):
+                    return _already(tx, rk, row)
+                return dict(ok=True, result=result)
 
-        # skip: cancel every row of this request that is still awaiting the
-        # member's decision. Nothing left in that state means a previous
-        # call (approve or skip) already resolved it -- report that as the
-        # same idempotent "already" shape rather than erroring.
-        ids = [r['id'] for r in tx.execute(
-            "SELECT id FROM publishing_queue WHERE request_key = %(rk)s AND status = 'awaiting_member'",
-            dict(rk=rk)).fetchall()]
-        if not ids:
-            return dict(ok=True, already=True)
-        for qid in ids:
-            set_status(tx, qid, 'cancelled', error='member_skipped')
-        return dict(ok=True)
+            # skip: cancel every row of this request that is still awaiting
+            # the member's decision. Nothing left in that state means a
+            # previous call (approve or skip) already resolved it -- report
+            # that as the same idempotent "already" shape rather than
+            # erroring, and still burn the nonce (the outcome is settled
+            # either way).
+            ids = [r['id'] for r in tx.execute(
+                "SELECT id FROM publishing_queue WHERE request_key = %(rk)s AND status = 'awaiting_member'",
+                dict(rk=rk)).fetchall()]
+            if not ids:
+                consume_nonce(tx, nonce)
+                return dict(ok=True, already=True)
+            for qid in ids:
+                set_status(tx, qid, 'cancelled', error='member_skipped')
+            if not consume_nonce(tx, nonce):
+                return _already(tx, rk, row)
+            return dict(ok=True)
+    except ValueError as e:
+        return dict(error=str(e)), 409

@@ -26,7 +26,7 @@ _KIND_LABELS = {
 
 _Q_PERSON = """
     SELECT email, split_part(name, ' ', 1) AS first_name
-      FROM person WHERE id = %(id)s
+      FROM person WHERE id = %(id)s AND activated
 """
 
 _Q_KIND = """
@@ -89,6 +89,13 @@ def send_card_ready(person_id: int, request_key: str) -> bool:
     def build(row: dict) -> tuple[str, str]:
         with api_tx() as tx:
             cu = card_url(tx, request_key, row['email'])
+        if cu is None:
+            # No activated person matches this email any more (the member
+            # was deactivated between the lookup above and this build call,
+            # or the recipient row is otherwise stale) -- raising here
+            # makes run_campaign count this as a failure instead of
+            # sending, or dry-running, a card with href="None".
+            raise ValueError('no_person')
         unsub = unsub_url(UNSUB_SCOPE, row['email'], WEB_BASE_URL)
         html = card_ready_html(row['first_name'], kind_label, cu,
                                CARD_TOKEN_TTL_SECONDS // 86400, unsub)

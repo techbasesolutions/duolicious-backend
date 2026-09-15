@@ -84,24 +84,36 @@ def test_post_approve_is_gated_on_settings_and_render(client, make_person):
     """Route-level coverage of the two new 409s: approvals off (the owner
     decision in force for this wave), and approvals on but nothing rendered
     yet. Both return a JSON {"error": "<reason>"} body -- never a plain-text
-    abort -- per Task 2 fix round 1."""
+    abort -- per Task 2 fix round 1.
+
+    Wave 1 F11 fix round 1: the nonce is consumed only after the decision
+    itself lands, so a routine 409 must NOT burn it -- the very same token
+    is replayed across every step below, first against two failing
+    conditions and then, once both clear, against a real approve."""
     p = _make_eligible(make_person)
     email = _email(p['id'])
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
-        tok1 = make_card_token(tx, rk, email)
-    r = client.post(f'/spotlight/card/{tok1}', json={'decision': 'approve', 'photo_uuid': photo})
+        tok = make_card_token(tx, rk, email)
+    r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
     assert r.status_code == 409 and r.get_json() == {'error': 'approvals_disabled'}
-    # A failed attempt still burns the nonce (Wave 1 F11: it is single-use
-    # once the state check passes), so the second attempt needs its own
-    # fresh token rather than replaying tok1.
     with api_tx() as tx:
         set_setting(tx, 'approvals_enabled', 'true')
-        tok2 = make_card_token(tx, rk, email)
     try:
-        r = client.post(f'/spotlight/card/{tok2}', json={'decision': 'approve', 'photo_uuid': photo})
+        # Still the same token: approvals are on now, but nothing has been
+        # rendered yet, so this 409 is also routine and must not burn it.
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
         assert r.status_code == 409 and r.get_json() == {'error': 'preview_unavailable'}
+        with api_tx() as tx:
+            attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
+        # Both conditions cleared: the same token still approves.
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
+        assert r.status_code == 200 and r.get_json() == {'ok': True, 'result': 'approved'}
+        # Now that the decision landed, the nonce is spent: a replay reports
+        # the resolved state idempotently rather than re-running anything.
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
+        assert r.status_code == 200 and r.get_json() == {'ok': True, 'already': True, 'status': 'approved'}
     finally:
         with api_tx() as tx:
             set_setting(tx, 'approvals_enabled', 'false')
@@ -188,6 +200,55 @@ def test_send_card_ready_uses_runner_exempt(make_person, monkeypatch):
     assert send_card_ready(p['id'], rk) is True
     assert len(sent) == 1 and '/spotlight/card/' in sent[0]['body']
     assert send_card_ready(p['id'], rk) is False      # same campaign id, idempotent
+
+
+def test_send_card_ready_produces_no_send_for_a_deactivated_recipient(make_person, monkeypatch):
+    """Wave 1 F11 fix round 1: `_Q_PERSON` now filters on `activated`, so a
+    member deactivated after their card candidate was created never even
+    reaches the campaign runner -- no send, and no card-ready email is
+    ever built for them.
+
+    The email is a non-suppressed `ahavah-test.invalid` address (not the
+    `make_person` fixture's default `@example.com`) so this test actually
+    discriminates on the `activated` gate rather than on run_campaign's
+    unrelated suppression check, which would otherwise skip an
+    `@example.com` recipient before `build` ever runs and mask a
+    regression here."""
+    import service.campaigns.runner as r
+    sent = []
+    class _S:
+        def send(self, **kw): sent.append(kw); return 'mid'
+    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'deactivated-{p["id"]}@ahavah-test.invalid', id=p['id']))
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute("UPDATE person SET activated = FALSE WHERE id = %(id)s", dict(id=p['id']))
+    from emails.spotlight_card_ready import send_card_ready
+    assert send_card_ready(p['id'], rk) is False
+    assert sent == []
+
+
+def test_send_card_ready_build_is_a_counted_failure_when_the_token_is_none(make_person, monkeypatch):
+    """Decoupled from the `activated` gate above: `build`'s own defensive
+    check (card_url returning None) must also stop a link-less email from
+    going out, and run_campaign must count it as a failure rather than
+    send it."""
+    import service.campaigns.runner as r
+    import emails.spotlight_card_ready as card_ready_mod
+    sent = []
+    class _S:
+        def send(self, **kw): sent.append(kw); return 'mid'
+    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+    monkeypatch.setattr(card_ready_mod, 'card_url', lambda tx, rk, email: None)
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'none-token-{p["id"]}@ahavah-test.invalid', id=p['id']))
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+    from emails.spotlight_card_ready import send_card_ready
+    assert send_card_ready(p['id'], rk) is False
+    assert sent == []
+    assert not any('href="None"' in s['body'] for s in sent)
 
 
 def test_send_card_live_wraps_share_link_and_is_idempotent(make_person, monkeypatch):

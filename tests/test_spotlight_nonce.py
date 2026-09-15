@@ -19,3 +19,9 @@ def test_nonce_lifecycle(make_person):
         assert check_nonce(tx, m, p['id'], 'confirm') == 'ok'
         with pytest.raises(ValueError, match='bad_purpose'):
             issue_nonce(tx, p['id'], 'other')
+
+
+def test_issue_nonce_requires_an_existing_person():
+    with api_tx() as tx:
+        with pytest.raises(ValueError, match='not_found'):
+            issue_nonce(tx, -1, 'confirm')

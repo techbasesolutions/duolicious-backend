@@ -27,8 +27,21 @@ _Q_RECIPIENTS = f"""
 """
 
 def build_for(row: dict) -> tuple[str, str]:
+    # Mints a real single-use nonce (service.spotlight.nonce.issue_nonce)
+    # against the recipient's current consent epoch -- including on a dry
+    # run (send=False), since run_campaign builds every message either way
+    # to exercise the template. A dry run of this campaign therefore still
+    # writes one spotlight_token_nonce row per recipient it builds for,
+    # even though no email goes out and the nonce is never handed to anyone.
     with api_tx() as tx:
         confirm_url = spotlight_confirm_url(tx, row['email'])
+    if confirm_url is None:
+        # No activated person matches this email (deactivated, deleted, or
+        # a bad row) -- there is nothing to mint a token against. Raising
+        # here (rather than building a link-less email) makes run_campaign
+        # count this recipient as a failure instead of silently sending, or
+        # dry-running, a card with href="None".
+        raise ValueError('no_person')
     return SUBJECT, spotlight_announcement_html(
         confirm_url,
         f"{WEB_BASE_URL}/settings/privacy",

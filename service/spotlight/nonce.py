@@ -22,6 +22,12 @@ _PURPOSES = ('confirm', 'card')
 def issue_nonce(tx, person_id: int, purpose: str) -> str:
     if purpose not in _PURPOSES:
         raise ValueError('bad_purpose')
+    # Checked explicitly rather than trusting the INSERT ... SELECT below to
+    # fail loudly: with no matching person row, that SELECT simply returns
+    # zero rows and the INSERT silently inserts nothing, handing the caller
+    # back a nonce string that was never persisted.
+    if not tx.execute("SELECT 1 FROM person WHERE id = %(pid)s", dict(pid=person_id)).fetchone():
+        raise ValueError('not_found')
     nonce = secrets.token_urlsafe(16)
     tx.execute(
         """INSERT INTO spotlight_token_nonce (nonce, person_id, purpose, epoch)
