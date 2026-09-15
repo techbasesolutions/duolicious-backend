@@ -218,6 +218,8 @@ $$;
 
 - [ ] Steps: failing node test, implement from the SOT, run the comparison script and attach the diff images to the report, commit (hold) `feat(admin): spotlight card renderer`.
 
+Note (Wave 1, 2026-09-14): rendering now precedes member approval rather than following it. E4's link goes to a preview of the already-rendered current revision (`GET /admin/growth/queue` and the card route both expose `image_url` off `current_revision_id`), and member approval stays disabled (`spotlight_setting.approvals_enabled = 'false'`) until this task's renderer lands and the preview it produces is real. Bringing `approvals_enabled` to `'true'` is the activation step for this task, not a separate flag to add later.
+
 ---
 
 ### Task 6: Daily tick in the admin app (`/api/growth/tick`)
@@ -276,6 +278,8 @@ $$;
 - Test: `ahavah-admin/tests/growth-api.test.mjs` (extended), Playwright at 1440 and 390 with fixture responses against the SOT frames
 
 - [ ] Steps: `/sot-sync` from the Growth Tab SOT for the three remaining sections; wire; confirmation dialogs name counts and campaign ids; mobile read-only; commit (hold) `feat(admin): Growth tab queue, member of the week and controls`.
+
+Note (Wave 1, 2026-09-14): the controls panel no longer has one scheduler switch and two per-kind auto flags. It shows three named controls instead: `invites_enabled` (pauses welcome and roundup candidate creation and the E4 invite), `publication_enabled` (pauses the per-minute claim only), and `external_access_enabled` (the emergency stop: halts every outbound Meta call, publishing and removals alike, and is the only control removals answer to). `auto_welcome` and `auto_roundup` are gone from settings; there is no auto-post toggle to wire until a revision-bound auto mode exists. The panel also reads `approvals_enabled` and `roundup_tiles_enabled` (both read-only status chips here; they flip on when Task 5's renderer and the per-member roundup approval flow respectively land, not from this panel).
 
 ---
 

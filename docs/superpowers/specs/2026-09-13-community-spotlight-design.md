@@ -29,10 +29,14 @@ Member-facing name: **Spotlight**. Admin-facing name: **Growth** tab.
 
 ### 3.1 Consent, approval and preferences
 
-- New columns on `person`: `spotlight_opt_in boolean not null default false`, `spotlight_opt_in_at timestamptz`, `spotlight_last_featured_at timestamptz`, `reinvite_sent_at timestamptz`.
-- Opt in or out through a switch in `/settings/privacy` ("Feature me in Spotlight"), through the announcement email (signed link to a confirmation page with a POST button, 30-day expiry, idempotent), or through the admin drawer (audited). Opt-out cancels queued rows for that member in the same transaction and deletes their rendered cards from storage.
-- Per-card approval: before any card with a member's photo is scheduled, the member receives "your Spotlight card is ready" with a preview and two POST actions, approve or skip, and a photo picker among their own photos. Nothing with a photo publishes without that approval. Approval expires after 7 days and the row is cancelled.
-- Opt-in text states exactly what is shared: first name, age, country, one photo they choose, on the Ahavah Page and Instagram and in the members' weekly email, and that they approve each card.
+Amended 2026-09-14 (Wave 1): consent is now bound to a specific content revision rather than to a request row, and confirm and card links carry single-use, revocable tokens.
+
+- New columns on `person`: `spotlight_opt_in boolean not null default false`, `spotlight_opt_in_at timestamptz`, `spotlight_last_featured_at timestamptz`, `reinvite_sent_at timestamptz`, `spotlight_consent_epoch int not null default 0`.
+- Opt in or out through a switch in `/settings/privacy` ("Feature me in Spotlight"), through the announcement email (signed link to a confirmation page with a POST button, 30-day expiry, idempotent), or through the admin drawer (audited). Opt-out cancels queued rows for that member in the same transaction, deletes their rendered cards from storage, and calls the one withdrawal operation described in 3.6, which increments `spotlight_consent_epoch` and burns every unused token nonce for that member.
+- Consent is per content revision, not per request. Table `spotlight_revision` holds an immutable snapshot of a card's content (caption, photo, participants, channels); table `spotlight_revision_consent` records one approval per revision per person. Any material edit, a new caption, a new photo, a changed participant set, creates a new revision with no consent carried over, so the member approves what will actually post. A request with a row in `scheduled` or `processing` is immutable: no new revision can be created for it until it clears that state. A request in a terminal state (`published`, `cancelled`) is also immutable; a caption cannot be rewritten after the fact because the posted text is the record.
+- Per-card approval: before any card with a member's photo is scheduled, the member receives "your Spotlight card is ready" with a preview of the rendered revision and two POST actions, approve or skip, and a photo picker among their own photos. Approval is of the rendered revision, which means rendering happens before the member ever sees the card, not after approval as originally specified. Nothing with a photo publishes without that approval. Approval expires after 7 days and the row is cancelled. Member approval is disabled (`spotlight_setting.approvals_enabled = false`) until the designed renderer exists; while disabled, candidates are still created and queued but no invite asks a member to act, and approval attempts answer 409 `approvals_disabled`.
+- Confirm links and card links each carry a single-use nonce, stored in `spotlight_token_nonce` and bound to the person's current `spotlight_consent_epoch`. The nonce is consumed only once the decision it represents has taken effect. A withdrawal bumps the epoch and burns every nonce issued before it; a token used after that point, including a link the member still has from before they withdrew, answers 410 `stale` rather than re-enabling consent.
+- Opt-in text states exactly what is shared: first name, age, country, one photo they choose, on the Ahavah Page and Instagram and in the members' weekly email, and that they approve each card's specific revision.
 
 ### 3.2 Eligibility
 
@@ -40,14 +44,16 @@ A member can be featured only if all hold: opted in, card approved, photo-verifi
 
 ### 3.3 Spotlight kinds
 
+Amended 2026-09-14 (Wave 1): the roundup collage is count-only until a per-member roundup approval flow exists.
+
 | Kind | Audience | Source | Photo and name | Cadence |
 | --- | --- | --- | --- | --- |
 | New member welcome | Page, Instagram, weekly email | Member finished onboarding, opted in, approved | Yes | Created when the member approves, batched daily |
-| New members roundup | Page, Instagram, weekly email | Members who joined in the last 7 days | Social: collage of opted-in and approved newcomers with first names; others as a count by country. Email: first names for all | Weekly, Monday |
+| New members roundup | Page, Instagram, weekly email | Members who joined in the last 7 days | Count-only by country unless `spotlight_setting.roundup_tiles_enabled = 'true'`. Welcome approval of a member's own solo card does not carry over to a roundup tile: a tiled roundup records its own participant set on its revision and cannot publish until every pictured participant has a consent row for that revision. Email: first names for all | Weekly, Monday |
 | Member of the week | Page, Instagram, weekly email | Admin confirms a pick; default suggestion is the eligible member least recently featured, alternating gender week to week | Yes | Weekly |
 | Member highlight | Page, Instagram | Admin composes for an eligible member | Yes | Ad hoc |
 
-Card content: photo, first name, age, country, one line of caption. No bio, intent, assembly, or location finer than country.
+Card content: photo, first name, age, country, one line of caption. No bio, intent, assembly, or location finer than country. No per-member roundup approval flow exists yet, so `roundup_tiles_enabled` stays `false` until it is built (see 7).
 
 ### 3.4 Growth loop and measurement
 
@@ -57,6 +63,8 @@ Card content: photo, first name, age, country, one line of caption. No bio, inte
 
 ### 3.5 Emails (canonical shell)
 
+Amended 2026-09-14 (Wave 1): E5 is now tied to the feature occurrence rather than to a single channel row, and never reaches a withdrawn member.
+
 | Email | Who | When | Body |
 | --- | --- | --- | --- |
 | E1 Spotlight announcement | Every activated member not on the suppression list and not unsubscribed from the notifications scope, once | Launch, sent from the Growth tab | What Spotlight is, what is shared, opt-in button to the confirmation page, link to the settings switch, a line that nothing changes for those who do not opt in |
@@ -65,24 +73,33 @@ Card content: photo, first name, age, country, one line of caption. No bio, inte
 | E4 Card ready | Opted-in member with a candidate card | On candidate creation | Preview, photo picker, approve or skip (POST) |
 | E5 Card live | Featured member | On publish | Post link, share button |
 
-Rules across all campaign emails: a central `email_send_log` (person, campaign, sent_at, message id) enforces at most one campaign email per member per 7 days (the weekly email uses a 6-day window so a weekly cadence never skips itself), exempting E4 and E5 which the member triggered; the runner also skips any member unsubscribed from the campaign's scope, and gives the System tab the send visibility it has lacked. Each send carries a campaign id checked server-side so a double click cannot send twice. The weekly email is its own unsubscribe category so leaving it does not silence match notifications. Titles get new Ultra image pairs through the design brief. E3 runs inside the 30-day window before the upstream deactivation cron could act.
+Rules across all campaign emails: a central `email_send_log` (person, campaign, sent_at, message id) enforces at most one campaign email per member per 7 days (the weekly email uses a 6-day window so a weekly cadence never skips itself), exempting E4 and E5 which the member triggered; the runner also skips any member unsubscribed from the campaign's scope, and gives the System tab the send visibility it has lacked. Each send carries a campaign id checked server-side so a double click cannot send twice. The weekly email is its own unsubscribe category so leaving it does not silence match notifications. Titles get new Ultra image pairs through the design brief. E3 runs inside the 30-day window before the upstream deactivation cron could act. E5 is sent once per feature occurrence (see 3.6), on the first channel's confirmed publish, carrying that receipt's `post_url`; it is never sent to a member who has withdrawn in the meantime. Campaign mail (E1 to E3) stays at-least-once with visible uncertainty rather than exactly-once: a crash between acceptance and logging can still produce a duplicate. A durable outbox that removes that uncertainty is Wave 2 work.
 
 ### 3.6 Publishing engine (port of the President worker)
 
-- Table `publishing_queue` in `duo_api` (migration 0039): id, request_key, kind, subject_person_id (nullable), platform (`facebook` or `instagram`), caption, image_url, image_key, scheduled_for, status (`scheduled`, `processing`, `published`, `failed`, `review`, `awaiting_member`, `cancelled`), lease_until, attempts, external_post_id, error, created_by, created_at, updated_at. Unique on (request_key, platform).
-- Claim: SQL function `claim_spotlight_posts(limit)` using `for update skip locked`.
-- Worker: Vercel cron in `ahavah-admin`, `/api/growth/publish-due`, every minute, Bearer `CRON_SECRET`, gated by `AHAVAH_SOCIAL_SCHEDULER_ENABLED=true`. It asks the API to claim rows, re-checks eligibility, publishes through Graph (Page `/photos` with `url` and `message`; Instagram `/media`, poll, `/media_publish`), then reports `published`, `failed` or `review`. Env in Vercel: `AHAVAH_META_PAGE_TOKEN`, `AHAVAH_FB_PAGE_ID`, `AHAVAH_IG_USER_ID`, `META_GRAPH_VERSION`. If the API is unreachable the tick exits cleanly and the next tick retries.
+Amended 2026-09-14 (Wave 1): the single `scheduler_enabled` switch and the two auto flags are gone; delivery state now survives withdrawal; a lease binds a claim to the row that made it; one feature occurrence spans both channels; the final check before any Graph call fails closed.
+
+- Table `publishing_queue` in `duo_api` (migration 0039, extended by migration 0044): id, request_key, kind, subject_person_id (nullable), platform (`facebook` or `instagram`), caption, image_url, image_key, scheduled_for, status (`scheduled`, `processing`, `published`, `failed`, `review`, `awaiting_member`, `cancelled`), lease_until, attempts, external_post_id, error, created_by, created_at, updated_at, plus `current_revision_id` (references `spotlight_revision`), `lease_token`, `cancellation_requested_at`, `delivery_state` (`none`, `attempting`, `published`, `delivery_unknown`, `failed`), `post_url`. Unique on (request_key, platform).
+- Claim: SQL function `claim_spotlight_posts(limit)` using `for update skip locked`; a claim also mints a random `lease_token`, sets `delivery_state = 'attempting'`, and never selects a row with `cancellation_requested_at` already set.
+- One withdrawal operation, called from every lifecycle exit point (the settings switch, account deletion, admin delete or ban, the pending-deletion cron, moderation actions): it sets `cancellation_requested_at` on every open row for the member and cancels every row that is not currently `attempting`; a row already `attempting` is left alone because an external call may already be in flight.
+- The worker sends the lease token with every completion call. `record_receipt` accepts a `published` outcome even after `cancellation_requested_at` was set, because the external post already exists: the row becomes `published`, the post is recorded, and a removal task is filed immediately so the published card is taken down. A lease token that no longer matches the row (a second worker, an expired lease) is rejected and counted separately, never silently ignored. A timeout or an unclear response after a publish call was actually sent becomes `delivery_state = 'delivery_unknown'` and the row parks in `review`: it is never auto-retried, only resolved by an operator or a later, definite receipt.
+- Feature occurrence: table `spotlight_occurrence` is the unit the 30-day cooldown reads, one row per `(request_key, person)`. The two channel rows of one request share an occurrence, so completing on Facebook no longer blocks the still-pending Instagram row for the same card. Roundup participants each get their own occurrence.
+- The final dispatch check before any external call fails closed on: the lease held and current; the row's status still `processing`; `cancellation_requested_at` unset; `current_revision_id` present and rendered; consent complete for every pictured person on that revision; the exact approved photo still owned, approved and present (for a roundup, every tile's own photo); and both `publication_enabled` and `external_access_enabled` set to `true`. A subject-bearing row with no subject is not ok; anything the check cannot positively confirm is treated as not ok.
 - Admin-gated API endpoints: list queue, create, claim, complete, cancel, purge, plus a health endpoint proxying `debug_token` so the Growth tab warns 14 days before the token expires.
-- Review mode is the default. A per-kind auto flag lets welcomes and roundups skip admin review once trusted; member approval is never skipped.
-- Kill switch: `AHAVAH_SOCIAL_SCHEDULER_ENABLED=false` stops the worker and the daily tick; the purge endpoint cancels every non-published row. Both are one action in the Growth tab.
-- Removal: on opt-out or deletion, Page posts are deleted through the API and the stored card is removed. Instagram media cannot be deleted through the API; the Growth tab lists it as a manual task until an admin marks it done. Rendered cards are deleted from storage 90 days after publish.
+- Review mode is the default. `auto_welcome` and `auto_roundup` are removed until an auto mode that still requires revision-bound consent exists; until then every card is reviewed by an admin and, unless approvals are disabled, approved by the member. Member approval is never skipped.
+- Three named controls replace the one scheduler switch: `invites_enabled` (gates welcome and roundup candidate creation and the E4 invite; a member candidate can still be created while approvals are disabled, but no invite is sent until approvals reopen), `publication_enabled` (gates the per-minute claim), `external_access_enabled` (an emergency stop: halts every outbound call to Meta, both publishing and removals, and is the only switch removals answer to). Publication pausing does not pause removals or the daily tick's rendering steps; only the emergency stop does. The purge endpoint still cancels every non-published row on demand.
+- The welcome cohort is defined by sign-up time (`sign_up_time > now() - 14 days`), not by opt-in time. The weekly roundup uses the business key `roundup:<iso-year>-W<week>` as its `request_key`, so a duplicate tick in the same week converges on the existing row instead of creating a second one.
+- Removal: on withdrawal, Page posts are deleted through the API and the stored card is removed. Instagram media cannot be deleted through the API; the Growth tab lists it as a manual task until an admin marks it done. Rendered cards are deleted from storage 90 days after publish. Removals run whenever `external_access_enabled` is true, regardless of `publication_enabled`.
 
 ### 3.7 Card rendering
 
+Amended 2026-09-14 (Wave 1): rendering is now one render per revision, and a rejected re-upload can no longer overwrite an already-approved image.
+
 - One Claude Design template, square 1080x1080 only, with three variants: photo card, roundup collage, member of the week. Brand tokens, Ultra display, Plus Jakarta Sans. Fonts embedded with coverage for Hebrew and Latin with diacritics; a render test uses real member names.
 - Rendered in `ahavah-admin` with `next/og` `ImageResponse` from a JSX transcription of the template. Route `/api/growth/render` (admin session or cron bearer) returns PNG.
-- PNGs go to the existing DigitalOcean Spaces bucket under `spotlight/<request_key>-<platform>.png`; the public URL is stored on the row. Keys are unique per render so CDN caching cannot serve a stale card.
-- A card is rendered only for an eligible member, enforced in the API candidate query and again in the render route. Cards render at member approval; the worker re-checks the photo at claim and cancels if it is gone.
+- PNGs go to the existing DigitalOcean Spaces bucket under `spotlight/<request_key>-<platform>.png`; the public URL is stored on the row, pinned to the Facebook upload. Keys are unique per render so CDN caching cannot serve a stale card.
+- A revision is rendered at most once: `attach_render` refuses a second attempt on a revision that already has an asset (409 `already_rendered`). A rejected or mistaken upload therefore cannot silently replace bytes a member has already consented to; a new attempt requires a new revision, which clears consent. Content-hashed, immutable object keys and a compare-and-set attach that survives a race are Wave 2 work.
+- A card is rendered only for an eligible member, enforced in the API candidate query and again in the render route. Rendering happens before member approval, not at it, so the member approves the exact image that will post; the worker re-checks the photo at claim and cancels if it is gone.
 
 ### 3.8 Growth tab (admin.ahavah.app)
 
@@ -105,22 +122,32 @@ Desktop primary, read-only on mobile, consistent with the admin spec of 2026-06-
 
 ## 5. Error handling
 
-- Graph errors: transient -> `failed` with error text, retried next tick up to 3 attempts; lost confirmation after a 2xx -> `review`, never retried. Token invalid -> all rows `review`, health chip red, alert email to the admin copy address through SES (the same path the member notes use).
-- Render failure -> row stays in its current state with the error; nothing publishes without an image.
-- Opt-out or deletion races: cancellation runs in the opt-out transaction; the worker re-checks eligibility before publishing.
-- Email sends are idempotent per member per campaign through `email_send_log`; a crash mid-send resumes without double sends.
+Amended 2026-09-14 (Wave 1): a lost confirmation now has its own state distinct from an ordinary retryable failure, and a stale token is its own rejection.
+
+- Graph errors: transient -> `failed` with error text, retried next tick up to 3 attempts; a timeout or unclear response after the publish call was actually sent -> `delivery_state = 'delivery_unknown'`, row parks in `review`, never auto-retried, resolved only by an operator or a later definite receipt. Token invalid -> all rows `review`, health chip red, alert email to the admin copy address through SES (the same path the member notes use).
+- Render failure -> row stays in its current state with the error; nothing publishes without an image. A revision can be rendered only once; a second attempt is refused (`already_rendered`) rather than overwriting the existing asset.
+- Receipt-persistence failure (worker confirms a Graph post but the completion call back to the API does not go through): the worker retries the completion call itself before counting it separately as `receipt_failed`; it is never counted as published on the strength of the Graph call alone.
+- A lease token that does not match the row's current lease (another worker already claimed it, or the lease expired) is rejected as `lease_mismatch`; the row is left alone.
+- Confirm and card tokens: a token whose nonce is already used, or whose epoch no longer matches the person's current `spotlight_consent_epoch` (set by a withdrawal since the token was issued), is rejected as `stale` rather than acted on.
+- Opt-out or deletion races: cancellation runs through the one withdrawal operation in the same transaction as the triggering action; the final dispatch check re-confirms eligibility, consent and lease immediately before any Graph call.
+- Email sends are idempotent per member per campaign through `email_send_log`; a crash mid-send resumes without double sends, though campaign mail is at-least-once with visible uncertainty rather than a hard guarantee (see 3.5) until the Wave 2 outbox lands.
 
 ## 6. Testing
+
+Amended 2026-09-14 (Wave 1): the review's acceptance matrix is now the named gate for the first live post.
 
 - API (pytest, disposable stack): migration applies under ON_ERROR_STOP; opt-in endpoints; signed links reject expiry and replay and never act on GET; candidate and eligibility queries never return ineligible members (seeded cases for each exclusion); dormancy cohort with filter fallback (seeded edge cases: acted exactly 30 days ago, resent within 30 days, no filtered newcomers); frequency cap and campaign idempotency; email templates locked like `test_member_note.py`.
 - Admin (node:test): port of the President publishing tests with mocked fetch: idempotency, Instagram poll, lost confirmation to review, opt-out cancellation, dry run makes no Graph call, API unreachable exits cleanly.
 - Render: `ImageResponse` output compared at 1080 against the Claude Design frames for all three variants, plus a run with real member names including non-Latin scripts.
 - Browser: Playwright against the local admin build at 1440 and 390 with fixture API responses; one read-only real-session check on admin.ahavah.app.
 - Live: Graph dry run with `?dry=1`, then one real post approved by the owner and the featured member.
+- Release acceptance matrix (the adversarial review's own rows: Consent, Lifecycle, Delivery, Storage, Mail, Controls) is the gate for the first live post, run against staging before any post goes out. Wave 1 closes Consent, Lifecycle, Delivery and Controls; Storage (immutable rendering and object keys) and Mail (the durable outbox) are Wave 2, and the matrix does not pass until those rows close too.
 
 ## 7. Out of scope
 
-Facebook group automation (not possible), automatic caption writing by an LLM, comments or DM handling, Instagram stories and reels, ads, member-supplied quotes, localisation, any change to Discover ranking.
+Amended 2026-09-14 (Wave 1): two items already listed for a later phase are now explicitly deferred rather than merely unbuilt.
+
+Facebook group automation (not possible), automatic caption writing by an LLM, comments or DM handling, Instagram stories and reels, ads, member-supplied quotes, localisation, any change to Discover ranking. Also deferred for now: the per-kind `auto_welcome`/`auto_roundup` flags, removed from settings until an auto mode exists that still requires revision-bound consent (3.6); and per-member roundup approval, so roundups stay count-only (`roundup_tiles_enabled = false`) until every pictured member can approve the specific roundup revision they appear in (3.3).
 
 ## 8. Pre-flight (must clear before W3 onward)
 

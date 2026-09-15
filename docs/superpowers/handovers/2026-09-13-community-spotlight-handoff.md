@@ -94,3 +94,79 @@ Each was found by a task review or the whole-branch review and fixed with a test
 4. Spot-check the consent invariants directly: `eligibility()` reason order; `cancel_for_member` on a member who is a roundup tile; `_Q_SPOTLIGHT` in the weekly email; `claim` with the scheduler off; a dry `publishDue` making no `claim` call.
 5. Spot-check the auth surface: `_session()` versus `service/api/decorators.py` `require_auth`; `is_cron_request`; the limiter on every admin-or-cron route; `GET` handlers never writing.
 6. Confirm the three-way contract (API routes, `growth-server.ts`, `publishing.ts`/`tick.ts`): paths, bodies, `due=1`, `shape`, `countries` as an integer.
+
+## 11. Wave 1 (2026-09-14): consent and lifecycle invariants
+
+An adversarial review of the branches above (2026-09-14, twelve findings F01 to F12) found that the phase A and B work described in sections 1 to 10 did not close consent and lifecycle: a member's approval was not bound to the exact card that would post, the final check before publishing could pass on missing information, deletion could bypass withdrawal, a late confirmation after withdrawal could be lost, one channel's publish blocked the other, confirm links could be replayed after withdrawal, and the on/off controls did not do what their names implied. Wave 1 remediates F01 to F05, F11 and the control-model part of F12. F06 to F10, and the remainder of F12, are deferred to Wave 2 and Wave 3.
+
+### Branches and heads
+
+| Repo | Branch | Base | Head | Commits |
+| --- | --- | --- | --- | --- |
+| ahavah-api | spotlight-wave-1 | 381c275 (spotlight-phase-b head) | cab499e | 15 |
+| ahavah-admin | spotlight-wave-1 | 98f3a09 (spotlight-phase-b head) | aa1341c | 3 |
+
+Neither branch is merged or pushed. Web is untouched in Wave 1.
+
+### Commits
+
+API (`git log --oneline 381c275..HEAD`, oldest first):
+
+1. `aa5c9e7` feat(db): spotlight revisions, consent, occurrences, nonces, delivery state (0044)
+2. `5f41f87` feat(spotlight): immutable revisions and revision-bound approval
+3. `bc13af9` feat(spotlight): fail-closed dispatch check bound to lease, revision and consent
+4. `20d3ec4` fix(spotlight): terminal requests immutable, one render per revision, review transition
+5. `223969e` feat(spotlight): one withdrawal operation from every lifecycle exit
+6. `03f30c0` feat(spotlight): lease-bound receipts and delivery state separate from withdrawal
+7. `e9a0d57` fix(spotlight): scoped roundup re-issue, idempotent withdrawal counts, cron pass intersection
+8. `c620bf6` feat(spotlight): feature occurrences as the cooldown unit, E5 once per card
+9. `1a505ab` fix(spotlight): re-issue repoints only non-terminal rows
+10. `b552867` fix(spotlight): roundup late receipts file one unattributed task, stricter lease token, audit on recorded only
+11. `9965eb3` feat(spotlight): single-use confirm and card tokens bound to the consent epoch
+12. `fa1098d` feat(spotlight): roundups are count-only unless tiles are enabled; tiled roundups need every participant's consent
+13. `5d19038` fix(spotlight): consume the nonce only after the decision lands; skip mints for unknown recipients
+14. `c7cbab6` fix(spotlight): roundup participants belong to the route, not create_candidate
+15. `cab499e` feat(spotlight): three honest controls, welcome cohort by sign-up time, weekly roundup key
+
+Admin (`git log --oneline 98f3a09..HEAD`, oldest first):
+
+1. `8cc0d01` feat(admin): lease-bound completion, delivery_unknown, receipt retries reported in the body
+2. `93cb7e5` feat(admin): instagram permalink in the publish receipt
+3. `aa1341c` feat(admin): publish, removals and tick read the three named controls
+
+### Test totals
+
+- API (disposable Docker stack, `tests -q`): 490 passed (up from the 383 baseline before Wave 1), 9 known deprecation warnings.
+- Admin (`node --test tests/*.test.mjs`): 44 passed (up from the 35 baseline before Wave 1); `npx tsc --noEmit` clean; `next build` clean.
+
+These are the totals as of the ninth of eleven Wave 1 tasks landing (below). The tenth task (this document) and the eleventh (the acceptance run) do not change the counts above on their own.
+
+### Findings F01 to F12
+
+| Finding | Status | Resolved by | Notes |
+| --- | --- | --- | --- |
+| F01 approval not bound to the exact card | Resolved in Wave 1 | Task 2 (`5f41f87`, fix `20d3ec4`); Task 8 (`fa1098d`, fix `c7cbab6`) for roundups | Consent is now per content revision; any material edit creates a new revision with no consent carried over. |
+| F02 final check fails open | Resolved in Wave 1 | Task 3 (`bc13af9`) | The dispatch check now fails closed on lease, status, revision, consent, the exact photo, and both publication controls. |
+| F03 deletion bypasses withdrawal | Resolved in Wave 1 | Task 4 (`223969e`, fix rounds `e9a0d57`, `1a505ab`) | One withdrawal operation is now called from opt-out, account deletion, admin delete or ban, the pending-deletion cron and moderation actions. |
+| F04 late receipt after withdrawal is lost | Resolved in Wave 1 | Task 5 (api `03f30c0`, fix `b552867`; admin `8cc0d01`) | A late published receipt after withdrawal is recorded and files a removal task immediately rather than being dropped. |
+| F05 first platform blocks the second | Resolved in Wave 1 | Task 6 (`c620bf6`) | The 30-day cooldown now reads a feature occurrence shared by both channel rows of one card, instead of a single stamp the first channel's publish set. |
+| F06 rejected upload can overwrite approved bytes | Deferred to Wave 2 | Not yet resolved; a related guard (`already_rendered`) landed in Task 2 (`5f41f87`, fix `20d3ec4`) | Full remediation is content-hashed, immutable object keys (triage remediation item 6). |
+| F07 mail dedupe not durable | Deferred to Wave 2 | Not resolved | A durable outbox with reservation as the idempotency point (triage remediation item 7). |
+| F08 E4 on a daemon thread | Deferred to Wave 2 | Not resolved | Folded into the same durable outbox work as F07. |
+| F09 cleanup loses retry info; removals paused with the scheduler | Partly resolved in Wave 1, remainder deferred to Wave 2 | Task 9 (api `cab499e`, admin `aa1341c`) for the pause behaviour; cleanup job durability and retry tracking not resolved | Removals now run whenever the emergency stop is off, independent of the publication control; the cleanup job's own retry bookkeeping is triage remediation item 8. |
+| F10 attribution without a matching click | Deferred to Wave 3 | Not resolved | Attribution rebuilt on visitor-bound click receipts, sequenced after the design-gated surfaces per the triage document. |
+| F11 confirm token replay after withdrawal | Resolved in Wave 1 | Task 7 (`9965eb3`, fix `5d19038`) | Confirm and card tokens carry a single-use nonce bound to the person's consent epoch; a withdrawal burns unused nonces and replay answers 410 `stale`. |
+| F12 controls diverge | Control-model part resolved in Wave 1, remainder deferred to Wave 3 | Task 9 (api `cab499e`, admin `aa1341c`) | The three named controls, the sign-up-time welcome cohort and the weekly business key are done; the auto flags are removed rather than left unused. Idempotent-tick work beyond the weekly key, and any auto mode, wait on Wave 3 per the triage sequencing. |
+
+### Where the record lives
+
+- Wave 1 briefs, task reports, review packages and the ledger: `ahavah-api/.superpowers/sdd/2026-09-14-spotlight-wave-1/` (`progress.md` is the ledger; `task-N-brief.md` and `task-N-report.md` per task; `review-<base>..<head>.diff` and `review-admin-<base>..<head>.diff` are the exact diffs each reviewer read).
+- The triage that scoped Wave 1: `ahavah-api/docs/superpowers/plans/2026-09-14-spotlight-adversarial-remediation-triage.md`.
+- The Wave 1 plan: `ahavah-api/docs/superpowers/plans/2026-09-14-spotlight-wave-1.md`.
+- Reversed rulings recorded against the phases they reversed: `ahavah-api/.superpowers/sdd/2026-09-13-community-spotlight-phase-a/progress.md` and `.../phase-b/progress.md`, each under a "Rulings reversed by the 2026-09-14 adversarial review" heading.
+
+At the time this section was written, task 9 (the control model above) had been implemented and its review was still in progress; every other Wave 1 task through task 9 was complete per the ledger, this task (task 10, the spec and ledger amendments) was underway, and task 11 (the acceptance run) had not started.
+
+### Activation stance
+
+Nothing from Wave 1 is merged and nothing is pushed; the phase A, phase B and Wave 1 branches all stay local. No live post happens until the review's own acceptance matrix (Consent, Lifecycle, Delivery, Storage, Mail, Controls) passes in a staging environment. Wave 1 closes the Consent, Lifecycle, Delivery and Controls rows; Storage and Mail wait on Wave 2, so the matrix cannot pass end to end until that work lands too.
