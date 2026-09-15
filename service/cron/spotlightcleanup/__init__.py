@@ -24,13 +24,10 @@ import os
 import random
 
 from database import api_tx
-from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY
+from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY, env_int
 from service.spotlight.cleanup import overdue_removals, run_cleanup_batch
 
-SPOTLIGHT_CLEANUP_POLL_SECONDS = int(os.environ.get(
-    'DUO_CRON_SPOTLIGHT_CLEANUP_POLL_SECONDS',
-    '600',  # 10 minutes
-))
+SPOTLIGHT_CLEANUP_POLL_SECONDS = env_int('DUO_CRON_SPOTLIGHT_CLEANUP_POLL_SECONDS', 600)
 
 print(f'Hello from cron module: {__name__}')
 

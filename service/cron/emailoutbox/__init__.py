@@ -22,12 +22,9 @@ import random
 
 from database import api_tx
 from service.campaigns import outbox
-from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY
+from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY, env_int
 
-EMAIL_OUTBOX_POLL_SECONDS = int(os.environ.get(
-    'DUO_CRON_EMAIL_OUTBOX_POLL_SECONDS',
-    '30',
-))
+EMAIL_OUTBOX_POLL_SECONDS = env_int('DUO_CRON_EMAIL_OUTBOX_POLL_SECONDS', 30)
 
 print(f'Hello from cron module: {__name__}')
 

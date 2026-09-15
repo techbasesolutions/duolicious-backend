@@ -20,10 +20,19 @@ BOTO_ENDPOINT_URL = os.getenv(
     f'https://{R2_ACCT_ID}.r2.cloudflarestorage.com'
 )
 
-MAX_RANDOM_START_DELAY = int(os.environ.get(
-    'DUO_CRON_MAX_RANDOM_START_DELAY',
-    15,
-))
+def env_int(name: str, default: int) -> int:
+    """Read an integer setting from the environment, treating an unset OR
+    BLANK value as the default. Production compose files pass every cron
+    interval through as ${VAR}, so a variable missing from .env.production
+    arrives as the empty string; int('') raised at import and took the whole
+    cron container down (2026-09-15). Never let one blank setting do that
+    again."""
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == '':
+        return int(default)
+    return int(raw)
+
+MAX_RANDOM_START_DELAY = env_int('DUO_CRON_MAX_RANDOM_START_DELAY', 15)
 
 async def print_stacktrace(fun):
     try:

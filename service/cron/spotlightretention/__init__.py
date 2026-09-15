@@ -25,15 +25,12 @@ import os
 import random
 
 from database import api_tx
-from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY
+from service.cron.cronutil import print_stacktrace, MAX_RANDOM_START_DELAY, env_int
 from service.spotlight.cleanup import enqueue_asset_delete
 
 RETENTION_DAYS = 90
 
-SPOTLIGHT_RETENTION_POLL_SECONDS = int(os.environ.get(
-    'DUO_CRON_SPOTLIGHT_RETENTION_POLL_SECONDS',
-    str(60 * 60 * 24),  # 24 hours
-))
+SPOTLIGHT_RETENTION_POLL_SECONDS = env_int('DUO_CRON_SPOTLIGHT_RETENTION_POLL_SECONDS', 60 * 60 * 24)
 
 print(f'Hello from cron module: {__name__}')
 
