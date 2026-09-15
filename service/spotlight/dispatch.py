@@ -72,7 +72,16 @@ def dispatch_check(tx, queue_id, lease_token: Optional[str]) -> tuple[bool, str]
         # time, since days can pass between the snapshot and the publish.
         for participant in (rev['participants'] or []):
             person_id = participant.get('person_id')
-            ok, reason = eligibility(tx, person_id, participant.get('photo_uuid'),
+            # The tile is checked against the photo the TILE shows, never
+            # against whatever approved photo the member happens to still
+            # have. A participant with no photo_uuid cannot be checked at
+            # all, so it fails closed rather than falling back to the
+            # has-any-approved-photo test `eligibility` applies when no
+            # specific photo is named.
+            photo_uuid = participant.get('photo_uuid')
+            if not photo_uuid:
+                return False, f'participant:{person_id}:photo_missing'
+            ok, reason = eligibility(tx, person_id, photo_uuid,
                                      exclude_request_key=row['request_key'])
             if not ok:
                 return False, f'participant:{person_id}:{reason}'

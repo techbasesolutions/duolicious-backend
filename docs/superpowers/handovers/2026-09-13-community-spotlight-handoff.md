@@ -101,10 +101,15 @@ An adversarial review of the branches above (2026-09-14, twelve findings F01 to 
 
 ### Branches and heads
 
-| Repo | Branch | Base | Head | Commits |
+| Repo | Branch | Base | Task 9 final commit | Head after the fix wave |
 | --- | --- | --- | --- | --- |
-| ahavah-api | spotlight-wave-1 | 381c275 (spotlight-phase-b head) | cab499e | 15 |
-| ahavah-admin | spotlight-wave-1 | 98f3a09 (spotlight-phase-b head) | aa1341c | 3 |
+| ahavah-api | spotlight-wave-1 | 381c275 (spotlight-phase-b head) | 7094181 | the fix-wave commit below |
+| ahavah-admin | spotlight-wave-1 | 98f3a09 (spotlight-phase-b head) | 85d6dd6 | the fix-wave commit below |
+
+The `cab499e` / `aa1341c` heads this table carried when it was first written
+were Task 9's implementation commits, not its final ones: Task 9's review
+round landed `7094181` (api) and `85d6dd6` (admin) on top, and `20843f8`
+(api) added the acceptance evidence. The fix wave below sits on those.
 
 Neither branch is merged or pushed. Web is untouched in Wave 1.
 
@@ -157,6 +162,55 @@ These are the totals as of the ninth of eleven Wave 1 tasks landing (below). The
 | F10 attribution without a matching click | Deferred to Wave 3 | Not resolved | Attribution rebuilt on visitor-bound click receipts, sequenced after the design-gated surfaces per the triage document. |
 | F11 confirm token replay after withdrawal | Resolved in Wave 1 | Task 7 (`9965eb3`, fix `5d19038`) | Confirm and card tokens carry a single-use nonce bound to the person's consent epoch; a withdrawal burns unused nonces and replay answers 410 `stale`. |
 | F12 controls diverge | Control-model part resolved in Wave 1, remainder deferred to Wave 3 | Task 9 (api `cab499e`, admin `aa1341c`) | The three named controls, the sign-up-time welcome cohort and the weekly business key are done; the auto flags are removed rather than left unused. Idempotent-tick work beyond the weekly key, and any auto mode, wait on Wave 3 per the triage sequencing. |
+
+### Fix wave (2026-09-15)
+
+A whole-branch review of everything above found seven defects, two of them
+record-loss paths that could leave a withdrawn member visible on the Page.
+One commit per repo closes them, on the same two branches, still unpushed:
+`fix(spotlight): recoverable receipts, purge respects in-flight rows, tile
+photos, approvals gate on member of the week, standing preference cleared on
+withdrawal` (api) and `fix(admin): refused published receipts are reported,
+tick renders every row needing a render` (admin). Their SHAs, both suite
+totals and the observed failing tests are in
+`.superpowers/sdd/2026-09-14-spotlight-wave-1/fix-wave-report.md`.
+
+1. A live post whose receipt never landed is now recoverable, and withdrawal
+   never orphans it. `record_receipt` accepts a late `published` outcome on a
+   row parked in `review` with `delivery_state` `attempting` or
+   `delivery_unknown`, under the lease that produced it; the operator route
+   `POST /admin/growth/queue/<id>/reconcile` (admin session only) does the
+   same with no lease, for the case where no lease holder will ever return;
+   `withdraw_member` stamps such a row and files an `investigate` removal
+   task instead of cancelling it and deleting its artwork; and the admin
+   worker reports a refused `published` receipt in `unrecorded` rather than
+   silently counting it `stale`.
+2. `POST /admin/growth/queue/purge` stamps every row it touches but cancels
+   only what withdrawal itself would cancel, leaving `processing` rows to
+   their lease holder and unresolved `review` rows alone. It answers
+   `cancelled` and `left_attempting`.
+3. A roundup tile is checked against its own photo: the tile snapshot and the
+   revision participants carry `photo_uuid`, and the dispatch check answers
+   `participant:<id>:photo_missing` for a participant without one.
+4. `POST /admin/growth/spotlight/member-of-week` carries the same
+   `approvals_enabled` gate and `invite_sent` audit field as the welcome
+   route, so no E4 goes out while approvals are paused.
+5. Choosing a different photo on the card link no longer burns the nonce: the
+   route answers `{ok, result: 'new_revision', revision}` and the same link
+   still works once the new revision is rendered.
+6. The tick lists `needs_render=1` with no status filter, so an
+   `awaiting_member` row that still needs artwork is rendered.
+7. Withdrawal clears `spotlight_opt_in` for every reason, so reactivating an
+   account does not quietly resume featuring the member.
+8. Minors in the same commits: the complete route locks the queue row before
+   reading the value it gates E5 on; `is_first_confirmation` takes the row
+   lock over the request's rows before counting (the process lock is per
+   gunicorn worker and orders nothing between workers); `pictured_people`
+   reads the revision through the row's own `current_revision_id`; the E5
+   recipient query requires `activated AND spotlight_opt_in`; the dispatch
+   and occurrence tests restore the seeded settings in a `finally`; and the
+   em dashes in `service/api/admin/users_action_routes.py` and
+   `service/person/__init__.py` are gone.
 
 ### Where the record lives
 

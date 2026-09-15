@@ -146,11 +146,33 @@ def set_status(tx, queue_id: str, status: str, *, external_post_id: Optional[str
         dict(st=status, ext=external_post_id, err=error, id=queue_id))
 
 
-_Q_RECEIPT_ROW = """
-    SELECT status, lease_token, delivery_state, external_post_id, cancellation_requested_at,
-           subject_person_id, platform, request_key
+_Q_LOCKED_ROW = """
+    SELECT id, status, lease_token, delivery_state, external_post_id, post_url,
+           cancellation_requested_at, subject_person_id, platform, request_key, kind,
+           current_revision_id
       FROM publishing_queue WHERE id = %(id)s FOR UPDATE
 """
+
+# A row is recoverable when it left `processing` without anyone being able to
+# say what the platform did with it: reaped into `review` after its lease
+# expired (delivery_state still 'attempting'), or parked there by a
+# `delivery_unknown` receipt. Either way a post may be LIVE, so the row must
+# stay reachable by a late definite answer -- from its own lease holder
+# (`record_receipt`) or from an operator (`reconcile_published`).
+RECOVERABLE_DELIVERY_STATES = ('attempting', 'delivery_unknown')
+
+
+def lock_queue_row(tx, queue_id):
+    """Take the row lock for one queue row and read it back, or None when
+    there is no such row.
+
+    Callers that both read a row and then act on it (the complete and
+    reconcile routes, `record_receipt` itself) take this lock FIRST, so the
+    values they decide on -- `cancellation_requested_at` above all, which
+    gates the live-card email -- cannot change underneath them between the
+    read and the write. `record_receipt`'s own lock is then a re-lock by the
+    same transaction, which Postgres grants for free."""
+    return tx.execute(_Q_LOCKED_ROW, dict(id=queue_id)).fetchone()
 
 
 def _file_late_removal_task(tx, queue_id, row: dict, external_post_id: Optional[str]) -> None:
@@ -172,6 +194,41 @@ def _file_late_removal_task(tx, queue_id, row: dict, external_post_id: Optional[
     task_row = dict(id=queue_id, platform=row['platform'], external_post_id=external_post_id,
                      request_key=row['request_key'])
     _file_removal_tasks(tx, [task_row], row['subject_person_id'])
+
+
+def _mark_published(tx, queue_id, row: dict, external_post_id: str, post_url: Optional[str]) -> None:
+    """The one place a queue row becomes `published`. Shared by the lease
+    holder's own receipt and the operator's reconcile, so both leave exactly
+    the same row behind -- including the removal task a withdrawal already
+    stamped on it."""
+    tx.execute(
+        """UPDATE publishing_queue SET status = 'published', delivery_state = 'published',
+                  external_post_id = %(ext)s, post_url = %(url)s, error = NULL,
+                  lease_until = NULL, updated_at = NOW()
+            WHERE id = %(id)s""",
+        dict(ext=external_post_id, url=post_url, id=queue_id))
+    if row['cancellation_requested_at'] is not None:
+        _file_late_removal_task(tx, queue_id, row, external_post_id)
+
+
+def reconcile_published(tx, queue_id, external_post_id: str, post_url: Optional[str] = None) -> dict:
+    """The operator's decision that a row parked in `review` with an
+    unresolved delivery is in fact live on the platform (spec 5). No lease is
+    required: the lease that produced the row is gone by definition, which is
+    exactly why a human has to answer for it.
+
+    Returns the locked row as it was BEFORE the write, so the caller can act
+    on its `cancellation_requested_at`/subject the same way the complete
+    route does. Raises ValueError('not_found') or ValueError('not_reconcilable')."""
+    if not external_post_id:
+        raise ValueError('external_id_required')
+    row = lock_queue_row(tx, queue_id)
+    if not row:
+        raise ValueError('not_found')
+    if row['status'] != 'review' or row['delivery_state'] not in RECOVERABLE_DELIVERY_STATES:
+        raise ValueError('not_reconcilable')
+    _mark_published(tx, queue_id, row, external_post_id, post_url)
+    return row
 
 
 def record_receipt(tx, queue_id, lease_token: Optional[str], outcome: str, *,
@@ -201,12 +258,20 @@ def record_receipt(tx, queue_id, lease_token: Optional[str], outcome: str, *,
     # on anything but two `str` (or two `bytes`) -- fail closed here instead.
     if not isinstance(lease_token, str) or not lease_token:
         raise ValueError('lease_required')
-    row = tx.execute(_Q_RECEIPT_ROW, dict(id=queue_id)).fetchone()
+    row = lock_queue_row(tx, queue_id)
     if not row:
         raise ValueError('not_found')
     if not row['lease_token'] or not hmac.compare_digest(row['lease_token'], lease_token):
         raise ValueError('lease_mismatch')
-    if row['status'] != 'processing':
+    # Fix wave item 1: a recoverable row (see RECOVERABLE_DELIVERY_STATES)
+    # accepts a late `published` outcome from the very lease that produced
+    # it, and is then treated exactly as a `processing` row would be. That is
+    # the only way a post that really did go live can still be recorded --
+    # and the only way withdrawal's removal task gets filed against it.
+    # Every other non-processing case is refused as before.
+    recoverable = (outcome == 'published' and row['status'] == 'review'
+                   and row['delivery_state'] in RECOVERABLE_DELIVERY_STATES)
+    if row['status'] != 'processing' and not recoverable:
         duplicate = (
             (outcome == 'published' and row['status'] == 'published'
              and row['external_post_id'] == external_post_id)
@@ -228,14 +293,7 @@ def record_receipt(tx, queue_id, lease_token: Optional[str], outcome: str, *,
     if outcome == 'published':
         if not external_post_id:
             raise ValueError('external_id_required')
-        tx.execute(
-            """UPDATE publishing_queue SET status = 'published', delivery_state = 'published',
-                      external_post_id = %(ext)s, post_url = %(url)s, error = NULL,
-                      lease_until = NULL, updated_at = NOW()
-                WHERE id = %(id)s""",
-            dict(ext=external_post_id, url=post_url, id=queue_id))
-        if row['cancellation_requested_at'] is not None:
-            _file_late_removal_task(tx, queue_id, row, external_post_id)
+        _mark_published(tx, queue_id, row, external_post_id, post_url)
     elif outcome == 'failed':
         tx.execute(
             """UPDATE publishing_queue SET status = 'failed', delivery_state = 'failed',

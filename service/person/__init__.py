@@ -41,7 +41,7 @@ from antiabuse.lodgereport import (
 
 # FireHOL IP blocklist on /request-otp + /check-otp. Since 2026-07-29
 # this is an mmap reader over a binary file the cron container builds
-# (see antiabuse/firehol) — per-worker cost is a few shared pages, and
+# (see antiabuse/firehol): per-worker cost is a few shared pages, and
 # a missing file fails open. The old per-worker child-process design
 # (~1GB pytricia trie each; 4.9GiB api container, swap thrashing, EOFError
 # 500s on child death) is what kept the bypass flag on for months.
@@ -51,7 +51,7 @@ if _os.environ.get("DUO_DISABLE_FIREHOL", "false").lower() in ("true", "1", "yes
     # Loud-warn at import time so the bypass can't silently drift
     # unnoticed (audit Auth #12).
     print(
-        "WARNING: DUO_DISABLE_FIREHOL=true — IP blocklist is OFF. "
+        "WARNING: DUO_DISABLE_FIREHOL=true, IP blocklist is OFF. "
         "/request-otp + /check-otp lose their IP-reputation layer. "
         "Set DUO_DISABLE_FIREHOL=false (or unset) when the constraint "
         "that forced the bypass is gone."
@@ -293,7 +293,7 @@ def _send_otp(email: str, otp: str):
         return
 
     # Threaded so the Resend round-trip (~500ms) doesn't block the
-    # /request-otp response — and so this path's timing matches the
+    # /request-otp response, and so this path's timing matches the
     # banned-email path (which sends nothing), closing the timing
     # side-channel left by the 461->200 enumeration fix. aws_smtp is
     # thread-safe (internal RLock) and best-effort (never raises).
@@ -304,7 +304,7 @@ def _send_otp(email: str, otp: str):
             to_addr=email,
             from_addr=f'noreply-otp@{EMAIL_DOMAIN}',
             # Route confused-user replies to a human address instead of the
-            # noreply alias (which has no inbound MX) — audit Email #9.
+            # noreply alias (which has no inbound MX). Audit Email #9.
             reply_to=f'support@{EMAIL_DOMAIN}',
         )
 
@@ -332,7 +332,7 @@ def post_request_otp(req: t.PostRequestOtp):
     if not SIGNUPS_OPEN and norm.rpartition("@")[2] not in SIGNUP_ALLOWED_DOMAINS:
         return 'Signups are not open yet', 403
 
-    # Turnstile gate (no-op when TURNSTILE_SECRET_KEY unset — zero-config
+    # Turnstile gate (no-op when TURNSTILE_SECRET_KEY unset, for zero-config
     # rollout). Closed-beta allow-listed callers go through above; only
     # public callers reach here, so the verify is gated on launch.
     if not verify_turnstile(req.turnstile_token, request.remote_addr):
@@ -369,7 +369,7 @@ def post_request_otp(req: t.PostRequestOtp):
         rows = tx.execute(Q_INSERT_DUO_SESSION, params).fetchall()
 
         # Record referral attribution if the FE carried an inviter_code
-        # from /i/<code>. Best-effort — bad codes / self-referrals /
+        # from /i/<code>. Best-effort: bad codes / self-referrals /
         # already-attributed invitees return None silently. Same tx so
         # any later failure rolls this back too. See parent spec.
         attribute_referral(tx, getattr(req, "inviter_code", None), req.email)
@@ -380,7 +380,7 @@ def post_request_otp(req: t.PostRequestOtp):
     except:
         # Banned email: return the SAME shape as a normal signup (a
         # session_token, no code sent) so a banned address is
-        # indistinguishable from a fresh one — closes the 461-vs-200
+        # indistinguishable from a fresh one, which closes the 461-vs-200
         # account-enumeration leak. The banned user simply never receives
         # an OTP and can't complete /check-otp.
         return dict(session_token=session_token)
@@ -520,7 +520,7 @@ def post_sign_out(s: t.SessionInfo):
 
 
 def post_sign_out_everywhere(s: t.SessionInfo):
-    """Wipe EVERY duo_session row for this person — including the caller's
+    """Wipe EVERY duo_session row for this person, including the caller's
     own. Used when a user wants to revoke a stolen token they no longer
     control (audit Auth #8). Returns the count for the client to display."""
     with api_tx('READ COMMITTED') as tx:
@@ -787,7 +787,7 @@ def post_finish_onboarding(req: t.PostFinishOnboarding, s: t.SessionInfo):
     # client) would otherwise 500 here in an unrecoverable retry loop
     # ("We couldn't finalize your profile"). Return a distinct 409 so the
     # client can route the user back to re-enter the missing fields.
-    # 2026-07-19 (Laura's loop): gender_id joined the guard — a wizard
+    # 2026-07-19 (Laura's loop): gender_id joined the guard, because a wizard
     # client whose gender PATCH silently failed reached the copy with
     # gender_id NULL and 500ed unrecoverably. The body NAMES the missing
     # fields so the client can route the user to the right step instead
@@ -869,7 +869,7 @@ def post_finish_onboarding(req: t.PostFinishOnboarding, s: t.SessionInfo):
             dict(person_id=row['person_id'], email=api_params['normalized_email']),
         )
 
-        # Referral credits — see docs/superpowers/specs/2026-06-05-beta-referrals-design.md.
+        # Referral credits: see docs/superpowers/specs/2026-06-05-beta-referrals-design.md.
         # Both calls are idempotent; harmless when the user has no
         # referral relationships in either direction.
         new_uuid = str(row['person_uuid'])
@@ -922,7 +922,7 @@ def post_finish_onboarding(req: t.PostFinishOnboarding, s: t.SessionInfo):
         client_user_agent=request.headers.get('User-Agent'),
     )
 
-    # Admin signup notification — email the team on each new member, replacing
+    # Admin signup notification: email the team on each new member, replacing
     # the old waitlist-join notice now that the waitlist is gone. The helper
     # suppression-checks the signer (skips test addresses) and fires on a daemon
     # thread, so it never blocks or fails graduation. Post-commit: can't fire for
@@ -1005,7 +1005,7 @@ def get_me(
         # /settings/account renders these as the current values; without
         # them we showed hardcoded fakes ("ehud@example.com", etc.).
         out['email'] = row['email']
-        # Internal sequential integer person.id — only the authed /me path
+        # Internal sequential integer person.id: only the authed /me path
         # exposes it. The public /me/<uuid> path (include_email=False) must
         # not leak it to an attacker who only knows a UUID.
         out['person_id'] = row['person_id']
@@ -1150,7 +1150,7 @@ def delete_or_ban_account(
     `pendingdeletion` cron hard-deletes after 7 days.
 
     For admin bans (`admin_ban_token` set): we still hard-delete via
-    Q_ADMIN_BAN — admins act on policy violations and shouldn't have a
+    Q_ADMIN_BAN: admins act on policy violations and shouldn't have a
     grace window.
     """
     from service.spotlight.withdrawal import withdraw_member
@@ -1275,11 +1275,11 @@ def cancel_account_deletion(s: t.SessionInfo):
     so the pendingdeletion cron stops considering the row for hard
     delete + the user reappears in /search + /matches.
 
-    Idempotent — calling on a never-deleted account is a no-op
+    Idempotent: calling on a never-deleted account is a no-op
     (activated stays TRUE, deletion_requested_at stays NULL).
 
     Returns:
-      {"ok": True, "restored": bool}  — restored=True if a pending
+      {"ok": True, "restored": bool}  : restored=True if a pending
       deletion was actually canceled; False if there was nothing to
       cancel (already-active account).
     """
@@ -1441,7 +1441,7 @@ def change_email_verify(s: t.SessionInfo, otp: str):
                 person_id=s.person_id,
             ),
         )
-        # Email change implies an account-control event — wipe every OTHER
+        # Email change implies an account-control event, so wipe every OTHER
         # duo_session for this person so a stolen-pre-change token loses
         # access. Keep the caller's current session so the user stays
         # signed in on this device (audit Auth #2).
@@ -1763,7 +1763,7 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
         WHERE gender.name = ANY(%(field_value)s)
         """
     elif field_name == 'ahavah_extra':
-        # Merge the incoming JSON object into the stored blob — the
+        # Merge the incoming JSON object into the stored blob, since the
         # client sends partial patches (e.g. {assembly: "natsarim"})
         # and we keep every prior field intact. `||` is Postgres's
         # JSONB shallow-merge operator: right-hand keys overwrite.
@@ -1894,7 +1894,7 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
         # location (exact location.country match via pycountry) and move
         # coordinates + display strings together. Falls back to ISO-only
         # when the country isn't in the location table (coordinates kept).
-        # Validation: 2-char uppercase ISO2 only — anything else
+        # Validation: 2-char uppercase ISO2 only. Anything else
         # leaves person.country unchanged (UPDATE no-ops by WHERE).
         _iso = (field_value or '').strip().upper()
         _country_name = None
@@ -1950,7 +1950,7 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
         # Phase W: round-trip language multi-select. Frontend sends an
         # array of canonical codes (en, he, ...) plus optional
         # "custom:..." entries; stored verbatim in TEXT[] column.
-        # Empty list clears the field — search query treats `[]` as
+        # Empty list clears the field: the search query treats `[]` as
         # "no preference".
         q1 = """
         UPDATE person
@@ -1969,7 +1969,7 @@ def patch_profile_info(req: t.PatchProfileInfo, s: t.SessionInfo):
          WHERE id = %(person_id)s
         """
     elif field_name == 'verification_required':
-        # "Require my matches to be verified" — a SEARCHER preference that
+        # "Require my matches to be verified": a SEARCHER preference that
         # drives the discover verified_only filter (the frontend reads it and
         # passes ?verified_only). Backed by require_verified_prospects, NOT
         # person.verification_required: the latter is the anti-abuse / location
@@ -2836,7 +2836,7 @@ def get_admin_ban_link(token: str):
 
 
 def post_admin_ban(token: str):
-    """POST /admin/ban/<token> — destructive. GET on this path is rejected
+    """POST /admin/ban/<token>: destructive. GET on this path is rejected
     (the confirmation form lives at /admin/ban-link/<token>)."""
     rows = delete_or_ban_account(s=None, admin_ban_token=token)
     if rows:
@@ -2862,7 +2862,7 @@ def get_admin_delete_photo_link(token: str):
 
 
 def post_admin_delete_photo(token: str):
-    """POST /admin/delete-photo/<token> — destructive. GET is rejected."""
+    """POST /admin/delete-photo/<token>: destructive. GET is rejected."""
     params = dict(token=token)
 
     with api_tx('READ COMMITTED') as tx:

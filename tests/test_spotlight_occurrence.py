@@ -1,4 +1,7 @@
+from contextlib import contextmanager
+
 import pytest
+
 from database import api_tx
 from service.spotlight.queue import create_candidate, record_receipt, set_setting
 from service.spotlight.revisions import current_revision, attach_render, record_consent, create_revision
@@ -29,7 +32,23 @@ def _photo(pid):
 
 
 def _on(tx):  set_setting(tx, 'publication_enabled', 'true'); set_setting(tx, 'external_access_enabled', 'true')
-def _off(tx): set_setting(tx, 'publication_enabled', 'false')
+def _off(tx): set_setting(tx, 'publication_enabled', 'false'); set_setting(tx, 'external_access_enabled', 'true')
+
+
+@contextmanager
+def _publication_on():
+    """Publishing switched on for the duration of the block, and back to the
+    seeded defaults (migration 0044: publishing paused, external access
+    allowed) on the way out even when an assertion fails. Opens its own
+    transactions before and after the caller's, never inside one: the api
+    connection lock is not reentrant."""
+    with api_tx() as tx:
+        _on(tx)
+    try:
+        yield
+    finally:
+        with api_tx() as tx:
+            _off(tx)
 
 
 def _claimed(tx, pid, photo):
@@ -43,8 +62,7 @@ def _claimed(tx, pid, photo):
 @pytest.mark.parametrize('first,second', [('facebook', 'instagram'), ('instagram', 'facebook')])
 def test_sibling_channel_passes_after_first_publishes(make_person, first, second):
     p = _make_eligible(make_person); photo = _photo(p['id'])
-    with api_tx() as tx:
-        _on(tx)
+    with _publication_on(), api_tx() as tx:
         rk, rows = _claimed(tx, p['id'], photo)
         assert dispatch_check(tx, rows[first]['id'], rows[first]['lease_token']) == (True, '')
         record_receipt(tx, rows[first]['id'], rows[first]['lease_token'], 'published', external_post_id='1')
@@ -53,7 +71,6 @@ def test_sibling_channel_passes_after_first_publishes(make_person, first, second
         record_receipt(tx, rows[second]['id'], rows[second]['lease_token'], 'published', external_post_id='2')
         assert record_occurrence(tx, 'welcome', rk, [p['id']]) == 0
         assert tx.execute("SELECT count(*) AS n FROM spotlight_occurrence WHERE request_key = %(rk)s", dict(rk=rk)).fetchone()['n'] == 1
-        _off(tx)
 
 
 def test_new_request_within_30_days_is_blocked(make_person):
@@ -81,14 +98,12 @@ def test_roundup_participants_each_get_an_occurrence(make_person):
 
 def test_first_confirmation_only_once(make_person):
     p = _make_eligible(make_person); photo = _photo(p['id'])
-    with api_tx() as tx:
-        _on(tx)
+    with _publication_on(), api_tx() as tx:
         rk, rows = _claimed(tx, p['id'], photo)
         record_receipt(tx, rows['facebook']['id'], rows['facebook']['lease_token'], 'published', external_post_id='1')
         assert is_first_confirmation(tx, rk) is True
         record_receipt(tx, rows['instagram']['id'], rows['instagram']['lease_token'], 'published', external_post_id='2')
         assert is_first_confirmation(tx, rk) is False
-        _off(tx)
 
 
 def test_complete_route_sends_e5_once_with_post_url(make_person, client, monkeypatch):
@@ -96,19 +111,18 @@ def test_complete_route_sends_e5_once_with_post_url(make_person, client, monkeyp
     sent = []
     monkeypatch.setattr(routes, '_send_card_live', lambda *a: sent.append(a))
     p = _make_eligible(make_person); photo = _photo(p['id'])
-    with api_tx() as tx:
-        _on(tx)
-        rk, rows = _claimed(tx, p['id'], photo)
-        fb, ig = rows['facebook'], rows['instagram']
-    h = {'X-Growth-Cron': 'test-cron-secret'}
-    r = client.post(f"/admin/growth/queue/{fb['id']}/complete", json=dict(lease_token=fb['lease_token'], status='published', external_post_id='1_2', post_url='https://www.facebook.com/1_2'), headers=h)
-    assert r.status_code == 200
-    r = client.post(f"/admin/growth/queue/{ig['id']}/complete", json=dict(lease_token=ig['lease_token'], status='published', external_post_id='77', post_url='https://www.instagram.com/p/abc/'), headers=h)
-    assert r.status_code == 200
-    assert sent == [(p['id'], rk, '1_2', 'facebook', 'https://www.facebook.com/1_2')]
-    with api_tx() as tx:
-        assert tx.execute("SELECT count(*) AS n FROM spotlight_occurrence WHERE request_key = %(rk)s AND person_id = %(p)s", dict(rk=rk, p=p['id'])).fetchone()['n'] == 1
-        _off(tx)
+    with _publication_on():
+        with api_tx() as tx:
+            rk, rows = _claimed(tx, p['id'], photo)
+            fb, ig = rows['facebook'], rows['instagram']
+        h = {'X-Growth-Cron': 'test-cron-secret'}
+        r = client.post(f"/admin/growth/queue/{fb['id']}/complete", json=dict(lease_token=fb['lease_token'], status='published', external_post_id='1_2', post_url='https://www.facebook.com/1_2'), headers=h)
+        assert r.status_code == 200
+        r = client.post(f"/admin/growth/queue/{ig['id']}/complete", json=dict(lease_token=ig['lease_token'], status='published', external_post_id='77', post_url='https://www.instagram.com/p/abc/'), headers=h)
+        assert r.status_code == 200
+        assert sent == [(p['id'], rk, '1_2', 'facebook', 'https://www.facebook.com/1_2')]
+        with api_tx() as tx:
+            assert tx.execute("SELECT count(*) AS n FROM spotlight_occurrence WHERE request_key = %(rk)s AND person_id = %(p)s", dict(rk=rk, p=p['id'])).fetchone()['n'] == 1
 
 
 def test_card_live_email_prefers_receipt_url():

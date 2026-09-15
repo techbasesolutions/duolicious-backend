@@ -20,7 +20,6 @@ Every function here runs inside the caller's api_tx; none opens one.
 """
 from __future__ import annotations
 
-from service.spotlight.revisions import current_revision
 
 
 def record_occurrence(tx, kind: str, request_key: str, person_ids: list[int]) -> int:
@@ -52,10 +51,22 @@ def pictured_people(tx, queue_row: dict) -> list[int]:
     """Who is actually pictured on this card. welcome/member_of_week/
     highlight name one subject (or none, which should not happen but is
     handled defensively); a roundup's pictured people are whoever the
-    CURRENT revision's participants list names -- empty for a count-only
-    roundup, since nobody's face is on that card."""
+    revision THIS ROW points at names -- empty for a count-only roundup,
+    since nobody's face is on that card.
+
+    Read through `queue_row['current_revision_id']`, not by request key: the
+    two platform rows of one request can diverge (a withdrawal re-issues the
+    pending row onto a new revision while the published sibling keeps
+    pointing at the one it actually went out with), and `current_revision`'s
+    own `LIMIT 1` over the request key would then answer for whichever row
+    the planner happened to return. The occurrence has to name the faces on
+    the card that published, so it reads that card's own revision."""
     if queue_row['kind'] == 'roundup':
-        rev = current_revision(tx, queue_row['request_key'])
+        revision_id = queue_row.get('current_revision_id')
+        if revision_id is None:
+            return []
+        rev = tx.execute("SELECT participants FROM spotlight_revision WHERE id = %(id)s",
+                         dict(id=revision_id)).fetchone()
         if not rev:
             return []
         return [p['person_id'] for p in (rev['participants'] or [])]
@@ -69,17 +80,16 @@ def is_first_confirmation(tx, request_key: str) -> bool:
     caller's own row, so a count of 1 means this was the first platform to
     confirm.
 
-    Two sibling platform completions (facebook's own `/complete` call and
-    instagram's own) each run this in a SEPARATE `api_tx`, but `record_receipt`'s
-    `UPDATE ... status = 'published'` and `record_occurrence`'s writes (the
-    unique insert into `spotlight_occurrence` and the `person` UPDATE) commit
-    as part of THIS same transaction before this count runs -- and `api_tx`
-    holds one shared connection behind a single lock (`database.py`), so no
-    second sibling's transaction can even begin until this one has fully
-    committed. There is therefore no window in which a later cleanup, or the
-    other sibling's own completion, could observe or drop a half-written
-    occurrence row before this count reads it: by the time either happens,
-    this transaction's writes are either fully committed or have not started."""
+    What serialises two sibling platform completions is the row lock taken
+    below, not the api connection lock. That process lock is per gunicorn
+    worker: two workers (or two dynos) each hold their own connection, so it
+    orders nothing between them. `SELECT ... FOR UPDATE` over every row of
+    the request key does, because both siblings are rows of the same key --
+    the second completion blocks in the database until the first has
+    committed, and then counts a state that already includes it. Without the
+    lock both could read 1 and both would send E5."""
+    tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s FOR UPDATE",
+               dict(rk=request_key))
     n = tx.execute(
         "SELECT count(*) AS n FROM publishing_queue WHERE request_key = %(rk)s AND status = 'published'",
         dict(rk=request_key)).fetchone()['n']

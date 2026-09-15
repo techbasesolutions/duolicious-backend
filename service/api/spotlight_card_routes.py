@@ -15,7 +15,9 @@ nonce is consumed only after the decision itself lands (approve_card
 returns, or the skip cancellation runs), never before -- a routine 409
 (approvals disabled, nothing rendered yet, a photo the member does not
 own) leaves the token usable for a retry once the condition clears,
-rather than burning a legitimate link on a failed attempt. A repeat POST
+rather than burning a legitimate link on a failed attempt. Choosing a
+different photo leaves it usable too: that answers with the new
+revision number and no decision has been made yet. A repeat POST
 with the same (now-used) token returns the current state idempotently
 rather than re-running the decision.
 """
@@ -31,7 +33,7 @@ from service.api.unsubscribe_routes import unsub_limit
 from service.spotlight.approval import CARD_TOKEN_TTL_SECONDS, card_state, parse_card_token
 from service.spotlight.nonce import check_nonce, consume_nonce
 from service.spotlight.queue import set_status
-from service.spotlight.revisions import approve_card
+from service.spotlight.revisions import approve_card, current_revision
 
 
 def _resolve(token: str) -> tuple[str, str, str]:
@@ -143,6 +145,17 @@ def post_spotlight_card(token: str):
                 if not photo_uuid:
                     abort(400)
                 result = approve_card(tx, rk, row['subject_person_id'], photo_uuid, nonce=nonce)
+                if result == 'new_revision':
+                    # Fix wave item 5: choosing a different photo is not a
+                    # decision, it is a request for a different card. The
+                    # member still has to approve the one that comes back,
+                    # so the single-use nonce is NOT consumed here -- burning
+                    # it would leave them holding a dead link to a card
+                    # nobody can approve. The new revision number tells the
+                    # page what it is now waiting on.
+                    fresh = current_revision(tx, rk)
+                    return dict(ok=True, result=result,
+                                revision=fresh['revision'] if fresh else None)
                 if not consume_nonce(tx, nonce):
                     return _already(tx, rk, row)
                 return dict(ok=True, result=result)

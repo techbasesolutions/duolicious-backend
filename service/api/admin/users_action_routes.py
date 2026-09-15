@@ -1,19 +1,19 @@
-"""User-management action endpoints — every mutation is audit-logged.
+"""User-management action endpoints. Every mutation is audit-logged.
 
 Endpoints:
-  POST   /admin/users/:uuid/entitlements         — grant
-  DELETE /admin/users/:uuid/entitlements/:name   — revoke
-  POST   /admin/users/:uuid/tokens               — manual credit/debit
-  PATCH  /admin/users/:uuid/roles                — grant/revoke admin/mod
-  POST   /admin/users/:uuid/deactivate           — soft delete
-  POST   /admin/users/:uuid/reactivate           — undo soft delete
-  DELETE /admin/users/:uuid                      — hard delete (requires confirm_email)
-  POST   /admin/users/:uuid/clear-onboardee      — wipe onboardee + sessions
-  POST   /admin/users/:uuid/resend-otp           — send a fresh OTP
+  POST   /admin/users/:uuid/entitlements         : grant
+  DELETE /admin/users/:uuid/entitlements/:name   : revoke
+  POST   /admin/users/:uuid/tokens               : manual credit/debit
+  PATCH  /admin/users/:uuid/roles                : grant/revoke admin/mod
+  POST   /admin/users/:uuid/deactivate           : soft delete
+  POST   /admin/users/:uuid/reactivate           : undo soft delete
+  DELETE /admin/users/:uuid                      : hard delete (requires confirm_email)
+  POST   /admin/users/:uuid/clear-onboardee      : wipe onboardee + sessions
+  POST   /admin/users/:uuid/resend-otp           : send a fresh OTP
 
 Every mutation calls require_admin(s) FIRST, then performs the mutation
 and writes one admin_audit_log row in the same api_tx EXCEPT for the
-two entitlement endpoints — service.entitlements.grant/revoke open
+two entitlement endpoints, since service.entitlements.grant/revoke open
 their own tx, so the audit is written in an adjacent tx. Acceptable
 trade-off because entitlements grant/revoke is idempotent.
 """
@@ -121,7 +121,7 @@ _Q_CLEAR_ONBOARDEE = """
 @validate(t.PostGrantEntitlement)
 def post_grant_entitlement(req: t.PostGrantEntitlement, s: t.SessionInfo, uuid: str):
     require_admin(s)
-    # service.entitlements.grant takes int person.id, not uuid — look up first.
+    # service.entitlements.grant takes int person.id, not uuid, so look up first.
     with api_tx('read committed') as tx:
         row = tx.execute(_Q_PERSON_BY_UUID, dict(uuid=uuid)).fetchone()
     if row is None:
@@ -155,7 +155,7 @@ def delete_revoke_entitlement(s: t.SessionInfo, uuid: str, name: str):
         abort(404)
     person_id = int(row['id'])
     target_email = row['email']
-    # revoke() opens its OWN api_tx — same caveat as grant() above.
+    # revoke() opens its OWN api_tx, the same caveat as grant() above.
     changed = entitlements.revoke(person_id, name)
     with api_tx() as tx:
         record_audit(
@@ -278,7 +278,7 @@ def delete_person(req: t.DeletePerson, s: t.SessionInfo, uuid: str):
         if row is None:
             abort(404)
         if (row['email'] or '').strip().lower() != req.confirm_email.strip().lower():
-            # Hard delete is irreversible — the safety gate is a string
+            # Hard delete is irreversible, so the safety gate is a string
             # match against the stored email, so a typo or stale UI state
             # can't cascade-wipe the wrong row. FK cascade handles photos,
             # likes, messages, sessions, etc.
@@ -325,7 +325,7 @@ def post_resend_otp_admin(req: t.PostLifecycle, s: t.SessionInfo, uuid: str):
         session_token_hash = sha512(session_token)
         # Q_INSERT_DUO_SESSION runs the standard _OTP_CTE (generates a
         # 6-digit OTP, applies banned/bad-domain checks) and INSERTs one
-        # duo_session row — same shape used by post_request_otp.
+        # duo_session row, the same shape used by post_request_otp.
         rows = tx.execute(
             Q_INSERT_DUO_SESSION,
             dict(
@@ -352,6 +352,6 @@ def post_resend_otp_admin(req: t.PostLifecycle, s: t.SessionInfo, uuid: str):
             from service.person import _send_otp
             _send_otp(target_email, otp)
         except Exception:
-            # Non-fatal — admin can retry; the row is in duo_session.
+            # Non-fatal: the admin can retry; the row is in duo_session.
             pass
     return {'ok': True, 'sent': bool(otp)}

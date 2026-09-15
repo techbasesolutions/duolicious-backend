@@ -312,3 +312,57 @@ def test_send_card_live_falls_back_when_post_url_is_not_https(make_person, monke
     assert send_card_live(p['id'], rk, '77', 'instagram', post_url='not-a-url') is True
     body = sent[0]['body']
     assert post_url_for('instagram', '77') in body
+
+
+def test_choosing_another_photo_keeps_the_card_link_usable(client, make_person):
+    """Fix wave item 5: picking a different photo is not the member's final
+    decision, so it must not burn the single-use nonce. The same link still
+    GETs (not stale) and, once the new revision is rendered, approves."""
+    p = _make_eligible(make_person, name='PhotoSwap')
+    email = _email(p['id'])
+    with api_tx() as tx:
+        tx.execute(
+            """INSERT INTO photo (uuid, person_id, position, moderation_status, blurhash, hash)
+               VALUES (gen_random_uuid(), %(id)s, 2, 'approved', 'x', 'y')""", dict(id=p['id']))
+        second = tx.execute(
+            "SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s AND position = 2",
+            dict(id=p['id'])).fetchone()['u']
+        set_setting(tx, 'approvals_enabled', 'true')
+    try:
+        with api_tx() as tx:
+            rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+            attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
+            tok = make_card_token(tx, rk, email)
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': second})
+        assert r.status_code == 200 and r.get_json() == {'ok': True, 'result': 'new_revision', 'revision': 2}
+        # The link is still live: not stale, not already resolved.
+        body = client.get(f'/spotlight/card/{tok}').get_json()
+        assert body['stale'] is False and body['revision'] == 2 and body['preview_available'] is False
+        with api_tx() as tx:
+            attach_render(tx, current_revision(tx, rk)['id'], 'h2', 'k2', 'https://cdn/k2.png')
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': second})
+        assert r.status_code == 200 and r.get_json() == {'ok': True, 'result': 'approved'}
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')
+
+
+def test_send_card_live_skips_a_member_who_left_spotlight(make_person, monkeypatch):
+    """The recipient query carries the consent check: a member who has opted
+    out (or been deactivated) between the publish and the receipt never gets
+    "your card is live"."""
+    import service.campaigns.runner as r
+    sent = []
+    class _S:
+        def send(self, **kw): sent.append(kw); return 'mid'
+    monkeypatch.setattr(r, 'make_aws_smtp', lambda: _S())
+    p = _make_eligible(make_person, name='LiveGone')
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET email = %(e)s WHERE id = %(id)s", dict(e=f'live-gone-{p["id"]}@ahavah-test.invalid', id=p['id']))
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        tx.execute("UPDATE publishing_queue SET image_url = %(u)s WHERE request_key = %(rk)s AND platform = 'facebook'",
+                   dict(u='https://cdn.ahavah.app/spotlight/x.png', rk=rk))
+        tx.execute("UPDATE person SET spotlight_opt_in = FALSE WHERE id = %(id)s", dict(id=p['id']))
+    from emails.spotlight_card_live import send_card_live
+    assert send_card_live(p['id'], rk, '123_456', 'facebook') is False
+    assert sent == []

@@ -369,3 +369,68 @@ def test_weekly_email_excludes_deleting_member(make_person):
     with api_tx() as tx:
         tx.execute("UPDATE person SET activated = FALSE, deletion_requested_at = NOW() WHERE id = %(p)s", dict(p=p['id']))
     assert _week_context()['spotlight'] is None
+
+
+def test_review_row_with_an_unresolved_delivery_is_never_cancelled(make_person):
+    """Fix wave item 1: a row parked in `review` with delivery_state
+    `attempting` (a reaped lease) or `delivery_unknown` may have a LIVE post
+    behind it. Cancelling it, and deleting its artwork, would orphan that
+    post: nothing would ever file a removal task for it. It is stamped and
+    handed to a human through an `investigate` task instead."""
+    for delivery_state in ('attempting', 'delivery_unknown'):
+        p = _make_eligible(make_person, name=f'InFlight{delivery_state}')
+        with api_tx() as tx:
+            rk = _row_in(tx, p['id'], 'review', delivery_state=delivery_state)
+            out = withdraw_member(tx, p['id'], 'opt_out')
+            assert out['cancelled'] == 0
+            assert out['left_attempting'] == 2
+            assert out['removal_tasks'] == 2
+            assert _statuses(tx, rk) == {'facebook': ('review', True), 'instagram': ('review', True)}
+            rows = tx.execute(
+                "SELECT image_key FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()
+            assert all(r['image_key'] is not None for r in rows)
+            tasks = tx.execute(
+                """SELECT reason, external_post_id, person_id FROM spotlight_removal_task
+                    WHERE request_key = %(rk)s ORDER BY platform""", dict(rk=rk)).fetchall()
+            assert [(t['reason'], t['external_post_id'], t['person_id']) for t in tasks] == [
+                ('investigate', None, p['id'])] * 2
+
+
+def test_investigate_task_is_listed_for_the_operator(make_person, client):
+    """The removals surface lists an `investigate` task like any other; the
+    admin worker leaves every reason other than `delete_via_api` alone."""
+    admin = _make_admin(make_person)
+    p = _make_eligible(make_person, name='Investigate')
+    with api_tx() as tx:
+        rk = _row_in(tx, p['id'], 'review', delivery_state='attempting')
+        withdraw_member(tx, p['id'], 'opt_out')
+    listed = client.get('/admin/growth/removals?pending=1', headers=_auth_headers_for(admin)).get_json()
+    mine = [t for t in listed['tasks'] if t['request_key'] == rk]
+    assert len(mine) == 2 and {t['reason'] for t in mine} == {'investigate'}
+
+
+def test_withdrawal_clears_the_standing_preference(make_person, client):
+    """Fix wave item 7: withdrawal is a consent event, so the standing
+    `spotlight_opt_in` flag goes with it. Reactivating the account does not
+    bring it back -- the member has to opt in again -- so they stay out of
+    both the welcome cohort and the suggest list."""
+    from service.api.admin.spotlight_routes import _Q_WELCOME_CANDIDATES, _Q_SUGGEST
+    admin = _make_admin(make_person)
+    headers = _auth_headers_for(admin)
+    p = _make_eligible(make_person, name='StandingPref')
+    with api_tx() as tx:
+        target_uuid = tx.execute("SELECT uuid::text AS u FROM person WHERE id = %(p)s", dict(p=p['id'])).fetchone()['u']
+        welcome_before = {r['id'] for r in tx.execute(_Q_WELCOME_CANDIDATES).fetchall()}
+        assert p['id'] in welcome_before
+    assert client.post(f'/admin/users/{target_uuid}/deactivate', json={'reason': 'policy violation'},
+                       headers=headers).status_code == 200
+    assert client.post(f'/admin/users/{target_uuid}/reactivate', json={'reason': 'appeal upheld'},
+                       headers=headers).status_code == 200
+    with api_tx() as tx:
+        assert tx.execute("SELECT spotlight_opt_in AS o, activated AS a FROM person WHERE id = %(p)s",
+                          dict(p=p['id'])).fetchone() == dict(o=False, a=True)
+        assert p['id'] not in {r['id'] for r in tx.execute(_Q_WELCOME_CANDIDATES).fetchall()}
+        assert p['id'] not in {r['id'] for r in tx.execute(_Q_SUGGEST, dict(recent=None)).fetchall()}
+        # Opting in again is all it takes to be a candidate once more.
+        set_spotlight_opt_in(tx, p['id'], True)
+        assert p['id'] in {r['id'] for r in tx.execute(_Q_SUGGEST, dict(recent=None)).fetchall()}

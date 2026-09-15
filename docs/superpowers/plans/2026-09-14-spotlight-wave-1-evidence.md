@@ -144,3 +144,21 @@ Render calls recorded by the stub `renderCard`: 0 (the dry-run tick counts `rend
 6. Storage and Mail matrix groups carry no Wave 1 evidence (F06/F07/F08/F09 are Wave 2 per the plan).
 7. No test failures, flaky tests or orphan rows were observed in either suite run. Both suites, tsc and the admin build were clean on the first run.
 8. Roundup branch of late removal-task filing (flagged in the ledger at Task 5's review) is now covered: `tests/test_spotlight_delivery.py::test_late_receipt_on_a_roundup_files_one_unattributed_task` exists and passes as part of the 491.
+
+## Fix wave (2026-09-15)
+
+The whole-branch review of Wave 1 raised seven items; each is closed by one
+commit per repo on the same branches. The tests below are the ones that were
+observed failing first and pass afterwards. API totals moved from 491 to 509;
+admin from 47 to 51.
+
+| Item | Covering tests |
+| --- | --- |
+| 1. Recoverable receipts, and withdrawal never orphans a live post | `tests/test_spotlight_delivery.py::test_reaped_row_records_a_late_published_receipt`, `::test_reaped_row_after_withdrawal_files_the_removal_task`, `::test_delivery_unknown_row_records_a_definite_receipt`, `::test_reaped_row_refuses_a_wrong_lease`, `::test_operator_parked_review_row_still_refuses_a_published_receipt`; `tests/test_spotlight_routes.py::test_reconcile_publishes_a_reaped_row_and_sends_the_live_email`, `::test_reconcile_of_a_withdrawn_member_files_the_removal_task_and_sends_nothing`, `::test_reconcile_refuses_a_row_that_is_not_in_an_unresolved_delivery`, `::test_reconcile_is_admin_only`; `tests/test_spotlight_withdrawal.py::test_review_row_with_an_unresolved_delivery_is_never_cancelled`, `::test_investigate_task_is_listed_for_the_operator`; admin `tests/publishing.test.mjs` "a refused published receipt is reported with its external id, not counted stale" and "a lease mismatch leaves the row alone and does not retry the receipt", `tests/growth-server.test.mjs` "an investigate removal task is listed and never deleted" |
+| 2. Purge respects in-flight rows | `tests/test_spotlight_routes.py::test_purge_leaves_in_flight_rows_to_their_lease_holder` (plus the two existing purge tests, unchanged) |
+| 3. Roundup tiles check the tile's own photo | `tests/test_spotlight_dispatch.py::test_tile_whose_own_photo_was_deleted_fails_even_with_another_approved_photo`, `::test_participant_without_a_photo_uuid_fails_closed`; the real participant shape is now used by `tests/test_spotlight_routes.py::test_roundup_eligible_checks_every_tile_member` and `tests/test_spotlight_revisions.py::test_welcome_consent_does_not_satisfy_roundup` |
+| 4. Member of the week honours the approvals gate | `tests/test_spotlight_routes.py::test_member_of_week_withholds_the_invite_while_approvals_are_paused` |
+| 5. Choosing a different photo keeps the card link | `tests/test_spotlight_card.py::test_choosing_another_photo_keeps_the_card_link_usable` |
+| 6. The tick renders every row that needs a render | admin `tests/tick.test.mjs` "an awaiting_member row that still needs artwork is rendered", `tests/growth-server.test.mjs` "the named endpoints match the api routes exactly" (the `needs_render=1` listing) |
+| 7. Withdrawal clears the standing preference | `tests/test_spotlight_withdrawal.py::test_withdrawal_clears_the_standing_preference` |
+| 8. Minors | E5 consent gate: `tests/test_spotlight_card.py::test_send_card_live_skips_a_member_who_left_spotlight`. The row locks, the revision-id read in `pictured_people` and the settings `finally` blocks are covered by the existing occurrence, dispatch and route suites rather than by new tests: they change how an existing behaviour is reached, not what it is. |

@@ -590,8 +590,12 @@ def test_roundup_eligible_checks_every_tile_member(client, make_person):
     with api_tx() as tx:
         set_setting(tx, 'publication_enabled', 'true')
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s ORDER BY position LIMIT 1",
+                           dict(id=a['id'])).fetchone()['u']
         rid = create_revision(tx, rk, caption='c', photo_uuid=None,
-                              participants=[{'person_id': a['id'], 'photo_uuid': None}],
+                              participants=[dict(person_id=a['id'], first_name='Tile',
+                                                 photo_url=f'https://img/450-{photo}.jpg',
+                                                 photo_uuid=photo)],
                               channels=['facebook', 'instagram'], created_by='t')
         attach_render(tx, rid, 'h', 'k', 'https://cdn/k.png')
         record_consent(tx, rid, a['id'], 'participant')
@@ -814,3 +818,152 @@ def test_growth_limit_exempts_cron_header_not_bare_ip(monkeypatch):
 
     with app.test_request_context('/admin/growth/settings', headers={'X-Growth-Cron': 'wrong'}):
         assert sr._growth_limit_exempt() is False
+
+
+def _claimed_rows(tx, pid):
+    """One welcome request, rendered, consented, scheduled and claimed: the
+    exact shape the publish worker holds a lease on. Copied from `_claimed`
+    in tests/test_spotlight_delivery.py."""
+    rk = create_candidate(tx, kind='welcome', subject_person_id=pid, caption='c', created_by='t')
+    rev = current_revision(tx, rk)
+    attach_render(tx, rev['id'], 'h', 'k', 'https://cdn/k.png')
+    record_consent(tx, rev['id'], pid, 'subject')
+    tx.execute("UPDATE publishing_queue SET status = 'scheduled', scheduled_for = NOW() - interval '1 minute' WHERE request_key = %(rk)s", dict(rk=rk))
+    rows = [r for r in tx.execute("SELECT * FROM claim_spotlight_posts(10)").fetchall() if r['request_key'] == rk]
+    return rk, sorted(rows, key=lambda r: r['platform'])
+
+
+def _reap(tx, qid):
+    from service.spotlight.queue import reap_expired_leases
+    tx.execute("UPDATE publishing_queue SET lease_until = NOW() - interval '1 minute' WHERE id = %(id)s", dict(id=qid))
+    reap_expired_leases(tx)
+
+
+def test_reconcile_publishes_a_reaped_row_and_sends_the_live_email(client, make_person, monkeypatch):
+    """Fix wave item 1: the operator decision spec section 5 promises. A row
+    reaped into `review` with its delivery unresolved is marked published on
+    the operator's word, with no lease, and the card-live email fires once."""
+    import service.api.admin.spotlight_routes as sr
+    sent = []
+    monkeypatch.setattr(sr, '_send_card_live', lambda *a: sent.append(a))
+    admin = _make_admin(make_person); A = {'Authorization': f'Bearer {_session_for(admin)}'}
+    p = _make_eligible(make_person, name='Reconcile')
+    with api_tx() as tx:
+        rk, rows = _claimed_rows(tx, p['id'])
+        qid = rows[0]['id']
+        _reap(tx, qid)
+    r = client.post(f'/admin/growth/queue/{qid}/reconcile',
+                    json={'external_post_id': '1_42', 'post_url': 'https://www.facebook.com/1_42'}, headers=A)
+    assert r.status_code == 200 and r.get_json() == dict(ok=True, status='published', external_post_id='1_42')
+    with api_tx('read committed') as tx:
+        row = tx.execute("SELECT status, delivery_state, external_post_id, post_url, error FROM publishing_queue WHERE id = %(id)s",
+                         dict(id=qid)).fetchone()
+        assert (row['status'], row['delivery_state'], row['external_post_id'], row['post_url'], row['error']) == (
+            'published', 'published', '1_42', 'https://www.facebook.com/1_42', None)
+        assert tx.execute("SELECT count(*) AS n FROM spotlight_occurrence WHERE request_key = %(rk)s", dict(rk=rk)).fetchone()['n'] == 1
+        assert tx.execute("SELECT count(*) AS n FROM admin_audit_log WHERE action = 'growth.queue.reconcile'").fetchone()['n'] >= 1
+    assert sent == [(p['id'], rk, '1_42', 'facebook', 'https://www.facebook.com/1_42')]
+
+
+def test_reconcile_of_a_withdrawn_member_files_the_removal_task_and_sends_nothing(client, make_person, monkeypatch):
+    import service.api.admin.spotlight_routes as sr
+    from service.spotlight.withdrawal import withdraw_member
+    sent = []
+    monkeypatch.setattr(sr, '_send_card_live', lambda *a: sent.append(a))
+    admin = _make_admin(make_person); A = {'Authorization': f'Bearer {_session_for(admin)}'}
+    p = _make_eligible(make_person, name='ReconcileGone')
+    with api_tx() as tx:
+        rk, rows = _claimed_rows(tx, p['id'])
+        qid = rows[0]['id']
+        _reap(tx, qid)
+        withdraw_member(tx, p['id'], 'opt_out')
+    r = client.post(f'/admin/growth/queue/{qid}/reconcile', json={'external_post_id': '1_43'}, headers=A)
+    assert r.status_code == 200
+    with api_tx('read committed') as tx:
+        tasks = tx.execute("SELECT reason, external_post_id FROM spotlight_removal_task WHERE queue_id = %(id)s",
+                           dict(id=qid)).fetchall()
+    assert [(t['reason'], t['external_post_id']) for t in tasks] == [('delete_via_api', '1_43')]
+    assert sent == []
+
+
+def test_reconcile_refuses_a_row_that_is_not_in_an_unresolved_delivery(client, make_person):
+    admin = _make_admin(make_person); A = {'Authorization': f'Bearer {_session_for(admin)}'}
+    p = _make_eligible(make_person, name='NotReconcilable')
+    with api_tx() as tx:
+        rk, rows = _claimed_rows(tx, p['id'])
+        qid = rows[0]['id']
+    r = client.post(f'/admin/growth/queue/{qid}/reconcile', json={'external_post_id': '1_44'}, headers=A)
+    assert r.status_code == 409 and r.get_json() == {'error': 'not_reconcilable'}
+
+
+def test_reconcile_is_admin_only(client, make_person):
+    """An operator decision, not an unattended one: the cron secret is not
+    enough, and a missing external id is a bad request."""
+    admin = _make_admin(make_person); A = {'Authorization': f'Bearer {_session_for(admin)}'}
+    p = _make_eligible(make_person, name='ReconcileAuth')
+    with api_tx() as tx:
+        rk, rows = _claimed_rows(tx, p['id'])
+        qid = rows[0]['id']
+        _reap(tx, qid)
+    assert client.post(f'/admin/growth/queue/{qid}/reconcile', json={'external_post_id': '1_45'},
+                       headers={'X-Growth-Cron': 'test-cron-secret'}).status_code == 400
+    assert client.post(f'/admin/growth/queue/{qid}/reconcile', json={}, headers=A).status_code == 400
+
+
+def test_purge_leaves_in_flight_rows_to_their_lease_holder(client, make_person):
+    """Fix wave item 2: purge stamps every row it touches but cancels only
+    what is safe to cancel. A `processing` row stays processing, and its
+    lease holder's own late receipt still records the publish and files the
+    removal task the stamp now calls for."""
+    admin = _make_admin(make_person); A = {'Authorization': f'Bearer {_session_for(admin)}'}
+    p = _make_eligible(make_person, name='PurgeInFlight')
+    with api_tx() as tx:
+        rk, rows = _claimed_rows(tx, p['id'])
+        processing = rows[0]
+        review_rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        _render(tx, review_rk, 'kp', 'https://cdn/kp.png')
+    r = client.post('/admin/growth/queue/purge', json={}, headers=A)
+    body = r.get_json()
+    assert r.status_code == 200 and body['left_attempting'] >= 2 and body['cancelled'] >= 2
+    with api_tx() as tx:
+        row = tx.execute("SELECT status, cancellation_requested_at FROM publishing_queue WHERE id = %(id)s",
+                         dict(id=processing['id'])).fetchone()
+        assert row['status'] == 'processing' and row['cancellation_requested_at'] is not None
+        assert {x['status'] for x in tx.execute(
+            "SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=review_rk)).fetchall()} == {'cancelled'}
+        from service.spotlight.queue import record_receipt
+        assert record_receipt(tx, processing['id'], processing['lease_token'], 'published',
+                              external_post_id='1_46') == 'recorded'
+        tasks = tx.execute("SELECT reason, external_post_id FROM spotlight_removal_task WHERE queue_id = %(id)s",
+                           dict(id=processing['id'])).fetchall()
+        assert [(t['reason'], t['external_post_id']) for t in tasks] == [('delete_via_api', '1_46')]
+
+
+def test_member_of_week_withholds_the_invite_while_approvals_are_paused(client, make_person, monkeypatch):
+    """Fix wave item 4: the same gate the welcome route carries. A member
+    must never be invited to approve a card they cannot act on."""
+    import service.api.admin.spotlight_routes as sr
+    sent = []
+    monkeypatch.setattr(sr, '_send_card_ready', lambda *a: sent.append(a))
+    admin = _make_admin(make_person); A = {'Authorization': f'Bearer {_session_for(admin)}'}
+    paused_member = _make_eligible(make_person, name='MowPaused')
+    r = client.post('/admin/growth/spotlight/member-of-week', json={'person_id': paused_member['id']}, headers=A)
+    assert r.status_code == 200
+    paused_rk = r.get_json()['request_key']
+    assert sent == []
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            """SELECT metadata FROM admin_audit_log WHERE action = 'growth.queue.member_of_week'
+                ORDER BY created_at DESC LIMIT 1""").fetchone()
+    assert row['metadata']['invite_sent'] is False and row['metadata']['request_key'] == paused_rk
+
+    open_member = _make_eligible(make_person, name='MowOpen')
+    with api_tx() as tx:
+        set_setting(tx, 'approvals_enabled', 'true')
+    try:
+        r = client.post('/admin/growth/spotlight/member-of-week', json={'person_id': open_member['id']}, headers=A)
+        assert r.status_code == 200
+        assert sent == [(open_member['id'], r.get_json()['request_key'])]
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')

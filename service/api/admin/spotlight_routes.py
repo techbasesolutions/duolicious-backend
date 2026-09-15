@@ -44,8 +44,9 @@ from service.spotlight.dispatch import dispatch_check
 from service.spotlight.eligibility import eligibility, primary_photo_uuid, photo_url
 from service.spotlight.occurrence import record_occurrence, pictured_people, is_first_confirmation
 from service.spotlight.queue import (create_candidate, expire_member_approvals,
-                                     set_status, settings, set_setting,
-                                     reap_expired_leases, record_receipt, OUTCOMES,
+                                     lock_queue_row, set_status, settings, set_setting,
+                                     reap_expired_leases, reconcile_published,
+                                     record_receipt, OUTCOMES,
                                      OUTCOME_DELIVERY_STATE, PLATFORMS,
                                      SETTING_KEYS, FREE_KEYS)
 from service.spotlight.revisions import attach_render, consent_complete, create_revision, edit_caption
@@ -506,10 +507,12 @@ def post_growth_queue_complete(qid: str):
     occurrences = None
     first_confirmation = None
     with api_tx() as tx:
-        row = tx.execute(
-            """SELECT request_key, platform, subject_person_id, cancellation_requested_at, kind
-                 FROM publishing_queue WHERE id = %(id)s""",
-            dict(id=queue_id)).fetchone()
+        # The row lock is taken HERE, before anything is read off the row,
+        # so the `cancellation_requested_at` this route gates E5 on cannot
+        # change between that read and `record_receipt`'s own write.
+        # `record_receipt` re-locks the same row in the same transaction,
+        # which Postgres grants outright.
+        row = lock_queue_row(tx, queue_id)
         if not row:
             abort(404)
         try:
@@ -761,7 +764,8 @@ def post_growth_spotlight_roundup():
             create_revision(
                 tx, rk, caption=caption_row['caption'], photo_uuid=None,
                 participants=[dict(person_id=tile['person_id'], first_name=tile['first_name'],
-                                   photo_url=tile['photo_url']) for tile in snapshot['tiles']],
+                                   photo_url=tile['photo_url'], photo_uuid=tile['photo_uuid'])
+                              for tile in snapshot['tiles']],
                 # Fix round 1 (ruling 2): the same PLATFORMS constant
                 # create_candidate inserted rows with, not an unordered
                 # SELECT over those rows.
@@ -979,19 +983,83 @@ def post_growth_queue_caption(s: t.SessionInfo, qid: str):
     return dict(ok=True, caption=stored)
 
 
+@apost('/admin/growth/queue/<qid>/reconcile')
+def post_growth_queue_reconcile(s: t.SessionInfo, qid: str):
+    """The operator's answer for a row whose delivery was never resolved
+    (spec 5, fix wave item 1).
+
+    A row reaped out of `processing` when its lease expired, or parked by a
+    `delivery_unknown` receipt, may have a LIVE post behind it that no lease
+    holder will ever come back to confirm. A human checks the page and
+    reports the external id here. Admin session only: this is a judgement,
+    not something the unattended worker may make, so it is registered with
+    `apost` and never reachable with the cron secret.
+
+    From there it behaves exactly like a `published` receipt: the removal
+    task is filed when the member has already withdrawn, the occurrence is
+    recorded, and E5 fires under the same conditions the complete route
+    applies.
+    """
+    require_admin(s)
+    body = _body()
+    external_post_id = body.get('external_post_id')
+    post_url = body.get('post_url')
+    if not external_post_id or not isinstance(external_post_id, str):
+        abort(400)
+    queue_id = _qid(qid)
+    live = None
+    with api_tx() as tx:
+        try:
+            row = reconcile_published(tx, queue_id, external_post_id, post_url)
+        except ValueError as e:
+            reason = str(e)
+            if reason == 'not_found':
+                abort(404)
+            return dict(error=reason), 409
+        occurrences = record_occurrence(tx, row['kind'], row['request_key'], pictured_people(tx, row))
+        first_confirmation = is_first_confirmation(tx, row['request_key'])
+        if (first_confirmation and row['subject_person_id'] is not None
+                and row['cancellation_requested_at'] is None):
+            live = (row['subject_person_id'], row['request_key'], external_post_id,
+                    row['platform'], post_url)
+        _audit(tx, s, 'growth.queue.reconcile', queue_id=str(queue_id),
+               external_post_id=external_post_id, occurrences=occurrences,
+               first_confirmation=first_confirmation)
+    # Outside the transaction on purpose: the mail path opens its own api_tx.
+    if live is not None:
+        _send_card_live(*live)
+    return dict(ok=True, status='published', external_post_id=external_post_id)
+
+
 @apost('/admin/growth/queue/purge')
 def post_growth_queue_purge(s: t.SessionInfo):
+    """The break-glass switch: stop everything that has not gone out yet.
+
+    Fix wave item 2: purge stops short of the rows withdrawal itself will not
+    cancel. A `processing` row belongs to its lease holder, and a `review` row
+    whose delivery was never resolved may already be live on the platform --
+    cancelling either would orphan a post nothing would then remove. Both are
+    stamped with `cancellation_requested_at` instead, which is exactly what
+    makes the lease holder's own late receipt (or an operator's reconcile)
+    file the removal task. Every other non-terminal row is cancelled outright,
+    from any status, which is why this is a direct UPDATE rather than
+    `set_status` per row.
+    """
     require_admin(s)
     with api_tx() as tx:
-        # Deliberately a direct UPDATE rather than set_status per row: purge is
-        # the break-glass switch and must cancel from ANY non-terminal state,
-        # including `processing`, which the normal transition table forbids.
-        cur = tx.execute(
+        stamped = tx.execute(
+            """UPDATE publishing_queue
+                   SET cancellation_requested_at = COALESCE(cancellation_requested_at, NOW()),
+                       updated_at = NOW()
+                 WHERE status NOT IN ('published', 'cancelled')""").rowcount
+        n = tx.execute(
             """UPDATE publishing_queue SET status = 'cancelled', error = 'purged', updated_at = NOW()
-                WHERE status NOT IN ('published', 'cancelled')""")
-        n = cur.rowcount
-        _audit(tx, s, 'growth.queue.purge', cancelled=n)
-    return dict(cancelled=n)
+                WHERE status NOT IN ('published', 'cancelled', 'processing')
+                  AND NOT (status = 'review'
+                           AND delivery_state IN ('attempting', 'delivery_unknown'))""").rowcount
+        left_attempting = stamped - n
+        _audit(tx, s, 'growth.queue.purge', cancelled=n, left_attempting=left_attempting)
+    return dict(cancelled=n, left_attempting=left_attempting)
 
 
 @apost('/admin/growth/spotlight/member-of-week')
@@ -1026,8 +1094,15 @@ def post_growth_spotlight_member_of_week(s: t.SessionInfo):
             tx.execute(
                 "UPDATE publishing_queue SET scheduled_for = %(w)s WHERE request_key = %(rk)s",
                 dict(w=when, rk=rk))
-        _audit(tx, s, 'growth.queue.member_of_week', person_id=person_id, request_key=rk)
-    _send_card_ready(person_id, rk)
+        # Fix wave item 4: the same gate the welcome route carries. A
+        # member must never be invited to approve a card they cannot act
+        # on, so with approvals off the candidate is created (ready the
+        # moment approvals resume) but E4 is withheld.
+        invite_sent = settings(tx).get('approvals_enabled') == 'true'
+        _audit(tx, s, 'growth.queue.member_of_week', person_id=person_id, request_key=rk,
+               invite_sent=invite_sent)
+    if invite_sent:
+        _send_card_ready(person_id, rk)
     return dict(request_key=rk)
 
 

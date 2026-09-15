@@ -82,6 +82,11 @@ def roundup_snapshot(tx, days: int = 7) -> dict:
                 person_id=r['id'],
                 first_name=r['first_name'],
                 photo_url=photo_url(r['photo_uuid'], 450),
+                # Carried onto the tile so the revision's participants can
+                # name the exact photo the card shows: the dispatch check
+                # re-verifies THAT photo, not just any approved one
+                # (fix wave item 3).
+                photo_uuid=r['photo_uuid'],
             ))
             if len(tiles) == MAX_TILES:
                 break

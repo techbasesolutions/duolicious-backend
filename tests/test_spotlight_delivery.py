@@ -231,3 +231,77 @@ def test_duplicate_receipt_is_not_audited(make_person, client, monkeypatch):
     r = client.post(f'/admin/growth/queue/{qid}/complete', json=body, headers=h)
     assert r.status_code == 200 and r.get_json()['already'] is True
     assert len(calls) == 1   # the duplicate call never reaches _audit at all
+
+
+def _reap(tx, qid):
+    """Expire this row's lease and run the reaper, exactly as the claim route
+    does on every poll: the row lands in `review` with error `lease_expired`,
+    keeping the lease_token that produced it."""
+    from service.spotlight.queue import reap_expired_leases
+    tx.execute("UPDATE publishing_queue SET lease_until = NOW() - interval '1 minute' WHERE id = %(id)s", dict(id=qid))
+    reap_expired_leases(tx)
+
+
+def test_reaped_row_records_a_late_published_receipt(make_person):
+    """Fix wave item 1: a reaped row may have a LIVE post behind it. The
+    lease holder is the only caller that can say so, so its late `published`
+    receipt under the same lease is recorded rather than refused."""
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk, rows = _claimed(tx, p['id'])
+        q = rows[0]
+        _reap(tx, q['id'])
+        assert _row(tx, q['id'])['status'] == 'review'
+        assert record_receipt(tx, q['id'], q['lease_token'], 'published',
+                              external_post_id='1_7', post_url='https://www.facebook.com/1_7') == 'recorded'
+        r = _row(tx, q['id'])
+        assert (r['status'], r['delivery_state'], r['external_post_id'], r['post_url'], r['error']) == (
+            'published', 'published', '1_7', 'https://www.facebook.com/1_7', None)
+
+
+def test_reaped_row_after_withdrawal_files_the_removal_task(make_person):
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk, rows = _claimed(tx, p['id'])
+        q = rows[0]
+        _reap(tx, q['id'])
+        withdraw_member(tx, p['id'], 'opt_out')
+        assert record_receipt(tx, q['id'], q['lease_token'], 'published', external_post_id='1_8') == 'recorded'
+        tasks = tx.execute(
+            "SELECT reason, external_post_id FROM spotlight_removal_task WHERE queue_id = %(id)s",
+            dict(id=q['id'])).fetchall()
+        assert [(t['reason'], t['external_post_id']) for t in tasks] == [('delete_via_api', '1_8')]
+
+
+def test_delivery_unknown_row_records_a_definite_receipt(make_person):
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk, rows = _claimed(tx, p['id'])
+        q = rows[0]
+        record_receipt(tx, q['id'], q['lease_token'], 'delivery_unknown', error='no confirmation')
+        assert record_receipt(tx, q['id'], q['lease_token'], 'published', external_post_id='1_9') == 'recorded'
+        r = _row(tx, q['id'])
+        assert (r['status'], r['delivery_state'], r['external_post_id']) == ('published', 'published', '1_9')
+
+
+def test_reaped_row_refuses_a_wrong_lease(make_person):
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk, rows = _claimed(tx, p['id'])
+        q = rows[0]
+        _reap(tx, q['id'])
+        with pytest.raises(ValueError, match='lease_mismatch'):
+            record_receipt(tx, q['id'], 'f' * 32, 'published', external_post_id='1_10')
+        assert _row(tx, q['id'])['status'] == 'review'
+
+
+def test_operator_parked_review_row_still_refuses_a_published_receipt(make_person):
+    """Only a row whose delivery is genuinely unresolved is recoverable. An
+    operator's own `review` decision (delivery_state reset to 'none') is not."""
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk, rows = _claimed(tx, p['id'])
+        q = rows[0]
+        record_receipt(tx, q['id'], q['lease_token'], 'review', error='ineligible now')
+        with pytest.raises(ValueError, match='not_processing'):
+            record_receipt(tx, q['id'], q['lease_token'], 'published', external_post_id='1_11')

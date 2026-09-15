@@ -114,7 +114,11 @@ def test_welcome_consent_does_not_satisfy_roundup(make_person):
             attach_render(tx, current_revision(tx, rk_w)['id'], 'h', 'k', 'https://cdn/k.png')
             assert approve_card(tx, rk_w, p['id'], photo) == 'approved'
             rk_r = create_candidate(tx, kind='roundup', subject_person_id=None, caption='r', created_by='t')
-            rid = create_revision(tx, rk_r, caption='r', photo_uuid=None, participants=[{'person_id': p['id'], 'photo_uuid': photo}], channels=['facebook','instagram'], created_by='t')
+            rid = create_revision(tx, rk_r, caption='r', photo_uuid=None,
+                                  participants=[dict(person_id=p['id'], first_name='Elig',
+                                                     photo_url=f'https://img/450-{photo}.jpg',
+                                                     photo_uuid=photo)],
+                                  channels=['facebook','instagram'], created_by='t')
             assert consent_complete(tx, rid) is False
             assert record_consent(tx, rid, p['id'], 'participant') is True
             assert consent_complete(tx, rid) is True
