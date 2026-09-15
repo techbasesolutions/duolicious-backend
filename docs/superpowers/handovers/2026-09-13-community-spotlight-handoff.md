@@ -295,3 +295,117 @@ The Wave 2 plan: `ahavah-api/docs/superpowers/plans/2026-09-15-spotlight-wave-2.
 ### Activation stance (updated)
 
 Nothing from Wave 2 is merged and nothing is pushed; every branch above stays local. Wave 1 closed Consent, Lifecycle, Delivery and Controls; Wave 2 closes Storage and Mail. All six acceptance-matrix rows now have Wave 1 or Wave 2 evidence behind them, though Task 6/7's own review needs a fix round first (above). The matrix has not yet been run end to end against a staging environment, which stays the gate for the first live post (Wave 4 per the triage sequencing).
+
+## 13. Wave 3 (2026-09-15): the designed surfaces
+
+Wave 3 built every member-facing and operator-facing surface that Waves 1 and 2 left dormant, transcribed from the Claude Design export retrieved on 2026-09-15: the card renderer, the member card approval page, the confirmation page, the privacy switch row, and the five-section Growth tab. All seven build tasks (this is the eighth, the documentation task) are complete and review-clean. Nothing is merged and nothing is pushed.
+
+### Branches and heads
+
+| Repo | Branch | Base | Head |
+| --- | --- | --- | --- |
+| ahavah-api | spotlight-wave-3 | ebc7d5e (Wave 2 deployed head, `ahavah/main`) | 9204d6d |
+| ahavah-admin | spotlight-wave-3 | 1b9479d (Wave 2 head, `master`) | 51ae0e4 |
+| ahavah-web | spotlight-wave-3 | 7728165 (Phase B head, `master`) | 63011c9 |
+
+### Commits
+
+API (`git log --oneline ebc7d5e..HEAD`, oldest first):
+
+1. `898f975` docs(spotlight): wave 3 plan, designed surfaces
+2. `9204d6d` feat(growth): queue rows carry a presigned preview, post url and delivery state; suggest carries a default caption; emails index lists system-sent campaigns
+
+Admin (`git log --oneline 1b9479d..HEAD`, oldest first):
+
+1. `f3793f6` feat(admin): spotlight card renderer from the designed template
+2. `5357a86` fix(admin): caption clamps to two lines, Hebrew names follow the SOT rtl order, roundup count and highlight chip reachable from the tick
+3. `a3508ee` feat(admin): Growth tab with stats, queue and removals
+4. `69f5cf3` fix(admin): Growth tab offers only actions the API accepts and shows real error states
+5. `51ae0e4` feat(admin): Growth tab member of the week, emails, controls and dialogs
+
+Web (`git log --oneline 7728165..HEAD`, oldest first):
+
+1. `db38448` feat(privacy): feature me in Spotlight switch
+2. `4be9751` chore(privacy): consistent switch locking, comment sweep
+3. `bf49132` feat(spotlight): confirmation page
+4. `f28425a` fix(spotlight): ghost pill outline per the design
+5. `63011c9` feat(spotlight): card approval page
+
+No migration this wave.
+
+### Test totals
+
+- API (disposable Docker stack, `tests -q`): 608 passed (baseline 604 before Wave 3), 9 known Pydantic deprecation warnings, unrelated to Spotlight.
+- Admin (`node --test tests/*.test.mjs`): 107 passed (baseline 59 before Wave 3); `npx tsc --noEmit` clean; `npx next build` clean.
+- Web (`pnpm test`): 564 passed (baseline 544 before Wave 3); `pnpm exec tsc --noEmit` clean; `pnpm exec eslint` clean on every touched file (the repo-wide `--max-warnings 0` gate fails on pre-existing debt in files this wave never touched).
+
+### What was built, per repo
+
+**API (Task 1).** Read-side additions only, no migration: `GET /admin/growth/queue` rows gain `preview_url` (presigned when the row has a private `image_key`, else `image_url`), `post_url` and `delivery_state`; `GET /admin/growth/spotlight/suggest` items gain `suggested_caption`; `GET /admin/growth/emails` now lists five campaigns, e1 to e3 as before plus e4 (card ready) and e5 (card live), the two system-sent ones sourced from `email_send_log` counts rather than a `recipients()` module.
+
+**Admin.** The card renderer: three modules (`spotlight-card-text.ts`, `spotlight-card-layout.tsx`, `spotlight-card.tsx`) replace the stub, rendering all four card shapes (photo, member of the week, roundup collage for one to four tiles, and the no-photo roundup fallback) at 1080x1080 through `next/og`, with embedded fonts, the photo host allowlist, and the three named refusals. A fix round corrected an inert caption clamp, reversed the Hebrew name order to match the SOT's right-to-left ruling, and made the roundup count line and the highlight chip's "Spotlight" text reachable from the tick (both needed a small, disclosed `tick.ts` change). The five-section Growth tab: Stats, Spotlight queue (one card per `request_key`, a state-machine-gated row menu with a sixth Retry action beyond the SOT's five), Remove by hand, Member of the week, Emails and Controls, plus two dialogs (send, purge). A fix round closed three important findings: the menu offered actions the API's own state machine refuses, and every Growth query read a failed fetch as an empty success with no error state. Along the way, two shared fixes landed beyond the brief's file list, both disclosed in the ledger: a `globals.css` token duplication that had every admin tab's borders and muted text rendering wrong (oklch duplicates were winning the cascade over the real hex values), and a responsive admin shell (a hamburger opening a nav sheet below `md`) needed to reach the SOT's mobile frame at all, since the shell had no mobile layout before this wave.
+
+**Web.** The privacy switch row ("Feature me in Spotlight") between Location and Profile in `/settings/privacy`. A standalone `SpotlightShell` component shared by two new token pages: the confirmation page (`/spotlight/confirm/[token]`, six states) and the card approval page (`/spotlight/card/[token]`, nine states, reusing the confirm page's invalid, expired and error treatment). A carried-over fix made the ghost-pill button's border actually visible on both pages (a Tailwind class-merge conflict had been hiding it).
+
+### The ten owner decisions (from the plan's "Scope against the parent plan")
+
+1. F10 (attribution rebuilt on visitor-bound click receipts) and the remainder of F12 (idempotent-tick work beyond the weekly key, any auto mode) are deferred past Wave 3; both need no design and follow as Wave 3b.
+2. The member photo picker on the card approval page is out of scope: the design brief dropped the approval page from the design round, so a thumbnail picker has no design. Wave 3 ships approve or skip of the rendered card only, passing the card's own `photo_uuid`.
+3. The staging acceptance-matrix run stays Wave 4 and stays the gate for the first live post.
+4. The hardening minors parked in the Wave 2 ledger (blank-tolerant parsing in the older crons, a deploy check that asserts the cron container is up, `invites_pending` age-out, presign cold start, `acceptance_unknown` alerting) are a separate small pass, not this wave.
+5. The Controls panel uses the SOT's switch-row pattern for the three current controls (`invites_enabled`, `publication_enabled`, `external_access_enabled`) rather than the SOT's own scheduler and per-kind auto-flag switches, which do not exist since Wave 1, plus two read-only status chips (`approvals_enabled`, `roundup_tiles_enabled`).
+6. Queue rows are grouped by `request_key` into one card per request rather than the API's one row per platform, with the row menu mapped to the existing routes.
+7. The card's caption line is derived by the renderer (first sentence, links stripped, clamped to 120 characters and two lines) rather than being a separate field with a queue-time length rejection.
+8. Hebrew names substitute Noto Serif Hebrew for Ultra (which has no Hebrew block); a name with no glyph in any loaded font is a render failure, never a card with tofu.
+9. The card approval page's copy has no dedicated SOT frame and reuses the confirm page's shell and copy rules.
+10. The Emails panel's Preview button sends to the signed-in admin's own email from `/admin/whoami`, since the API's preview route needs a `to` address.
+
+### Rulings made during execution (condensed from the ledger)
+
+- Tasks 1 (api), 2 (admin) and 3 (web) ran as three parallel implementers on disjoint trees, since the "no parallel implementers" rule protects a shared tree.
+- Task 2's renderer test loads `next/og` in the same `vm` sandbox as the module under test (the host-realm fallback the brief allowed for was not needed); satori and resvg still resolve their WASM correctly through the require map.
+- The stats table's gender columns accept both "Man"/"Men" and "Woman"/"Women" spellings from the API's `gender.name` values, rather than guessing one.
+- Task 3's privacy-page screenshots, taken with Playwright route interception rather than a live local API, are accepted as rendered verification, since the render path, theme and layout are real.
+- `tick.ts` changed minimally in Task 2's fix round (passing `count`/`countries` on the roundup input, and a `chip: 'spotlight'` for a highlight row), because the plan's "the tick needs nothing" assumption did not hold once the SOT's roundup count line and highlight chip had to be reachable from real tick input.
+- Hebrew names follow the SOT's own `dir=rtl` frame: the visual string reverses right-to-left runs and the characters inside them, keeping digit and Latin runs in reading order, and the name line alone is right-aligned.
+- The `next.config.ts` `outputFileTracingIncludes` addition for the renderer's fonts and logo stands, though it is outside the brief's file list, because without it the renderer cannot read its assets on Vercel.
+- Task 5's one unresolved evidence item (no re-screenshot of the confirm page's error-state ghost pill) was closed without a fix round: the reviewer confirmed the same class is applied and the invalid-state screenshot already proves it renders.
+- Task 6's `globals.css` token de-duplication stands even though it is outside the brief's file list: the Growth tab could not match the SOT without it, and it repairs every other admin tab too.
+- The admin shell was made responsive in Task 7 with the minimum change (sidebar hidden below `md`, a hamburger opening the existing nav sheet), because the SOT's mobile frame and the spec's "read-only on mobile" were otherwise unreachable; every tab benefits.
+- The Growth tab sits after Moderation in the sidebar (the plan named both positions; the registry order is otherwise unchanged).
+- The three KPI tiles that sum men plus women (Joined 7 days, Acted 14 days, Stale 30 days) keep the sums; the SOT prints one column's figure but its own sub line contradicts that number.
+- A sixth row-menu action, Retry, was added for failed cards even though the SOT names five actions, because without it a failed card had no action the API accepts; the table's foot sentence was updated in Task 7 to list it.
+- Preview and Dry run are disabled on the e4 and e5 email rows: the API's `_CAMPAIGNS` only holds e1 to e3, and both routes `404` for anything else, so the buttons stay visible per the design but disabled with a reason rather than always erroring.
+- The Member of the week slot reads the real next Monday (21 September 2026), not the design frame's 22nd: 15 September 2026 is a Tuesday, which the design's own calendar got wrong.
+
+### What is still not done
+
+- F10 (attribution) and the remainder of F12 (idempotent-tick work, any auto mode): deferred to Wave 3b, per decision 1 above.
+- The member photo picker on the card approval page: deferred, per decision 2, needs its own design brief.
+- The hardening minors parked in the Wave 2 ledger (decision 4 above): a separate small pass.
+- The staging acceptance-matrix run: Wave 4, and stays the gate for the first live post.
+- Smaller loose ends recorded in the task reports: the `delivery_unknown` reconcile route stays a curl-level operation, not wired into the queue's row menu; several inferred layout and copy calls on the card approval page have no SOT frame to check against (button layout, unavailable/paused icons); singular and plural copy edge cases at a count of one in the purge and send dialogs; two email runs in flight at once render indistinguishably in the Emails panel; a handful of admin components carry an untested helper or an inferred desktop layout, each disclosed in its own task report's self-review.
+
+### Deploy order and activation
+
+Push order on owner go: **api** (`ahavah/main`, no migration this wave), then **web** (`master`), then **admin** (`master`).
+
+Activation is not part of this wave. `approvals_enabled`, `publication_enabled` and `roundup_tiles_enabled` all stay `false` until the Wave 4 staging acceptance run. Flipping `approvals_enabled` is the renderer's activation step and is the owner's call, made after seeing a real rendered card in the queue.
+
+### Owner pre-flight, still open
+
+Unchanged from Waves 1 and 2, plus one new item:
+
+1. Meta app permissions for the Page (`1100237303180442`) and the Instagram account (`17841447302854202`).
+2. The Page token and the six admin Vercel environment variables (`AHAVAH_FB_PAGE_ID`, `AHAVAH_IG_USER_ID`, `META_GRAPH_VERSION`, `CRON_SECRET`, `AHAVAH_GROWTH_CRON_SECRET`, `AHAVAH_API_ORIGIN`).
+3. `AHAVAH_GROWTH_CRON_SECRET` on the droplet and in Vercel.
+4. The admin role on the owner's own account.
+5. **New this wave:** the six email title PNGs must be copied by hand from the Claude Design project into `ahavah-web/public/email/` (`assets/email-titles/title-{spotlight,reinvite,card-ready}{,-wht}.png`), because the design bridge never fetches binaries.
+
+### Where the record lives
+
+Wave 3 briefs, task reports (including the two fix rounds appended to Task 2's and Task 6's reports) and the ledger: `ahavah-api/.superpowers/sdd/2026-09-15-spotlight-wave-3/` (`progress.md` is the ledger; `task-N-brief.md` and `task-N-report.md` per task, this document's own task is `task-8-report.md`). The Wave 3 plan: `ahavah-api/docs/superpowers/plans/2026-09-15-spotlight-wave-3.md`. Evidence document: `ahavah-api/docs/superpowers/plans/2026-09-15-spotlight-wave-3-evidence.md`. Screenshots and rendered card samples are git-ignored scratch (`.superpowers/sdd/2026-09-15-spotlight-wave-3/shots/` and `ahavah-admin/tests/_evidence/cards/`); the evidence document records file names and what each shows rather than assuming they survive.
+
+### Activation stance (updated)
+
+Nothing from Wave 3 is merged and nothing is pushed; every branch above stays local. Waves 1 and 2 closed all six acceptance-matrix rows on the API side; Wave 3 adds the surfaces those rows needed to be checked against visually but does not itself run the matrix. The matrix has not yet been run end to end against a staging environment, which stays the gate for the first live post (Wave 4).
