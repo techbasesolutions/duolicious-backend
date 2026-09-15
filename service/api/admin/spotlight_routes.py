@@ -843,8 +843,11 @@ def post_growth_removal_done(removal_id: int):
         _audit(tx, s, 'growth.removal.done', removal_id=removal_id)
     # Storage is best-effort and outside the transaction's success/failure:
     # a Spaces error here must never undo the removal task being marked done.
+    # Task 5 moves this onto the cleanup job; for now only the confirmed
+    # count is logged.
     if updated and row and row['image_key']:
-        delete_images([row['image_key']])
+        confirmed = delete_images([row['image_key']])
+        print(f'admin.growth.removal.done: confirmed {len(confirmed)}/1 image(s) deleted')
     return dict(ok=True, updated=updated)
 
 

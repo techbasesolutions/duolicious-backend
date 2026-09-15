@@ -1,4 +1,5 @@
-"""Spaces object deletion for spotlight card images (spec 3.1, 3.6).
+"""Spaces object client for spotlight card images (spec 3.1, 3.6; Wave 2 F06/F09
+part 1): validated uploads, confirmed deletions, private-until-approved objects.
 
 Deletion is always best-effort: a storage-side failure must never block a
 cancellation, a retention sweep, a removal being marked done, or (Wave 1
@@ -6,8 +7,27 @@ F03) a member withdrawal. Every failure is printed, never raised -- and,
 per `_bucket`'s bounded connect/read timeouts and `_configured`'s
 unconfigured-environment no-op below, "failure" can never mean "blocks
 forever" either.
+
+Uploads (`put_png`) are private by default (Wave 2 F09: a card must not be
+publicly reachable before a member has approved it); an admin action that
+already has approval in hand passes `public=True`, and `make_public` flips
+an already-uploaded object over once approval lands. `presign` hands out a
+short-lived read URL for a private object (an admin preview, or a member's
+own approval screen) without ever making the object itself public.
 """
 from __future__ import annotations
+
+import hashlib
+import io
+
+from PIL import Image
+
+
+class InvalidImage(ValueError):
+    """Raised by `validate_png` when the uploaded bytes are not a decodable,
+    correctly sized PNG under the byte limit. `str(e)` is one of: not_png,
+    bad_dimensions, too_large -- the same three reasons the upload route
+    reports back to its caller."""
 
 
 def _configured() -> bool:
@@ -56,18 +76,73 @@ def _bucket():
     return _bucket_cache
 
 
+def validate_png(data: bytes, *, size=(1080, 1080), max_bytes=5_000_000) -> str:
+    """Reject anything that is not a clean, correctly sized PNG before it
+    ever reaches the object store, and hand back the sha256 hex digest of
+    the accepted bytes for `put_png`'s caller to key the upload on.
+
+    The byte-size check runs first and cheaply, ahead of any decode -- an
+    oversized file is rejected on `len(data)` alone. `Image.verify()`
+    catches a truncated or corrupt file that a naive header sniff would
+    miss; Pillow invalidates the image object after `verify()`, so the
+    dimensions and format are read off a second, fresh decode."""
+    if len(data) > max_bytes:
+        raise InvalidImage('too_large')
+    try:
+        Image.open(io.BytesIO(data)).verify()
+        img = Image.open(io.BytesIO(data))
+        width, height = img.size
+        fmt = img.format
+    except InvalidImage:
+        raise
+    except Exception as e:
+        raise InvalidImage('not_png') from e
+    if fmt != 'PNG':
+        raise InvalidImage('not_png')
+    if (width, height) != tuple(size):
+        raise InvalidImage('bad_dimensions')
+    return hashlib.sha256(data).hexdigest()
+
+
+def put_png(key: str, data: bytes, *, public: bool = False) -> None:
+    """Upload one rendered card. Private by default (Wave 2 F09): a card
+    must not be reachable by anyone before the member pictured in it has
+    approved it. `public=True` is for the one call site that already has
+    approval in hand at upload time; every other caller flips visibility
+    later with `make_public`."""
+    _bucket().put_object(Key=key, Body=data, ACL='public-read' if public else 'private',
+                          ContentType='image/png')
+
+
+def make_public(key: str) -> None:
+    """Flip an already-uploaded, private-by-default object public once the
+    member's approval has landed. Never re-uploads the bytes -- an ACL
+    change on the existing object."""
+    _bucket().Object(key).put_object_acl(ACL='public-read')
+
+
+def presign(key: str, seconds: int = 900) -> str:
+    """A short-lived signed read URL for a private object -- an admin
+    preview, or a member's own approval screen -- without ever making the
+    object itself public."""
+    bucket = _bucket()
+    return bucket.meta.client.generate_presigned_url(
+        'get_object', Params={'Bucket': bucket.name, 'Key': key}, ExpiresIn=seconds)
+
+
 # S3 (and Spaces) reject a DeleteObjects request carrying more than 1000 keys,
 # so a large sweep is sent in chunks rather than one oversized call that would
 # fail whole. A failing chunk is logged and the rest still go.
 BATCH_SIZE = 1000
 
 
-def delete_images(keys: list[str]) -> int:
-    """Delete each key from the object store. Returns the count requested
-    (not the count actually confirmed deleted) regardless of outcome, since
-    a missing object or a storage error must never raise here. Returns 0
-    without attempting a network call at all when the object store is not
-    configured (`_configured`).
+def delete_images(keys: list[str]) -> list[str]:
+    """Delete each key from the object store. Returns only the keys
+    CONFIRMED deleted -- a key in the response's `Deleted` list, or one
+    whose `Errors[].Code` is `NoSuchKey` (already gone counts as deleted) --
+    never the count requested. Every other per-key error, a batch that
+    raises outright, and an unconfigured object store all confirm nothing
+    for the keys involved; nothing here ever raises.
 
     Called from inside the caller's transaction today (see
     `service.spotlight.withdrawal.withdraw_member` and the retention sweep).
@@ -77,10 +152,11 @@ def delete_images(keys: list[str]) -> int:
     raises (and, per `_bucket`'s bounded timeouts, never hangs) and the rows
     it deletes for are ones no live post points at."""
     if not keys:
-        return 0
+        return []
     if not _configured():
         print('spotlight.storage.delete_images: object store not configured, skipping')
-        return 0
+        return []
+    confirmed: list[str] = []
     for start in range(0, len(keys), BATCH_SIZE):
         batch = keys[start:start + BATCH_SIZE]
         try:
@@ -89,6 +165,11 @@ def delete_images(keys: list[str]) -> int:
         except Exception as e:
             print(f'spotlight.storage.delete_images: failed to delete {len(batch)} object(s): {e!r}')
             continue
-        for err in (response or {}).get('Errors') or []:
-            print(f"spotlight.storage.delete_images: error deleting {err.get('Key')}: {err.get('Message')}")
-    return len(keys)
+        response = response or {}
+        confirmed.extend(o['Key'] for o in response.get('Deleted') or [])
+        for err in response.get('Errors') or []:
+            if err.get('Code') == 'NoSuchKey':
+                confirmed.append(err['Key'])
+            else:
+                print(f"spotlight.storage.delete_images: error deleting {err.get('Key')}: {err.get('Message')}")
+    return confirmed

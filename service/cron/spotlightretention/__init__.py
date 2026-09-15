@@ -40,7 +40,11 @@ def retention_sweep(tx) -> int:
     rows = tx.execute(_Q_SWEEP, dict(days=RETENTION_DAYS)).fetchall()
     if not rows:
         return 0
-    delete_images([r['image_key'] for r in rows])
+    keys = [r['image_key'] for r in rows]
+    # Task 6 moves this onto the cleanup job; for now only the confirmed
+    # count is logged, the same as delete_images was always best-effort.
+    confirmed = delete_images(keys)
+    print(f'spotlight_retention: confirmed {len(confirmed)}/{len(keys)} image(s) deleted from storage')
     tx.execute(
         """UPDATE publishing_queue SET image_key = NULL, image_url = NULL
             WHERE id = ANY(%(ids)s::uuid[])""",

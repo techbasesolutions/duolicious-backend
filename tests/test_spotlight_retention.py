@@ -5,7 +5,10 @@ from service.cron.spotlightretention import retention_sweep, RETENTION_DAYS
 def test_retention_sweeps_old_published_rows(monkeypatch):
     import service.cron.spotlightretention as m
     deleted = []
-    monkeypatch.setattr(m, 'delete_images', lambda keys: deleted.extend(keys) or len(keys))
+    # Wave 2 Task 2: delete_images now returns the list of confirmed keys
+    # (not a requested count), and retention_sweep logs len() of it -- the
+    # fake must match the new contract.
+    monkeypatch.setattr(m, 'delete_images', lambda keys: deleted.extend(keys) or keys)
     with api_tx() as tx:
         # The test Postgres container persists data across separate `docker
         # compose run` invocations (there is no autouse rollback fixture in
@@ -22,40 +25,8 @@ def test_retention_sweeps_old_published_rows(monkeypatch):
     assert RETENTION_DAYS == 90
 
 
-def test_delete_images_swallows_errors(monkeypatch):
-    import service.spotlight.storage as st
-    class _B:
-        def delete_objects(self, **kw): raise RuntimeError('boom')
-    monkeypatch.setattr(st, '_bucket', lambda: _B())
-    assert st.delete_images(['a', 'b']) == 2      # requested count, no raise
-    assert st.delete_images([]) == 0
-
-
-def test_delete_images_batches_at_the_api_limit(monkeypatch):
-    """M-d: S3 and Spaces reject a DeleteObjects request carrying more than
-    1000 keys, so a large sweep goes in chunks rather than one call that would
-    fail whole."""
-    import service.spotlight.storage as st
-    batches = []
-
-    class _B:
-        def delete_objects(self, **kw):
-            batches.append(len(kw['Delete']['Objects']))
-            return {}
-
-    monkeypatch.setattr(st, '_bucket', lambda: _B())
-    assert st.delete_images([f'k{i}' for i in range(2500)]) == 2500
-    assert batches == [1000, 1000, 500]
-
-
-def test_delete_images_is_a_noop_when_unconfigured(monkeypatch):
-    """A withdrawal, cancellation or retention sweep must never hang (or even
-    dial out) against an object store that has blank credentials/bucket (an
-    environment not yet given real Spaces/R2 settings) or an endpoint that
-    simply is not running (a test container without its mock). `_bucket` is
-    made to raise if it is ever called, to prove the no-op skips the network
-    entirely rather than merely tolerating a failure from it."""
-    import service.spotlight.storage as st
-    monkeypatch.setattr(st, '_configured', lambda: False)
-    monkeypatch.setattr(st, '_bucket', lambda: (_ for _ in ()).throw(AssertionError('_bucket must not be called')))
-    assert st.delete_images(['a', 'b']) == 0
+# Storage-level delete_images tests (validate_png, put_png, and the
+# confirmed-deletion / batching / unconfigured-noop behaviour of
+# delete_images itself) moved to tests/test_spotlight_storage.py in
+# Wave 2 Task 2, updated there for the new list-of-confirmed-keys return
+# type.

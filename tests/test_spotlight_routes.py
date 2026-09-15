@@ -377,7 +377,9 @@ def test_removals_listed_and_marked_done(client, make_person):
 def test_removal_done_deletes_stored_image(client, make_person, monkeypatch):
     import service.api.admin.spotlight_routes as sr
     deleted = []
-    monkeypatch.setattr(sr, 'delete_images', lambda keys: deleted.extend(keys) or len(keys))
+    # Wave 2 Task 2: delete_images now returns the list of confirmed keys
+    # (not a requested count), and post_growth_removal_done logs len() of it.
+    monkeypatch.setattr(sr, 'delete_images', lambda keys: deleted.extend(keys) or keys)
     p = _make_eligible(make_person)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')

@@ -260,7 +260,12 @@ def withdraw_member(tx, person_id: int, reason: str) -> dict:
                       updated_at = NOW()
                 WHERE request_key = %(rk)s AND {_REISSUABLE.format(q='')}""",
             dict(rk=request_key))
-        delete_images(old_keys)
+        # Task 5 moves this onto the cleanup job; for now the confirmed
+        # count (out of `_configured`'s new list-of-confirmed-keys return)
+        # is only logged, the same as `delete_images` always was best-effort.
+        confirmed = delete_images(old_keys)
+        print(f'spotlight.withdrawal: confirmed {len(confirmed)}/{len(old_keys)} '
+              f'reissue image(s) deleted for {request_key}')
     roundups_reissued = len(reissue_keys)
 
     # Step 5: everything else naming the member -- not published, not
@@ -273,7 +278,10 @@ def withdraw_member(tx, person_id: int, reason: str) -> dict:
     cancelled = tx.execute(_Q_CANCEL_SUBJECT_ROWS, dict(cancel_params, reason=reason)).rowcount
     cancelled += tx.execute(_Q_CANCEL_TILE_OR_PARTICIPANT_ROWS,
                             dict(cancel_params, reason=f'tile_member_{reason}')).rowcount
-    delete_images(image_keys)
+    # Task 5 moves this onto the cleanup job; for now only the confirmed
+    # count is logged.
+    confirmed = delete_images(image_keys)
+    print(f'spotlight.withdrawal: confirmed {len(confirmed)}/{len(image_keys)} cancelled image(s) deleted')
 
     # Step 6: always bumps, whether or not anything above changed a row --
     # a withdrawal is itself a consent event.
