@@ -148,6 +148,11 @@ jobs:
               docker logs --tail 60 "$cid" || true
               exit 1
             fi
+            if [ "$restarts" -gt 0 ]; then
+              echo "  cron has restarted $restarts time(s) since it came up"
+              docker logs --tail 60 "$cid" || true
+              exit 1
+            fi
             if docker logs --tail 200 "$cid" 2>&1 | grep -qi traceback; then
               echo "  cron logged a traceback"
               docker logs --tail 60 "$cid" || true

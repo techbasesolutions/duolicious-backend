@@ -155,16 +155,14 @@ def attribute_signup(tx, person_id: int, ref: Optional[str]) -> bool:
     # still send the shared campaign_link.key instead of a receipt. Such a
     # value stamps the person and credits no click.
     #
-    # Removal trigger: the rule and the computed date live in
+    # Removal date: the web deploy that started sending receipts landed
+    # 2026-09-15, and the click cookie it replaced lives 7 days
+    # (`COOKIE_MAX_AGE_SEC` in `ahavah-web/src/app/s/[key]/route.ts`), so no
+    # browser can still be holding the old bare-key cookie from
+    # 2026-09-22 onward. Safe to delete this branch on or after that date,
+    # and not before -- along with the two tests named in
     # `docs/superpowers/handovers/2026-09-13-community-spotlight-handoff.md`,
-    # section 14, "The compatibility window". The date is seven days after
-    # this wave's WEB deploy lands (the web cookie's own 7-day lifetime), so
-    # it cannot be a constant here until that deploy has a date. Whoever
-    # deploys the web app records the landing date there; on the date that
-    # section computes, delete this branch and the two tests it names, and a
-    # bare key stops being accepted at all. This used to name "Wave 3b task
-    # 8" as the trigger, which is a task that has since finished, so the
-    # pointer named something already done and carried no date at all.
+    # section 14, "The compatibility window".
     known = tx.execute(_Q_KNOWN_KEY, dict(k=ref)).fetchone()
     if not known:
         return False

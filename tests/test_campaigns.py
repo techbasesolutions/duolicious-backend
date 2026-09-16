@@ -79,8 +79,43 @@ def test_ua_class_buckets():
     assert _ua_class('facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)') == 'bot'
     assert _ua_class('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15') == 'mobile'
     assert _ua_class('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36') == 'desktop'
-    assert _ua_class('') == 'unknown'
-    assert _ua_class(None) == 'unknown'
+    assert _ua_class('') == 'bot'
+    assert _ua_class(None) == 'bot'
+
+
+# ---------------------------------------------------------------------------
+# Wave 3c task 1: an empty or whitespace-only agent is a bot, not 'unknown'.
+# The web forwarder sends `req.headers.get("user-agent") ?? ""`, so a script
+# that omits the header entirely arrives here as the empty string, which used
+# to earn a creditable receipt exactly like a real browser. Consequence
+# accepted and documented on `_ua_class`: such a click is still recorded (so
+# `post_stats` keeps the row) but excluded from its counts, same as any other
+# bot, and mints no receipt.
+# ---------------------------------------------------------------------------
+
+def test_ua_class_treats_whitespace_only_agent_as_bot():
+    assert _ua_class('   ') == 'bot'
+    assert _ua_class('\t\n') == 'bot'
+
+
+def test_record_click_with_empty_agent_mints_no_receipt(make_person):
+    p = make_person(name='EmptyAgent')
+    with api_tx() as tx:
+        url = make_campaign_link(tx, 'e1', f'{WEB_BASE_URL}/discover', p['id'])
+        key = url.rsplit('/', 1)[1]
+        target, receipt = record_click(tx, key, '')
+        assert target == f'{WEB_BASE_URL}/discover' and receipt is None
+        row = tx.execute("SELECT ua_class FROM campaign_click WHERE link_key = %(k)s", dict(k=key)).fetchone()
+        assert row['ua_class'] == 'bot'
+
+
+def test_record_click_with_a_real_browser_agent_still_mints_a_receipt(make_person):
+    p = make_person(name='RealAgent')
+    with api_tx() as tx:
+        url = make_campaign_link(tx, 'e1', f'{WEB_BASE_URL}/discover', p['id'])
+        key = url.rsplit('/', 1)[1]
+        target, receipt = record_click(tx, key, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+        assert target == f'{WEB_BASE_URL}/discover' and receipt is not None
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +162,19 @@ def test_campaign_link_external_ok_accepts_allowed_host_only_when_opted_in(make_
             make_campaign_link(tx, 'e5', 'https://www.facebook.com/123', p['id'])
         url = make_campaign_link(tx, 'e5', 'https://www.facebook.com/123', p['id'], external_ok=True)
         assert url.startswith(f"{WEB_BASE_URL.rstrip('/')}/s/")
+
+
+# ---------------------------------------------------------------------------
+# Wave 3c task 1: one PLATFORMS tuple. service.spotlight.queue used to define
+# its own equal copy of `('facebook', 'instagram')`; now it imports the one
+# in service.campaigns (queue.py already imports from campaigns at load
+# time, so there is no cycle to move the constant around for).
+# ---------------------------------------------------------------------------
+
+def test_queue_platforms_is_the_same_object_as_campaigns_platforms():
+    import service.campaigns as campaigns
+    import service.spotlight.queue as queue
+    assert queue.PLATFORMS is campaigns.PLATFORMS
 
 
 def test_campaign_link_external_ok_still_rejects_lookalike_and_insecure(make_person):

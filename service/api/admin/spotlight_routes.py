@@ -1120,6 +1120,11 @@ def get_growth_removals():
         # database client to find one. Read under the same stop, for the
         # same reason as the count.
         abandoned = abandoned_job_rows(tx)
+        # Wave 3c task 4: `abandoned` above is capped at 50 rows while
+        # `abandoned_cleanup` is the uncapped total, so an operator reading
+        # only the list has no way to tell it is partial. Additive: the
+        # admin Growth tab is deployed separately.
+        abandoned_truncated = abandoned_cleanup > len(abandoned)
         # Fix round 1 ruling 2: same reasoning -- a render stuck behind a
         # parked sibling is exactly the kind of backlog that must stay
         # visible under the stop, not disappear along with the task list.
@@ -1128,6 +1133,7 @@ def get_growth_removals():
                     'overdue': overdue, 'outstanding_cleanup': outstanding_cleanup,
                     'abandoned_cleanup': abandoned_cleanup,
                     'abandoned': [_row(r) for r in abandoned],
+                    'abandoned_truncated': abandoned_truncated,
                     'render_blocked': render_blocked})
 
 

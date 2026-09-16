@@ -143,12 +143,24 @@ def make_campaign_link(tx, kind: str, target_url: str,
     return f"{WEB_BASE_URL.rstrip('/')}/s/{key}"
 
 def _ua_class(ua: str) -> str:
-    u = (ua or '').lower()
+    """Bucket a click's User-Agent for `record_click` (F10).
+
+    Empty or whitespace-only counts as `bot` (Wave 3c task 1), not
+    `unknown`: the web forwarder sends `req.headers.get("user-agent") ?? ""`,
+    so a script that omits the header entirely arrives here as the empty
+    string, and used to earn a creditable receipt exactly like a real
+    browser -- the fraud gate an agentless request was supposed to fail.
+    Consequence accepted: such a click is still recorded (so it stays in the
+    table for `post_stats` to count against) but excluded from that count,
+    same as any other bot, and mints no receipt."""
+    u = (ua or '').strip().lower()
+    if not u:
+        return 'bot'
     if 'facebookexternalhit' in u or 'bot' in u or 'crawler' in u:
         return 'bot'
     if 'mobile' in u or 'android' in u or 'iphone' in u:
         return 'mobile'
-    return 'desktop' if u else 'unknown'
+    return 'desktop'
 
 # Named platforms a Spotlight click's `?p=` query param may claim (F10).
 # Anything else is stored as null rather than trusted verbatim into the

@@ -430,6 +430,26 @@ def test_abandoned_job_rows_are_listed_on_the_removals_endpoint(client):
     assert 'updated_at' in mine and mine['updated_at']
 
 
+def test_abandoned_truncated_is_true_once_the_50_row_cap_is_exceeded(client):
+    """Task 4 (Wave 3c). `abandoned` is capped at 50 rows by
+    `abandoned_job_rows`, while `abandoned_cleanup` is the uncapped count --
+    so an operator looking only at the list has no way to tell it is
+    partial. `abandoned_truncated` says so explicitly."""
+    before = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
+    assert 'abandoned_truncated' in before
+    pfx = _pfx()
+    with api_tx() as tx:
+        for i in range(55):
+            tx.execute(
+                """INSERT INTO cleanup_job (kind, target, state, last_error)
+                   VALUES ('asset_delete', %(k)s, 'abandoned', 'x')""",
+                dict(k=f'{pfx}truncation-{i}.png'))
+    after = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
+    assert after['abandoned_truncated'] is True
+    assert after['abandoned_cleanup'] >= 55
+    assert len(after['abandoned']) <= 50
+
+
 def test_abandoned_job_rows_helper_orders_newest_first():
     """Direct unit coverage of the helper the route above wraps."""
     from service.spotlight import cleanup as cl

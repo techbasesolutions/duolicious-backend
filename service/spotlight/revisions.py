@@ -258,7 +258,13 @@ def edit_caption(tx, request_key: str, caption: str, created_by: str) -> int:
     # minted once per request at create_candidate time and must survive a
     # hand-edited caption, or the post's own CTA (and its click/signup
     # counting) is silently lost.
-    link = tx.execute("SELECT key FROM campaign_link WHERE kind = %(k)s LIMIT 1",
+    # Ordered by created_at ASC (Wave 3c task 1): E5's "card live" email
+    # mints a second campaign_link of this same kind for its own share
+    # button, and an unordered LIMIT 1 has no guarantee of returning the
+    # original -- only the physical row layout the planner happens to scan
+    # first. The caption link is always minted first, at candidate creation,
+    # so ordering by creation time is what makes it win deterministically.
+    link = tx.execute("SELECT key FROM campaign_link WHERE kind = %(k)s ORDER BY created_at ASC LIMIT 1",
                       dict(k=f'post:{request_key}')).fetchone()
     url = None
     if link:

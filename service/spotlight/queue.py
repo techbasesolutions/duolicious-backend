@@ -4,13 +4,17 @@ import hmac
 import re
 import uuid
 from typing import Optional
-from service.campaigns import make_campaign_link, with_platform
+from service.campaigns import PLATFORMS, make_campaign_link, with_platform
 from service.config import WEB_BASE_URL
 from service.spotlight.eligibility import eligibility, primary_photo_uuid
 from service.spotlight.revisions import create_revision
 
 KINDS = ('welcome', 'roundup', 'member_of_week', 'highlight')
-PLATFORMS = ('facebook', 'instagram')
+# PLATFORMS lives in service.campaigns (Wave 3c task 1): this module already
+# imports from there at load time (make_campaign_link, with_platform), so
+# importing the constant the same way carries no cycle. Re-exported here
+# unchanged -- service.api.admin.spotlight_routes and others still import it
+# as `service.spotlight.queue.PLATFORMS`.
 TRANSITIONS = {
     'review': {'scheduled', 'cancelled'},
     'scheduled': {'cancelled', 'processing'},

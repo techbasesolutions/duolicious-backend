@@ -1,5 +1,7 @@
 import pytest, uuid
 from database import api_tx
+from service.campaigns import make_campaign_link
+from service.config import WEB_BASE_URL
 from service.spotlight.queue import create_candidate, set_setting
 from service.spotlight.revisions import (create_revision, current_revision, attach_render, record_consent,
                                          consent_complete, edit_caption, approve_card)
@@ -62,6 +64,46 @@ def test_caption_edit_creates_new_revision_and_drops_consent(make_person):
     finally:
         with api_tx() as tx:
             set_setting(tx, 'approvals_enabled', 'false')
+
+
+def test_edit_caption_keeps_the_original_link_not_a_later_e5_share_link(make_person):
+    """The lookup used to be `LIMIT 1` with no ordering, which is only ever
+    safe by accident of physical row layout. A second `campaign_link` of the
+    same `post:<rk>` kind -- exactly what E5's 'card live' email mints for
+    its own share button -- must never win just because it happens to be
+    scanned first. Ordering by `created_at ASC` makes the caption link,
+    always minted first at candidate creation, win regardless of physical
+    row order.
+
+    Reproduced deterministically: the original row is deleted and
+    reinserted (giving it a LATER physical position than the E5 link) with
+    its `created_at` backdated to before the E5 link's. An unordered
+    `LIMIT 1` scans physical order and would return the E5 link here; the
+    `created_at ASC` fix must still return the original."""
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='Welcome', created_by='t')
+        kind = f'post:{rk}'
+        original = tx.execute(
+            "SELECT key, target_url, subject_person_id FROM campaign_link WHERE kind = %(k)s",
+            dict(k=kind)).fetchone()
+        # Stand in for E5's second, later mint of the same kind (its share
+        # button gets its own link to the live post).
+        make_campaign_link(tx, kind, f'{WEB_BASE_URL}/discover', None)
+        # Force the original row to a LATER physical position than the E5
+        # link, so an unordered scan returns the E5 link first, then
+        # backdate its created_at so the correct, time-ordered answer is
+        # still the original.
+        tx.execute("DELETE FROM campaign_link WHERE key = %(k)s", dict(k=original['key']))
+        tx.execute(
+            """INSERT INTO campaign_link (key, kind, target_url, subject_person_id, created_at)
+               VALUES (%(k)s, %(kind)s, %(url)s, %(pid)s, NOW() - interval '1 hour')""",
+            dict(k=original['key'], kind=kind, url=original['target_url'], pid=original['subject_person_id']))
+        edit_caption(tx, rk, 'Welcome, updated', 't')
+        rows = tx.execute("SELECT caption FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()
+    assert rows
+    for row in rows:
+        assert f'/s/{original["key"]}' in row['caption']
 
 
 def test_edit_of_in_flight_row_is_refused(make_person):
