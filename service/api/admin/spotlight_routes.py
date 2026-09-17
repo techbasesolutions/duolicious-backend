@@ -804,12 +804,24 @@ def post_growth_queue_image(request_key: str):
     # half-written key behind. sha256 is the accepted bytes' content hash,
     # used below both as the immutable key's identity and as the row's own
     # dedup stamp.
+    # Wave 3d Task 6: the admin now sends one JPEG card (Instagram publishes
+    # JPEG only) as `image_base64` with its `content_type`. The old
+    # `png_base64` field is still taken, as a PNG, so the admin deployed
+    # before this change keeps working until it is redeployed.
+    if body.get('image_base64') is not None:
+        encoded = body.get('image_base64')
+        content_type = body.get('content_type')
+        if not isinstance(content_type, str) or content_type not in st.CARD_IMAGE_TYPES:
+            abort(400)
+    else:
+        encoded = body.get('png_base64') or ''
+        content_type = 'image/png'
     try:
-        data = base64.b64decode(body.get('png_base64') or '', validate=True)
+        data = base64.b64decode(encoded, validate=True)
     except Exception:
         abort(400)
     try:
-        sha256 = st.validate_png(data)
+        sha256 = st.validate_card_image(data, content_type)
     except InvalidImage as e:
         return dict(error='invalid_image', reason=str(e)), 400
 
@@ -836,7 +848,7 @@ def post_growth_queue_image(request_key: str):
         return dict(error='bad_status'), 409
 
     revision_id = known['current_revision_id']
-    key = asset_key(request_key, revision_id, sha256, platform)
+    key = asset_key(request_key, revision_id, sha256, platform, content_type)
     url = f'{USER_IMAGES_BASE_URL}/{key}'
 
     # Upload outside any transaction: a network round trip must not hold the
@@ -847,7 +859,7 @@ def post_growth_queue_image(request_key: str):
     # dropping the bytes; mapped here the same way an approve-time storage
     # failure already is, below.
     try:
-        st.put_png(key, data)
+        st.put_card_image(key, data, content_type)
     except RuntimeError as e:
         if str(e) != 'storage_unconfigured':
             raise

@@ -1,3 +1,4 @@
+import hashlib
 import io
 
 import pytest
@@ -12,28 +13,67 @@ def _png(w=1080, h=1080):
     return buf.getvalue()
 
 
+def _jpeg(w=1080, h=1080, colour='white'):
+    buf = io.BytesIO()
+    Image.new('RGB', (w, h), colour).save(buf, 'JPEG', quality=90)
+    return buf.getvalue()
+
+
 def test_validate_png_accepts_square_and_returns_hash():
     data = _png()
-    h = st.validate_png(data)
-    assert len(h) == 64 and h == st.validate_png(data)
+    h = st.validate_card_image(data, 'image/png')
+    assert len(h) == 64 and h == st.validate_card_image(data, 'image/png')
+
+
+def test_validate_card_image_accepts_a_jpeg_and_returns_its_hash():
+    """Wave 3d Task 6: Instagram publishes JPEG only, so the card the member
+    approves, and both platforms publish, is a JPEG."""
+    data = _jpeg()
+    h = st.validate_card_image(data, 'image/jpeg')
+    assert h == hashlib.sha256(data).hexdigest()
 
 
 @pytest.mark.parametrize('data,reason', [(b'notapng', 'not_png'), (_png(800, 800), 'bad_dimensions')])
 def test_validate_png_rejects(data, reason):
     with pytest.raises(st.InvalidImage, match=reason):
-        st.validate_png(data)
+        st.validate_card_image(data, 'image/png')
 
 
 def test_validate_png_rejects_oversize():
     with pytest.raises(st.InvalidImage, match='too_large'):
-        st.validate_png(_png(), max_bytes=10)
+        st.validate_card_image(_png(), 'image/png', max_bytes=10)
 
 
-class _Object:
-    """Stub for the `s3.Object` resource `_bucket().Object(key)` returns."""
-    def __init__(self, bucket, key):
-        self._bucket = bucket
-        self._key = key
+@pytest.mark.parametrize('data,reason', [
+    (b'\xff\xd8\xff\xe0' + b'not a jpeg at all', 'not_png'),   # the magic bytes, then junk
+    (_jpeg()[:len(_jpeg()) // 2], 'not_png'),                     # a real header, cut off mid scan
+    (_jpeg(800, 800), 'bad_dimensions'),
+], ids=['junk-after-magic', 'truncated', 'wrong-size'])
+def test_validate_card_image_rejects_a_bad_jpeg(data, reason):
+    """The same three reasons a PNG is refused with. A truncated JPEG is the
+    case a header sniff (and Pillow's `verify()`, which checks little for
+    JPEG) lets through; the full decode refuses it."""
+    with pytest.raises(st.InvalidImage, match=reason):
+        st.validate_card_image(data, 'image/jpeg')
+
+
+def test_validate_card_image_rejects_an_oversize_jpeg():
+    with pytest.raises(st.InvalidImage, match='too_large'):
+        st.validate_card_image(_jpeg(), 'image/jpeg', max_bytes=10)
+
+
+@pytest.mark.parametrize('data,content_type', [(_png(), 'image/jpeg'), (_jpeg(), 'image/png')],
+                         ids=['png-labelled-jpeg', 'jpeg-labelled-png'])
+def test_validate_card_image_refuses_bytes_that_do_not_match_their_content_type(data, content_type):
+    """A PNG labelled JPEG (or the reverse) is refused: the stored object's
+    ContentType and key extension must name what the bytes really are."""
+    with pytest.raises(st.InvalidImage, match='not_png'):
+        st.validate_card_image(data, content_type)
+
+
+def test_validate_card_image_refuses_an_unsupported_content_type():
+    with pytest.raises(ValueError, match='unsupported_content_type'):
+        st.validate_card_image(_jpeg(), 'image/gif')
 
 
 class _Client:
@@ -71,11 +111,6 @@ class _Bucket:
             raise self.raise_exc
         return self.response
 
-    def put_object(self, **kw):
-        self.calls.append(('put', kw.get('Key'), kw.get('ACL')))
-
-    def Object(self, key):
-        return _Object(self, key)
 
 
 def test_delete_images_returns_only_confirmed(monkeypatch):
@@ -94,13 +129,39 @@ def test_delete_images_confirms_nothing_on_exception_or_unconfigured(monkeypatch
     assert st.delete_images(['a']) == []
 
 
-def test_put_png_is_private_by_default(monkeypatch):
-    b = _Bucket()
+def _stubbed_bucket():
+    """A real boto3 `Bucket` resource whose client is wrapped in botocore's
+    Stubber, so `put_object` goes through boto3's own parameter handling and
+    the test asserts on the exact request S3 would receive."""
+    import boto3
+    from botocore.stub import Stubber
+
+    s3 = boto3.resource('s3', region_name='us-east-1',
+                         aws_access_key_id='x', aws_secret_access_key='y')
+    bucket = s3.Bucket('test-bucket')
+    return bucket, Stubber(bucket.meta.client)
+
+
+@pytest.mark.parametrize('content_type', ['image/jpeg', 'image/png'])
+def test_put_card_image_is_private_by_default_and_names_its_content_type(monkeypatch, content_type):
+    bucket, stubber = _stubbed_bucket()
+    stubber.add_response('put_object', {}, {
+        'Bucket': 'test-bucket', 'Key': 'k', 'Body': b'x', 'ACL': 'private', 'ContentType': content_type})
+    stubber.add_response('put_object', {}, {
+        'Bucket': 'test-bucket', 'Key': 'k2', 'Body': b'x', 'ACL': 'public-read', 'ContentType': content_type})
+    stubber.activate()
     monkeypatch.setattr(st, '_configured', lambda: True)
-    monkeypatch.setattr(st, '_bucket', lambda: b)
-    st.put_png('k', b'x')
-    st.put_png('k2', b'x', public=True)
-    assert b.calls == [('put', 'k', 'private'), ('put', 'k2', 'public-read')]
+    monkeypatch.setattr(st, '_bucket', lambda: bucket)
+    st.put_card_image('k', b'x', content_type)
+    st.put_card_image('k2', b'x', content_type, public=True)
+    stubber.assert_no_pending_responses()
+
+
+def test_put_card_image_refuses_an_unsupported_content_type_before_the_bucket(monkeypatch):
+    monkeypatch.setattr(st, '_configured', lambda: True)
+    monkeypatch.setattr(st, '_bucket', lambda: (_ for _ in ()).throw(AssertionError('_bucket must not be called')))
+    with pytest.raises(ValueError, match='unsupported_content_type'):
+        st.put_card_image('k', b'x', 'image/gif')
 
 
 def test_make_public_sets_public_read_acl_through_the_real_client(monkeypatch):
@@ -150,7 +211,7 @@ def test_bucket_and_client_methods_storage_calls_exist_on_real_boto3():
                          aws_access_key_id='x', aws_secret_access_key='y')
     bucket = s3.Bucket('test-bucket')
 
-    # storage.put_png: _bucket().put_object(...)
+    # storage.put_card_image: _bucket().put_object(...)
     assert hasattr(bucket, 'put_object')
     # storage.delete_images: _bucket().delete_objects(...)
     assert hasattr(bucket, 'delete_objects')
@@ -171,7 +232,7 @@ def test_presign_returns_the_client_presigned_url(monkeypatch):
     assert b.calls == [('presign', 'get_object', {'Bucket': b.name, 'Key': 'k'}, 120)]
 
 
-def test_put_png_unconfigured_raises_and_never_touches_the_bucket(monkeypatch):
+def test_put_card_image_unconfigured_raises_and_never_touches_the_bucket(monkeypatch):
     """Fix round 1 (Task 2 review): unlike delete_images, an unconfigured
     store must fail loudly here rather than silently drop the bytes -- a
     dropped upload would let a card's row believe it has a reachable
@@ -180,7 +241,7 @@ def test_put_png_unconfigured_raises_and_never_touches_the_bucket(monkeypatch):
     monkeypatch.setattr(st, '_configured', lambda: False)
     monkeypatch.setattr(st, '_bucket', lambda: b)
     with pytest.raises(RuntimeError, match='storage_unconfigured'):
-        st.put_png('k', b'x')
+        st.put_card_image('k', b'x', 'image/jpeg')
     assert b.calls == []
 
 
@@ -194,7 +255,7 @@ def test_make_public_unconfigured_raises(monkeypatch):
 
 
 def test_presign_returns_none_when_unconfigured(monkeypatch):
-    """Fix round 1 (ruling 5): unlike put_png/make_public, an unconfigured
+    """Fix round 1 (ruling 5): unlike put_card_image/make_public, an unconfigured
     store degrades presign to None rather than raising -- it is a local,
     purely computed signature (no network call), safe to call from inside a
     transaction the way card_state does, and a raise there would abort that

@@ -12,6 +12,15 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def test_asset_key_extension_follows_the_content_type():
+    """Wave 3d Task 6: a JPEG card is stored under a `.jpg` key and a PNG
+    card (an admin deployed before the change) under `.png`, so the key
+    names what the object really is."""
+    sha = _sha(b'bytes')
+    assert asset_key('rk', 7, sha, 'instagram', 'image/jpeg') == f'spotlight/rk/7-{sha[:16]}-instagram.jpg'
+    assert asset_key('rk', 7, sha, 'facebook', 'image/png') == f'spotlight/rk/7-{sha[:16]}-facebook.png'
+
+
 def test_complete_render_if_ready_is_false_until_every_row_has_a_hash():
     """Sanity: a set with only one platform's image_sha256 stamped is not
     ready, and no render is attached."""

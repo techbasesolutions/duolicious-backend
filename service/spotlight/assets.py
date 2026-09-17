@@ -12,10 +12,17 @@ from __future__ import annotations
 from typing import Optional
 
 from service.spotlight.revisions import attach_render
+from service.spotlight.storage import card_image_extension
 
 
-def asset_key(request_key: str, revision_id: int, sha256: str, platform: str) -> str:
-    return f"spotlight/{request_key}/{revision_id}-{sha256[:16]}-{platform}.png"
+def asset_key(request_key: str, revision_id: int, sha256: str, platform: str,
+              content_type: str = 'image/png') -> str:
+    """Wave 3d Task 6: the extension follows the stored content type, `.jpg`
+    for the JPEG cards the admin renders now and `.png` for an upload through
+    the old `png_base64` field. Cleanup and retention match keys exactly, as
+    stored on the rows, so either extension is found and deleted."""
+    ext = card_image_extension(content_type)
+    return f"spotlight/{request_key}/{revision_id}-{sha256[:16]}-{platform}.{ext}"
 
 
 def attach_platform_image(tx, request_key: str, platform: str, revision_id: int,

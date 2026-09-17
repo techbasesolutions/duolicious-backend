@@ -253,7 +253,7 @@ def test_render_failed_refuses_bad_bodies_unknown_keys_and_strangers(client, mak
 
 def test_a_successful_image_attach_resets_that_rows_backoff(client, monkeypatch):
     import service.spotlight.storage as st
-    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: None)
+    monkeypatch.setattr(st, 'put_card_image', lambda key, data, content_type, public=False: None)
     with api_tx() as tx:
         rk = _roundups(tx, 1)[0]
     try:
@@ -429,7 +429,7 @@ def test_a_good_card_is_reached_while_old_cards_fail_every_daily_tick(client, mo
     the clock a day: every timestamp of these cards moves 24 hours back,
     which is what a day passing looks like from NOW()."""
     import service.spotlight.storage as st
-    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: None)
+    monkeypatch.setattr(st, 'put_card_image', lambda key, data, content_type, public=False: None)
     failing_count = 150
     bound = -(-failing_count // 100) + 1
     with api_tx() as tx:

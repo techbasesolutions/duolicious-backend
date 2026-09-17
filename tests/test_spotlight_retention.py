@@ -66,7 +66,7 @@ def test_retention_stops_re_queueing_a_key_whose_job_was_abandoned():
     assert [r['state'] for r in jobs] == ['abandoned']
 
 
-# Storage-level delete_images tests (validate_png, put_png, and the
+# Storage-level delete_images tests (validate_card_image, put_card_image, and the
 # confirmed-deletion / batching / unconfigured-noop behaviour of
 # delete_images itself) moved to tests/test_spotlight_storage.py in
 # Wave 2 Task 2, updated there for the new list-of-confirmed-keys return

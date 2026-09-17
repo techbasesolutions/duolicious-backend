@@ -10,14 +10,14 @@ forever" either. Since Wave 2 Task 5 a failure is not a loss either: the
 single caller of `delete_images` is the cleanup batch, which retries the
 keys this did not confirm and leaves them on their rows meanwhile.
 
-Uploads (`put_png`) are private by default (Wave 2 F09: a card must not be
+Uploads (`put_card_image`) are private by default (Wave 2 F09: a card must not be
 publicly reachable before a member has approved it); an admin action that
 already has approval in hand passes `public=True`, and `make_public` flips
 an already-uploaded object over once approval lands. `presign` hands out a
 short-lived read URL for a private object (an admin preview, or a member's
 own approval screen) without ever making the object itself public.
 
-Unlike deletion, the two actual writes here (`put_png`, `make_public`) fail
+Unlike deletion, the two actual writes here (`put_card_image`, `make_public`) fail
 loudly -- `RuntimeError('storage_unconfigured')` -- when the object store is
 unconfigured, rather than silently no-op'ing: a dropped upload or ACL
 change would let a card's row believe it has a reachable image when it does
@@ -35,10 +35,30 @@ from PIL import Image
 
 
 class InvalidImage(ValueError):
-    """Raised by `validate_png` when the uploaded bytes are not a decodable,
-    correctly sized PNG under the byte limit. `str(e)` is one of: not_png,
-    bad_dimensions, too_large -- the same three reasons the upload route
-    reports back to its caller."""
+    """Raised by `validate_card_image` when the uploaded bytes are not a
+    decodable, correctly sized image of the declared content type under the
+    byte limit. `str(e)` is one of: not_png, bad_dimensions, too_large --
+    the same three reasons the upload route reports back to its caller.
+    `not_png` kept its name when JPEG cards arrived (Wave 3d Task 6): it is
+    the reason the admin already knows, and it now means "not a valid image
+    of the declared type"."""
+
+
+# Wave 3d Task 6: Instagram content publishing accepts JPEG only, and the
+# member approves the very bytes both platforms publish, so a card is a JPEG.
+# PNG stays accepted for an admin deployed before that change. Each entry is
+# the content type's magic bytes, Pillow's format name and the key extension.
+CARD_IMAGE_TYPES = {
+    'image/jpeg': (b'\xff\xd8\xff', 'JPEG', 'jpg'),
+    'image/png': (b'\x89PNG\r\n\x1a\n', 'PNG', 'png'),
+}
+
+
+def card_image_extension(content_type: str) -> str:
+    """The key extension for a card of this content type."""
+    if content_type not in CARD_IMAGE_TYPES:
+        raise ValueError('unsupported_content_type')
+    return CARD_IMAGE_TYPES[content_type][2]
 
 
 def _configured() -> bool:
@@ -87,34 +107,51 @@ def _bucket():
     return _bucket_cache
 
 
-def validate_png(data: bytes, *, size=(1080, 1080), max_bytes=5_000_000) -> str:
-    """Reject anything that is not a clean, correctly sized PNG before it
-    ever reaches the object store, and hand back the sha256 hex digest of
-    the accepted bytes for `put_png`'s caller to key the upload on.
+def validate_card_image(data: bytes, content_type: str, *, size=(1080, 1080),
+                        max_bytes=5_000_000) -> str:
+    """Reject anything that is not a clean, correctly sized image of the
+    declared `content_type` (`image/jpeg` or `image/png`) before it ever
+    reaches the object store, and hand back the sha256 hex digest of the
+    accepted bytes for `put_card_image`'s caller to key the upload on. An
+    unsupported content type raises `ValueError('unsupported_content_type')`,
+    a caller bug rather than a bad upload.
 
     The byte-size check runs first and cheaply, ahead of any decode -- an
-    oversized file is rejected on `len(data)` alone. `Image.verify()`
-    catches a truncated or corrupt file that a naive header sniff would
-    miss; Pillow invalidates the image object after `verify()`, so the
-    dimensions and format are read off a second, fresh decode."""
+    oversized file is rejected on `len(data)` alone. The magic bytes must
+    match the declared type, so a PNG labelled JPEG (or the reverse) is never
+    stored under the wrong ContentType and key extension. `Image.verify()`
+    catches a truncated or corrupt PNG that a naive header sniff would miss;
+    Pillow invalidates the image object after `verify()`, so the dimensions
+    and format are read off a second, fresh open. Pillow's `verify()` checks
+    next to nothing in a JPEG, so a JPEG is also fully decoded (`load()`),
+    which refuses one cut off mid scan."""
+    if content_type not in CARD_IMAGE_TYPES:
+        raise ValueError('unsupported_content_type')
+    magic, expected_format, _ = CARD_IMAGE_TYPES[content_type]
     if len(data) > max_bytes:
         raise InvalidImage('too_large')
+    if not data.startswith(magic):
+        raise InvalidImage('not_png')
     try:
         Image.open(io.BytesIO(data)).verify()
         img = Image.open(io.BytesIO(data))
         width, height = img.size
         fmt = img.format
+        if fmt == 'JPEG':
+            img.load()
     except Exception as e:
         raise InvalidImage('not_png') from e
-    if fmt != 'PNG':
+    if fmt != expected_format:
         raise InvalidImage('not_png')
     if (width, height) != tuple(size):
         raise InvalidImage('bad_dimensions')
     return hashlib.sha256(data).hexdigest()
 
 
-def put_png(key: str, data: bytes, *, public: bool = False) -> None:
-    """Upload one rendered card. Private by default (Wave 2 F09): a card
+def put_card_image(key: str, data: bytes, content_type: str, *, public: bool = False) -> None:
+    """Upload one rendered card, stored with its own `content_type`
+    (`image/jpeg` or `image/png`, as `validate_card_image` accepted it).
+    Private by default (Wave 2 F09): a card
     must not be reachable by anyone before the member pictured in it has
     approved it. `public=True` is for the one call site that already has
     approval in hand at upload time; every other caller flips visibility
@@ -126,10 +163,12 @@ def put_png(key: str, data: bytes, *, public: bool = False) -> None:
     no-op is safe -- there is nothing left to clean up either way), a
     silent no-op here would let a card's row believe it has a rendered
     image when no bytes were ever written, so this fails loudly instead."""
+    if content_type not in CARD_IMAGE_TYPES:
+        raise ValueError('unsupported_content_type')
     if not _configured():
         raise RuntimeError('storage_unconfigured')
     _bucket().put_object(Key=key, Body=data, ACL='public-read' if public else 'private',
-                          ContentType='image/png')
+                          ContentType=content_type)
 
 
 def make_public(key: str) -> None:
@@ -139,7 +178,7 @@ def make_public(key: str) -> None:
 
     Fix round 1: raises `RuntimeError('storage_unconfigured')` up front,
     before ever touching `_bucket()`, when the object store is unconfigured
-    -- the same fail-loudly reasoning as `put_png`: a card must not be
+    -- the same fail-loudly reasoning as `put_card_image`: a card must not be
     treated as approved-and-public when nothing was actually made public."""
     if not _configured():
         raise RuntimeError('storage_unconfigured')
@@ -152,7 +191,7 @@ def presign(key: str, seconds: int = 900) -> str | None:
     preview, or a member's own approval screen -- without ever making the
     object itself public.
 
-    Fix round 1 (ruling 5): unlike `put_png` and `make_public`, an
+    Fix round 1 (ruling 5): unlike `put_card_image` and `make_public`, an
     unconfigured store returns None here rather than raising. Signing a URL
     is a local, purely computed operation (boto3 builds and signs it against
     the credentials it already holds; nothing crosses the network to do it),

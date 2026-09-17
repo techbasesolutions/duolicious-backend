@@ -35,6 +35,12 @@ def _png_bytes(w=1080, h=1080, colour='white'):
     return buf.getvalue()
 
 
+def _jpeg_bytes(w=1080, h=1080, colour='white'):
+    buf = io.BytesIO()
+    Image.new('RGB', (w, h), colour).save(buf, 'JPEG', quality=90)
+    return buf.getvalue()
+
+
 def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
@@ -214,7 +220,7 @@ def test_queue_due_filter(client, make_person):
 def test_image_upload_attaches_and_moves_to_review(client, monkeypatch, make_person):
     import service.spotlight.storage as st
     calls = []
-    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: calls.append((key, len(data), public)))
+    monkeypatch.setattr(st, 'put_card_image', lambda key, data, content_type, public=False: calls.append((key, len(data), public, content_type)))
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
         rev_id = current_revision(tx, rk)['id']
@@ -230,6 +236,9 @@ def test_image_upload_attaches_and_moves_to_review(client, monkeypatch, make_per
     # Private by default (Wave 2 F09): nobody may reach the card before a
     # member has approved it.
     assert all(c[2] is False for c in calls)
+    # Wave 3d Task 6: the old png_base64 field (an admin deployed before the
+    # JPEG change) is still stored as a PNG under a .png key.
+    assert all(c[3] == 'image/png' for c in calls)
     with api_tx('read committed') as tx:
         rows = tx.execute(
             "SELECT platform, status, image_url, image_sha256 FROM publishing_queue WHERE request_key = %(rk)s",
@@ -247,7 +256,7 @@ def test_image_upload_attaches_and_moves_to_review(client, monkeypatch, make_per
 def test_image_upload_refuses_a_published_row(client, monkeypatch):
     import service.spotlight.storage as st
     calls = []
-    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: calls.append(key))
+    monkeypatch.setattr(st, 'put_card_image', lambda key, data, content_type, public=False: calls.append(key))
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
         tx.execute("""UPDATE publishing_queue SET status = 'published', image_key = 'original.png'
@@ -271,7 +280,7 @@ def test_image_upload_refuses_a_second_render_of_the_same_revision(client, monke
     swallowed by a blanket except ValueError: pass)."""
     import service.spotlight.storage as st
     calls = []
-    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: calls.append(key))
+    monkeypatch.setattr(st, 'put_card_image', lambda key, data, content_type, public=False: calls.append(key))
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
     png = _b64(_png_bytes())
@@ -302,7 +311,7 @@ def test_image_upload_pins_render_to_facebook_regardless_of_upload_order(client,
     reflect the facebook row's own upload when one exists, even when
     instagram is uploaded first and completes the set."""
     import service.spotlight.storage as st
-    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: None)
+    monkeypatch.setattr(st, 'put_card_image', lambda key, data, content_type, public=False: None)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
         rev_id = current_revision(tx, rk)['id']
@@ -325,7 +334,7 @@ def test_image_upload_refuses_when_no_revision_is_assigned(client, monkeypatch):
     against nothing."""
     import service.spotlight.storage as st
     calls = []
-    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: calls.append(key))
+    monkeypatch.setattr(st, 'put_card_image', lambda key, data, content_type, public=False: calls.append(key))
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
         tx.execute("UPDATE publishing_queue SET current_revision_id = NULL WHERE request_key = %(rk)s", dict(rk=rk))
@@ -336,7 +345,7 @@ def test_image_upload_refuses_when_no_revision_is_assigned(client, monkeypatch):
 
 
 def test_image_upload_returns_503_when_storage_is_unconfigured(client, make_person, monkeypatch):
-    """Fix round 1 (Task 2 review): put_png now raises
+    """Fix round 1 (Task 2 review): put_card_image now raises
     RuntimeError('storage_unconfigured') instead of silently dropping the
     bytes when the object store has no credentials; the route maps that to
     503 the same way an approve-time storage failure already is, and the
@@ -360,7 +369,7 @@ def test_image_upload_returns_503_when_storage_is_unconfigured(client, make_pers
 def test_image_route_rejects_invalid_png(client, make_person, monkeypatch):
     import service.spotlight.storage as st
     puts = []
-    monkeypatch.setattr(st, 'put_png', lambda *a, **k: puts.append(a))
+    monkeypatch.setattr(st, 'put_card_image', lambda *a, **k: puts.append(a))
     p = _make_eligible(make_person)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
@@ -370,11 +379,84 @@ def test_image_route_rejects_invalid_png(client, make_person, monkeypatch):
     assert puts == []
 
 
+def test_image_route_stores_a_jpeg_card_under_a_jpg_key(client, make_person, monkeypatch):
+    """Wave 3d Task 6: Instagram publishes JPEG only, and the member approves
+    the very bytes both platforms publish, so the admin uploads one JPEG
+    through `image_base64` plus `content_type`. It is stored as
+    `image/jpeg` under a `.jpg` key, and the revision's preview names the
+    same object."""
+    import service.spotlight.storage as st
+    puts = []
+    monkeypatch.setattr(st, 'put_card_image',
+                         lambda key, data, content_type, public=False: puts.append(
+                             (key, hashlib.sha256(data).hexdigest(), content_type, public)))
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        rev_id = current_revision(tx, rk)['id']
+    data = _jpeg_bytes()
+    sha = hashlib.sha256(data).hexdigest()
+    for platform in ('facebook', 'instagram'):
+        r = client.post(f'/admin/growth/queue/{rk}/image',
+                        json=dict(platform=platform, image_base64=_b64(data), content_type='image/jpeg'), headers=H)
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()['image_url'].endswith(f'/spotlight/{rk}/{rev_id}-{sha[:16]}-{platform}.jpg')
+    assert puts == [(f'spotlight/{rk}/{rev_id}-{sha[:16]}-{pl}.jpg', sha, 'image/jpeg', False)
+                    for pl in ('facebook', 'instagram')]
+    with api_tx('read committed') as tx:
+        rows = tx.execute("SELECT platform, image_key, image_sha256 FROM publishing_queue WHERE request_key = %(rk)s",
+                          dict(rk=rk)).fetchall()
+        rev = current_revision(tx, rk)
+    assert {r['platform']: (r['image_key'], r['image_sha256']) for r in rows} == {
+        pl: (f'spotlight/{rk}/{rev_id}-{sha[:16]}-{pl}.jpg', sha) for pl in ('facebook', 'instagram')}
+    assert rev['asset_hash'] == sha and rev['image_key'] == f'spotlight/{rk}/{rev_id}-{sha[:16]}-facebook.jpg'
+
+
+@pytest.mark.parametrize('payload,reason', [
+    (lambda: _b64(b'\xff\xd8\xff\xe0' + b'corrupt'), 'not_png'),
+    (lambda: _b64(_jpeg_bytes()[:len(_jpeg_bytes()) // 2]), 'not_png'),
+    (lambda: _b64(_jpeg_bytes(800, 800)), 'bad_dimensions'),
+    (lambda: _b64(_jpeg_bytes() + b'\0' * 5_000_000), 'too_large'),
+    (lambda: _b64(_png_bytes()), 'not_png'),              # a PNG labelled image/jpeg
+], ids=['junk-after-magic', 'truncated', 'wrong-size', 'oversize', 'png-labelled-jpeg'])
+def test_image_route_refuses_a_bad_jpeg_with_the_existing_reasons(client, make_person, monkeypatch, payload, reason):
+    import service.spotlight.storage as st
+    puts = []
+    monkeypatch.setattr(st, 'put_card_image', lambda *a, **k: puts.append(a))
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+    r = client.post(f'/admin/growth/queue/{rk}/image',
+                    json=dict(platform='facebook', image_base64=payload(), content_type='image/jpeg'), headers=H)
+    assert r.status_code == 400 and r.get_json() == dict(error='invalid_image', reason=reason)
+    assert puts == []
+
+
+def test_image_route_refuses_a_jpeg_labelled_png_and_an_unknown_content_type(client, make_person, monkeypatch):
+    import service.spotlight.storage as st
+    puts = []
+    monkeypatch.setattr(st, 'put_card_image', lambda *a, **k: puts.append(a))
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+    url = f'/admin/growth/queue/{rk}/image'
+    jpeg = _b64(_jpeg_bytes())
+    r = client.post(url, json=dict(platform='facebook', image_base64=jpeg, content_type='image/png'), headers=H)
+    assert r.status_code == 400 and r.get_json() == dict(error='invalid_image', reason='not_png')
+    # A content type the route does not store, or none at all, is a malformed request.
+    assert client.post(url, json=dict(platform='facebook', image_base64=jpeg, content_type='image/gif'), headers=H).status_code == 400
+    assert client.post(url, json=dict(platform='facebook', image_base64=jpeg), headers=H).status_code == 400
+    # png_base64 always meant a PNG: JPEG bytes sent through it are refused.
+    r = client.post(url, json=dict(platform='facebook', png_base64=jpeg), headers=H)
+    assert r.status_code == 400 and r.get_json() == dict(error='invalid_image', reason='not_png')
+    assert puts == []
+
+
 def test_image_route_uses_content_hashed_key_and_private_acl(client, make_person, monkeypatch):
     import service.spotlight.storage as st
     puts = []
-    monkeypatch.setattr(st, 'put_png',
-                         lambda key, data, public=False: puts.append((key, hashlib.sha256(data).hexdigest(), public)))
+    monkeypatch.setattr(st, 'put_card_image',
+                         lambda key, data, content_type, public=False: puts.append((key, hashlib.sha256(data).hexdigest(), public)))
     p = _make_eligible(make_person)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
@@ -402,11 +484,11 @@ def test_image_route_superseded_when_revision_changes_mid_upload(client, make_pe
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         rev1 = current_revision(tx, rk)['id']
 
-    def put_then_edit(key, data, public=False):
-        with api_tx() as tx:            # the route holds no transaction while put_png runs, so this does not nest
+    def put_then_edit(key, data, content_type, public=False):
+        with api_tx() as tx:            # the route holds no transaction while put_card_image runs, so this does not nest
             edit_caption(tx, rk, 'changed', 't')
 
-    monkeypatch.setattr(st, 'put_png', put_then_edit)
+    monkeypatch.setattr(st, 'put_card_image', put_then_edit)
     r = client.post(f'/admin/growth/queue/{rk}/image', json=dict(platform='facebook', png_base64=_b64(_png_bytes())), headers=H)
     assert r.status_code == 409 and r.get_json() == dict(error='superseded')
     # Wave 2 Task 5: the orphaned object is queued for deletion in the same
@@ -432,7 +514,7 @@ def test_superseded_upload_of_a_key_a_row_still_uses_is_not_queued(client, monke
     out. The enqueue is guarded by the same reference check the cleanup batch
     re-runs."""
     import service.spotlight.storage as st
-    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: None)
+    monkeypatch.setattr(st, 'put_card_image', lambda key, data, content_type, public=False: None)
 
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
@@ -447,16 +529,16 @@ def test_superseded_upload_of_a_key_a_row_still_uses_is_not_queued(client, monke
             "SELECT image_key FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
             dict(rk=rk)).fetchone()['image_key']
 
-    def _flip(key, data, public=False):
+    def _flip(key, data, content_type, public=False):
         # The row moves out of the uploadable statuses while the bytes are in
         # flight, so the route's pre-check passes and the compare-and-set
-        # misses. put_png is called with no transaction held, so this one does
+        # misses. put_card_image is called with no transaction held, so this one does
         # not nest.
         with api_tx() as tx:
             tx.execute("UPDATE publishing_queue SET status = 'scheduled' WHERE request_key = %(rk)s",
                        dict(rk=rk))
 
-    monkeypatch.setattr(st, 'put_png', _flip)
+    monkeypatch.setattr(st, 'put_card_image', _flip)
     # Same bytes, same key, but the row has moved on: superseded.
     r = client.post(f'/admin/growth/queue/{rk}/image',
                     json={'platform': 'facebook', 'png_base64': _b64(png)},
@@ -1017,15 +1099,15 @@ def test_image_upload_refuses_a_row_that_moved_during_the_upload(client, monkeyp
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
 
-    def _flip(key, data, public=False):
+    def _flip(key, data, content_type, public=False):
         # Stands in for the approve that lands while the bytes are in flight.
-        # Safe to open a transaction here: put_png is called outside the
+        # Safe to open a transaction here: put_card_image is called outside the
         # handler's own, exactly so a round trip never holds the lock.
         with api_tx() as tx:
             tx.execute("UPDATE publishing_queue SET status = 'scheduled' WHERE request_key = %(rk)s",
                        dict(rk=rk))
 
-    monkeypatch.setattr(st, 'put_png', _flip)
+    monkeypatch.setattr(st, 'put_card_image', _flip)
     r = client.post(f'/admin/growth/queue/{rk}/image',
                     json={'platform': 'facebook', 'png_base64': _b64(_png_bytes())},
                     headers=H)
@@ -1053,7 +1135,7 @@ def test_replacing_an_unrendered_upload_queues_the_previous_key(client, monkeypa
     artwork. `attach_platform_image` now hands back the key it displaced and
     the route queues it for deletion."""
     import service.spotlight.storage as st
-    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: None)
+    monkeypatch.setattr(st, 'put_card_image', lambda key, data, content_type, public=False: None)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
         rev_id = current_revision(tx, rk)['id']
@@ -1682,7 +1764,7 @@ def test_two_racing_uploads_one_attaches_one_answers_409(app, monkeypatch, same_
 
     with monkeypatch.context() as m:
         _one_connection_per_tx(m)
-        m.setattr(st, 'put_png', lambda k, d, public=False: None)
+        m.setattr(st, 'put_card_image', lambda k, d, content_type, public=False: None)
         m.setattr(sr, 'attach_platform_image', racing_attach)
 
         def call(c, i):
