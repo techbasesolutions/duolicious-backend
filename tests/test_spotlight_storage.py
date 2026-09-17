@@ -30,15 +30,10 @@ def test_validate_png_rejects_oversize():
 
 
 class _Object:
-    """Stub for the `s3.Object` resource `_bucket().Object(key)` returns --
-    just enough to record a `put_object_acl` call the way `make_public`
-    makes it."""
+    """Stub for the `s3.Object` resource `_bucket().Object(key)` returns."""
     def __init__(self, bucket, key):
         self._bucket = bucket
         self._key = key
-
-    def put_object_acl(self, **kw):
-        self._bucket.calls.append(('acl', self._key, kw.get('ACL')))
 
 
 class _Client:
@@ -108,12 +103,63 @@ def test_put_png_is_private_by_default(monkeypatch):
     assert b.calls == [('put', 'k', 'private'), ('put', 'k2', 'public-read')]
 
 
-def test_make_public_sets_public_read_acl(monkeypatch):
-    b = _Bucket()
+def test_make_public_sets_public_read_acl_through_the_real_client(monkeypatch):
+    """A storage test must use botocore's real client shape, never a
+    hand-written stub class that defines the method under test: boto3
+    1.35.99's `s3.Object` resource has no `put_object_acl` method (that call
+    used to 503 every approval in production), so a hand-rolled stub that
+    just adds the method would never have caught it. Stubbing the real
+    client is what proves `make_public` calls a method that actually
+    exists."""
+    import boto3
+    from botocore.stub import Stubber
+
+    client = boto3.client('s3', region_name='us-east-1',
+                           aws_access_key_id='x', aws_secret_access_key='y')
+    stubber = Stubber(client)
+    stubber.add_response(
+        'put_object_acl', {},
+        {'Bucket': 'test-bucket', 'Key': 'k', 'ACL': 'public-read'})
+    stubber.activate()
+
+    class _FakeMeta:
+        def __init__(self, client):
+            self.client = client
+
+    class _FakeBucket:
+        name = 'test-bucket'
+        meta = _FakeMeta(client)
+
     monkeypatch.setattr(st, '_configured', lambda: True)
-    monkeypatch.setattr(st, '_bucket', lambda: b)
+    monkeypatch.setattr(st, '_bucket', lambda: _FakeBucket())
+
     st.make_public('k')
-    assert b.calls == [('acl', 'k', 'public-read')]
+
+    stubber.assert_no_pending_responses()
+
+
+def test_bucket_and_client_methods_storage_calls_exist_on_real_boto3():
+    """Step 4 regression: every method `service/spotlight/storage.py` calls
+    on `_bucket()` or on `.Object(...)` must actually exist on boto3
+    1.35.99's real resource/client shape -- the `make_public` defect this
+    task fixes (`s3.Object` has no `put_object_acl`) would have been caught
+    by this sweep before it ever reached production."""
+    import boto3
+
+    s3 = boto3.resource('s3', region_name='us-east-1',
+                         aws_access_key_id='x', aws_secret_access_key='y')
+    bucket = s3.Bucket('test-bucket')
+
+    # storage.put_png: _bucket().put_object(...)
+    assert hasattr(bucket, 'put_object')
+    # storage.delete_images: _bucket().delete_objects(...)
+    assert hasattr(bucket, 'delete_objects')
+    # storage.presign: bucket.meta.client.generate_presigned_url(...)
+    assert hasattr(bucket.meta.client, 'generate_presigned_url')
+    # storage.make_public (fixed): bucket.meta.client.put_object_acl(...)
+    assert hasattr(bucket.meta.client, 'put_object_acl')
+    # the defect this task fixes: s3.Object has no put_object_acl method
+    assert not hasattr(bucket.Object('k'), 'put_object_acl')
 
 
 def test_presign_returns_the_client_presigned_url(monkeypatch):

@@ -143,7 +143,8 @@ def make_public(key: str) -> None:
     treated as approved-and-public when nothing was actually made public."""
     if not _configured():
         raise RuntimeError('storage_unconfigured')
-    _bucket().Object(key).put_object_acl(ACL='public-read')
+    bucket = _bucket()
+    bucket.meta.client.put_object_acl(Bucket=bucket.name, Key=key, ACL='public-read')
 
 
 def presign(key: str, seconds: int = 900) -> str | None:
