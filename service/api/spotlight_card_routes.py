@@ -17,7 +17,9 @@ returns, or the skip cancellation runs), never before -- a routine 409
 own) leaves the token usable for a retry once the condition clears,
 rather than burning a legitimate link on a failed attempt. Choosing a
 different photo leaves it usable too: that answers with the new
-revision number and no decision has been made yet. A repeat POST
+revision number and no decision has been made yet. So does approving from
+a page that showed an older revision than the current one (the approve
+body names the revision it showed). A repeat POST
 with the same (now-used) token returns the current state idempotently
 rather than re-running the decision.
 """
@@ -144,7 +146,14 @@ def post_spotlight_card(token: str):
                 photo_uuid = body.get('photo_uuid')
                 if not photo_uuid:
                     abort(400)
-                result = approve_card(tx, rk, row['subject_person_id'], photo_uuid, nonce=nonce)
+                # Wave 3d Task 2: the page names the revision it showed, so
+                # consent binds to what the member saw. A bool is a Python
+                # int subclass, so it is refused explicitly.
+                shown_revision = body.get('revision')
+                if not isinstance(shown_revision, int) or isinstance(shown_revision, bool):
+                    abort(400)
+                result = approve_card(tx, rk, row['subject_person_id'], photo_uuid,
+                                      shown_revision=shown_revision, nonce=nonce)
                 if result == 'new_revision':
                     # Fix wave item 5: choosing a different photo is not a
                     # decision, it is a request for a different card. The
@@ -152,7 +161,9 @@ def post_spotlight_card(token: str):
                     # so the single-use nonce is NOT consumed here -- burning
                     # it would leave them holding a dead link to a card
                     # nobody can approve. The new revision number tells the
-                    # page what it is now waiting on.
+                    # page what it is now waiting on. Wave 3d Task 2: the
+                    # same answer, with the same untouched nonce, when the
+                    # page approved an older revision than the current one.
                     fresh = current_revision(tx, rk)
                     return dict(ok=True, result=result,
                                 revision=fresh['revision'] if fresh else None)

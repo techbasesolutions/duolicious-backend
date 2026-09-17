@@ -297,7 +297,7 @@ def edit_caption(tx, request_key: str, caption: str, created_by: str) -> int:
 
 
 def approve_card(tx, request_key: str, person_id: int, photo_uuid: Optional[str], *,
-                  nonce: Optional[str] = None) -> str:
+                  shown_revision: int, nonce: Optional[str] = None) -> str:
     from service.spotlight.queue import settings as _settings, set_status  # lazy: see module docstring
     if _settings(tx).get('approvals_enabled') != 'true':
         raise ValueError('approvals_disabled')
@@ -309,6 +309,11 @@ def approve_card(tx, request_key: str, person_id: int, photo_uuid: Optional[str]
     rev = current_revision(tx, request_key)
     if not rev:
         raise ValueError('not_found')
+
+    if shown_revision != rev['revision']:
+        # The member approved from a page showing an older card. Record
+        # nothing; the page re-reads and asks about the card that is current.
+        return 'new_revision'
 
     if photo_uuid and photo_uuid != rev['photo_uuid']:
         owned = tx.execute(

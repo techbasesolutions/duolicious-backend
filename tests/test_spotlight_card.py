@@ -71,13 +71,13 @@ def test_get_is_read_only_and_post_approves(client, make_person, monkeypatch):
         assert body['photo_uuid'] == photo and body['stale'] is False
         with api_tx('read committed') as tx:
             assert {x['status'] for x in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'awaiting_member'}
-        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo, 'revision': 1})
         assert r.status_code == 200 and r.get_json()['result'] == 'approved'
         with api_tx('read committed') as tx:
             assert {x['status'] for x in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'review'}
         # The nonce is now single-use: a repeat with the same token no
         # longer re-runs approve_card, it reports the current state.
-        r2 = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo}).get_json()
+        r2 = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo, 'revision': 1}).get_json()
         assert r2 == dict(ok=True, already=True, status='approved')
         assert client.get(f'/spotlight/card/{tok}').get_json()['status'] == 'approved'
     finally:
@@ -103,23 +103,23 @@ def test_post_approve_is_gated_on_settings_and_render(client, make_person, monke
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
         tok = make_card_token(tx, rk, email)
-    r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
+    r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo, 'revision': 1})
     assert r.status_code == 409 and r.get_json() == {'error': 'approvals_disabled'}
     with api_tx() as tx:
         set_setting(tx, 'approvals_enabled', 'true')
     try:
         # Still the same token: approvals are on now, but nothing has been
         # rendered yet, so this 409 is also routine and must not burn it.
-        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo, 'revision': 1})
         assert r.status_code == 409 and r.get_json() == {'error': 'preview_unavailable'}
         with api_tx() as tx:
             attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
         # Both conditions cleared: the same token still approves.
-        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo, 'revision': 1})
         assert r.status_code == 200 and r.get_json() == {'ok': True, 'result': 'approved'}
         # Now that the decision landed, the nonce is spent: a replay reports
         # the resolved state idempotently rather than re-running anything.
-        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo})
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': photo, 'revision': 1})
         assert r.status_code == 200 and r.get_json() == {'ok': True, 'already': True, 'status': 'approved'}
     finally:
         with api_tx() as tx:
@@ -169,13 +169,13 @@ def test_card_token_replay_after_withdrawal_is_rejected(make_person, client, mon
         email = tx.execute("SELECT email FROM person WHERE id = %(p)s", dict(p=p['id'])).fetchone()['email']
         token = make_card_token(tx, rk, email)
     try:
-        r = client.post(f'/spotlight/card/{token}', json=dict(decision='approve', photo_uuid=photo))
+        r = client.post(f'/spotlight/card/{token}', json=dict(decision='approve', photo_uuid=photo, revision=1))
         assert r.status_code == 200 and r.get_json()['ok'] is True
-        r = client.post(f'/spotlight/card/{token}', json=dict(decision='approve', photo_uuid=photo))
+        r = client.post(f'/spotlight/card/{token}', json=dict(decision='approve', photo_uuid=photo, revision=1))
         assert r.status_code == 200 and r.get_json()['already'] is True
         with api_tx() as tx:
             withdraw_member(tx, p['id'], 'opt_out')
-        r = client.post(f'/spotlight/card/{token}', json=dict(decision='approve', photo_uuid=photo))
+        r = client.post(f'/spotlight/card/{token}', json=dict(decision='approve', photo_uuid=photo, revision=1))
         assert r.status_code == 410 and r.get_json() == dict(error='stale')
         with api_tx() as tx:
             assert {x['status'] for x in tx.execute("SELECT status FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {'cancelled'}
@@ -386,14 +386,14 @@ def test_choosing_another_photo_keeps_the_card_link_usable(client, make_person, 
             rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
             attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
             tok = make_card_token(tx, rk, email)
-        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': second})
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': second, 'revision': 1})
         assert r.status_code == 200 and r.get_json() == {'ok': True, 'result': 'new_revision', 'revision': 2}
         # The link is still live: not stale, not already resolved.
         body = client.get(f'/spotlight/card/{tok}').get_json()
         assert body['stale'] is False and body['revision'] == 2 and body['preview_available'] is False
         with api_tx() as tx:
             attach_render(tx, current_revision(tx, rk)['id'], 'h2', 'k2', 'https://cdn/k2.png')
-        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': second})
+        r = client.post(f'/spotlight/card/{tok}', json={'decision': 'approve', 'photo_uuid': second, 'revision': 2})
         assert r.status_code == 200 and r.get_json() == {'ok': True, 'result': 'approved'}
     finally:
         with api_tx() as tx:
@@ -424,3 +424,130 @@ def test_card_state_presigns_private_preview(make_person, monkeypatch):
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         attach_render(tx, current_revision(tx, rk)['id'], 'h', f'spotlight/{rk}/1-abc-facebook.png', 'https://cdn/x.png')
         assert card_state(tx, rk)['image_url'] == f'https://signed/spotlight/{rk}/1-abc-facebook.png'
+
+
+def _admin_headers(make_person):
+    """A real admin bearer session, minted the way tests/test_spotlight_routes.py
+    does it (copied on purpose: test files in this suite do not import from
+    each other)."""
+    import hashlib
+    import secrets
+    admin = make_person(name='CardOperator')
+    tok = secrets.token_hex(32)
+    with api_tx() as tx:
+        tx.execute("UPDATE person SET roles = ARRAY['admin']::TEXT[] WHERE id = %(i)s", dict(i=admin['id']))
+        email = tx.execute("SELECT email FROM person WHERE id = %(i)s", dict(i=admin['id'])).fetchone()['email']
+        tx.execute(
+            """INSERT INTO duo_session (session_token_hash, email, person_id, signed_in, otp)
+               VALUES (%(h)s, %(e)s, %(p)s, TRUE, '123456')""",
+            dict(h=hashlib.sha512(tok.encode()).hexdigest(), e=email, p=admin['id']))
+    return {'Authorization': f'Bearer {tok}'}
+
+
+def _consent_rows(rk):
+    with api_tx('read committed') as tx:
+        return [(r['revision'], r['person_id'], r['role']) for r in tx.execute(
+            """SELECT r.revision, c.person_id, c.role
+                 FROM spotlight_revision_consent c
+                 JOIN spotlight_revision r ON r.id = c.revision_id
+                WHERE r.request_key = %(rk)s
+                ORDER BY r.revision""", dict(rk=rk)).fetchall()]
+
+
+def _revision_count(rk):
+    with api_tx('read committed') as tx:
+        return tx.execute("SELECT count(*) AS n FROM spotlight_revision WHERE request_key = %(rk)s",
+                          dict(rk=rk)).fetchone()['n']
+
+
+def _nonce_used(nonce):
+    with api_tx('read committed') as tx:
+        return tx.execute("SELECT used_at FROM spotlight_token_nonce WHERE nonce = %(n)s",
+                          dict(n=nonce)).fetchone()['used_at'] is not None
+
+
+def test_stale_tab_approval_records_nothing_and_keeps_the_link(client, make_person, monkeypatch):
+    """Wave 3d Task 2, the acceptance probe's member C: the member opens the
+    card (revision 1 on screen), an operator rewrites the caption and the
+    tick renders revision 2, then the member presses Approve on the tab that
+    still shows revision 1. Consent must never land on a revision the page
+    did not show: the POST names revision 1, the answer is new_revision with
+    the current number, nothing is recorded on either revision, no extra
+    revision is made, and the link stays usable for the card that is now
+    current."""
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, 'presign', lambda key, seconds=900: f'https://signed/{key}')
+    p = _make_eligible(make_person, name='StaleTab')
+    A = _admin_headers(make_person)
+    email = _email(p['id'])
+    with api_tx() as tx:
+        set_setting(tx, 'approvals_enabled', 'true')
+    try:
+        with api_tx() as tx:
+            rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+            attach_render(tx, current_revision(tx, rk)['id'], 'h1', 'k1', 'https://cdn/k1.png')
+            tok = make_card_token(tx, rk, email)
+            qid = tx.execute("SELECT id FROM publishing_queue WHERE request_key = %(rk)s ORDER BY id LIMIT 1",
+                             dict(rk=rk)).fetchone()['id']
+        nonce = parse_card_token(tok)[2]
+
+        shown = client.get(f'/spotlight/card/{tok}').get_json()
+        assert shown['revision'] == 1 and shown['preview_available'] is True
+
+        r = client.post(f'/admin/growth/queue/{qid}/caption',
+                        json={'caption': 'Operator rewrote this caption'}, headers=A)
+        assert r.status_code == 200
+        with api_tx() as tx:
+            rev2 = current_revision(tx, rk)
+            assert rev2['revision'] == 2
+            attach_render(tx, rev2['id'], 'h2', 'k2', 'https://cdn/k2.png')
+
+        r = client.post(f'/spotlight/card/{tok}', json={
+            'decision': 'approve', 'photo_uuid': shown['photo_uuid'], 'revision': shown['revision']})
+        assert r.status_code == 200
+        assert r.get_json() == {'ok': True, 'result': 'new_revision', 'revision': 2}
+        assert _consent_rows(rk) == []
+        assert _revision_count(rk) == 2
+        assert _nonce_used(nonce) is False
+
+        again = client.get(f'/spotlight/card/{tok}').get_json()
+        assert again['stale'] is False and again['revision'] == 2 and again['status'] == 'awaiting_member'
+
+        r = client.post(f'/spotlight/card/{tok}', json={
+            'decision': 'approve', 'photo_uuid': again['photo_uuid'], 'revision': again['revision']})
+        assert r.status_code == 200 and r.get_json() == {'ok': True, 'result': 'approved'}
+        assert _consent_rows(rk) == [(2, p['id'], 'subject')]
+        assert _nonce_used(nonce) is True
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')
+
+
+@pytest.mark.parametrize('revision', ['missing', None, '1', True, 1.0])
+def test_approve_without_an_integer_revision_is_400(client, make_person, monkeypatch, revision):
+    """The approve body must name the revision the page showed, as a real
+    integer: missing, null, a numeric string, a bool (a Python int subclass)
+    and a float all answer 400, record nothing and leave the link usable."""
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, 'presign', lambda key, seconds=900: f'https://signed/{key}')
+    p = _make_eligible(make_person, name='NoRevision')
+    email = _email(p['id'])
+    with api_tx() as tx:
+        set_setting(tx, 'approvals_enabled', 'true')
+    try:
+        with api_tx() as tx:
+            rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+            photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s",
+                               dict(id=p['id'])).fetchone()['u']
+            attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
+            tok = make_card_token(tx, rk, email)
+        body = {'decision': 'approve', 'photo_uuid': photo}
+        if revision != 'missing':
+            body['revision'] = revision
+        r = client.post(f'/spotlight/card/{tok}', json=body)
+        assert r.status_code == 400
+        assert _consent_rows(rk) == []
+        assert _nonce_used(parse_card_token(tok)[2]) is False
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')

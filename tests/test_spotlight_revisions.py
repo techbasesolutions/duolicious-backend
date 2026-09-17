@@ -52,7 +52,7 @@ def test_caption_edit_creates_new_revision_and_drops_consent(make_person):
             rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='Welcome', created_by='t')
             rev1 = current_revision(tx, rk)
             attach_render(tx, rev1['id'], 'hash1', 'k1', 'https://cdn/k1.png')
-            assert approve_card(tx, rk, p['id'], photo) == 'approved'
+            assert approve_card(tx, rk, p['id'], photo, shown_revision=1) == 'approved'
             assert consent_complete(tx, rev1['id']) is True
             rev2_id = edit_caption(tx, rk, 'Welcome, changed', 't')
             assert rev2_id != rev1['id']
@@ -60,7 +60,7 @@ def test_caption_edit_creates_new_revision_and_drops_consent(make_person):
             assert consent_complete(tx, rev1['id']) is True          # old consent untouched but no longer current
             assert current_revision(tx, rk)['id'] == rev2_id
             with pytest.raises(ValueError, match='preview_unavailable'):
-                approve_card(tx, rk, p['id'], photo)                 # revision 2 not rendered yet
+                approve_card(tx, rk, p['id'], photo, shown_revision=2)  # revision 2 not rendered yet
     finally:
         with api_tx() as tx:
             set_setting(tx, 'approvals_enabled', 'false')
@@ -121,7 +121,7 @@ def test_approvals_disabled_by_default(make_person):
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
         with pytest.raises(ValueError, match='approvals_disabled'):
-            approve_card(tx, rk, p['id'], photo)
+            approve_card(tx, rk, p['id'], photo, shown_revision=1)
 
 
 def test_different_photo_makes_new_revision_without_consent(make_person):
@@ -137,7 +137,7 @@ def test_different_photo_makes_new_revision_without_consent(make_person):
             rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
             rev1 = current_revision(tx, rk)
             attach_render(tx, rev1['id'], 'h', 'k', 'https://cdn/k.png')
-            assert approve_card(tx, rk, p['id'], second) == 'new_revision'
+            assert approve_card(tx, rk, p['id'], second, shown_revision=1) == 'new_revision'
             rev2 = current_revision(tx, rk)
             assert rev2['id'] != rev1['id'] and rev2['photo_uuid'] == second and rev2['asset_hash'] is None
             assert consent_complete(tx, rev2['id']) is False
@@ -154,7 +154,7 @@ def test_welcome_consent_does_not_satisfy_roundup(make_person):
         with api_tx() as tx:
             rk_w = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
             attach_render(tx, current_revision(tx, rk_w)['id'], 'h', 'k', 'https://cdn/k.png')
-            assert approve_card(tx, rk_w, p['id'], photo) == 'approved'
+            assert approve_card(tx, rk_w, p['id'], photo, shown_revision=1) == 'approved'
             rk_r = create_candidate(tx, kind='roundup', subject_person_id=None, caption='r', created_by='t')
             rid = create_revision(tx, rk_r, caption='r', photo_uuid=None,
                                   participants=[dict(person_id=p['id'], first_name='Elig',
@@ -200,3 +200,33 @@ def test_create_revision_refuses_a_terminal_request(make_person):
         tx.execute("UPDATE publishing_queue SET status = 'cancelled' WHERE request_key = %(rk)s", dict(rk=rk))
         with pytest.raises(ValueError, match='terminal'):
             edit_caption(tx, rk, 'x', 't')
+
+
+def test_approve_from_an_older_revision_records_nothing(make_person):
+    """Wave 3d Task 2: approve_card is told which revision the member was
+    shown. When that is not the current revision it records no consent on
+    either revision, makes no new revision, and answers new_revision so the
+    page re-reads and asks about the current card. The current number then
+    approves as normal."""
+    p = _make_eligible(make_person); photo = _photo(p['id'])
+    with api_tx() as tx:
+        set_setting(tx, 'approvals_enabled', 'true')
+    try:
+        with api_tx() as tx:
+            rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='Welcome', created_by='t')
+            rev1 = current_revision(tx, rk)
+            attach_render(tx, rev1['id'], 'hash1', 'k1', 'https://cdn/k1.png')
+            rev2_id = edit_caption(tx, rk, 'Welcome, changed', 't')
+            attach_render(tx, rev2_id, 'hash2', 'k2', 'https://cdn/k2.png')
+            assert approve_card(tx, rk, p['id'], photo, shown_revision=1) == 'new_revision'
+            assert consent_complete(tx, rev1['id']) is False
+            assert consent_complete(tx, rev2_id) is False
+            assert current_revision(tx, rk)['id'] == rev2_id
+            assert tx.execute("SELECT count(*) AS n FROM spotlight_revision WHERE request_key = %(rk)s",
+                              dict(rk=rk)).fetchone()['n'] == 2
+            assert approve_card(tx, rk, p['id'], photo, shown_revision=2) == 'approved'
+            assert consent_complete(tx, rev2_id) is True
+            assert consent_complete(tx, rev1['id']) is False
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')

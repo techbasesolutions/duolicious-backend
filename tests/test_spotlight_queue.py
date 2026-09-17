@@ -65,7 +65,7 @@ def test_member_approval_then_render_then_review(make_person):
             photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=p['id'])).fetchone()['u']
             attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/x.png')
             assert {r['status'] for r in _rows(tx, rk)} == {'awaiting_member'}
-            assert approve_card(tx, rk, p['id'], photo) == 'approved'
+            assert approve_card(tx, rk, p['id'], photo, shown_revision=1) == 'approved'
             assert {r['status'] for r in _rows(tx, rk)} == {'review'}
     finally:
         with api_tx() as tx:
@@ -83,7 +83,7 @@ def test_approve_card_rejects_foreign_photo(make_person):
             attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
             foreign = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s", dict(id=other['id'])).fetchone()['u']
             with pytest.raises(ValueError, match='photo_not_owned'):
-                approve_card(tx, rk, p['id'], foreign)
+                approve_card(tx, rk, p['id'], foreign, shown_revision=1)
     finally:
         with api_tx() as tx:
             set_setting(tx, 'approvals_enabled', 'false')
