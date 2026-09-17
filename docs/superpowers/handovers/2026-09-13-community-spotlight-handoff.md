@@ -538,3 +538,7 @@ Wave 3b briefs, task reports (including the fix rounds appended to Task 3's and 
 ### Activation stance (updated)
 
 Nothing from Wave 3b is merged and nothing is pushed; both branches stay local. `approvals_enabled`, `publication_enabled` and `roundup_tiles_enabled` remain false in production, unaffected by this wave. The staging acceptance-matrix run (Wave 4) stays the gate for the first live post. Any Spotlight conversion number read from production today, or from any date before this wave's attribution is deployed and its compatibility window has closed, is not proof of a real click and must not be used to justify spending or automation decisions.
+
+## 15. Operator runbook: rollback and cron pause
+
+Wave 3d (2026-09-16) added `docs/runbooks/spotlight-rollback-and-cron-pause.md`, an operator runbook for stopping Spotlight quickly (emergency stop, then invites off, then pausing the three admin crons) and rolling back a bad API, web or admin deploy, including what a rollback cannot undo (forward-only migrations 0046 to 0051, posts already live, mail already accepted by the provider). Read it before the first live post and keep it next to this document.
