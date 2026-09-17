@@ -18,17 +18,19 @@ Heads run against:
 | --- | --- | --- |
 | Consent | **Partial, one sub-claim FAILED** | A member who approves from a tab showing revision 1 has consent recorded on revision 2, which the browser never showed. |
 | Lifecycle | Partial | Opt-out and self-deletion in all eight queue states leave no untracked post (driven end to end); no moderation action exists to test. |
-| Delivery | Partial | Two channels, separate runs, partial failure, lost confirmation, worker death and late receipts all reconcile; the real operator approve route cannot schedule a rendered card (see Storage), and real Graph timeouts are not exercised. |
-| Mail | Partial | Restart, death mid-send, acceptance uncertainty and send-time consent proven; a duplicate concurrent submit answers 500 part-way through its cohort, and real SMTP is not exercised. |
+| Delivery | **Partial, one sub-claim FAILED** (same defect as Storage 5a) | Two channels, separate runs, partial failure, lost confirmation, worker death and late receipts all reconcile; the real operator approve route cannot schedule a rendered card (see Storage), and real Graph timeouts are not exercised. |
+| Mail | **Partial, one sub-claim FAILED** | Restart, death mid-send, acceptance uncertainty and send-time consent proven; a duplicate concurrent submit answers 500 part-way through its cohort, and real SMTP is not exercised. |
 | Storage | **Partial, one sub-claim FAILED** | `storage.make_public` raises `AttributeError` on the real boto3 object, so approving any rendered card answers 503; its unit test passes against a stub that invents the method. |
-| Operator controls | Proven locally | Invite pause, publication pause, emergency stop, absent auto flags and visible deadlines behave as labelled through the real worker and API. |
+| Operator controls | Partial, pending owner ruling on the invite-pause copy | Invite pause, publication pause, emergency stop, absent auto flags and visible deadlines behave as labelled through the real worker and API. |
 | Real platform | Needs staging or owner | Account IDs, ownership, token scopes, image format, permalinks and removal need the owner's Meta access. |
 | Runtime | **Partial, three sub-claims FAILED** | Two concurrent ticks create two welcome requests and two E4s; the 200-row listings starve old work; slow Graph exceeds the 60 s budget with no checkpoint. |
 | Measurement | Proven locally | Web click route to receipt to attribution; bots, replays, forged and expired receipts earn nothing; per-platform totals reconcile. |
-| Deployment | Partial | Migrations apply and re-apply cleanly on a fresh disposable database and every suite and build is green; a production-copy migration, secrets and config need the owner, and no rollback or cron-pause runbook exists in any repo. |
+| Deployment | **Partial, one sub-claim FAILED** (no runbook) | Migrations apply and re-apply cleanly on a fresh disposable database and every suite and build is green; a production-copy migration, secrets and config need the owner, and no rollback or cron-pause runbook exists in any repo. |
 | First live exercise | Needs staging or owner | Owner-gated by definition, and blocked by the failures above. |
 
-Count: **2 Proven locally, 7 Partial, 2 Needs staging or owner.** Sub-claims that FAILED: Consent (stale-tab approval), Storage (`make_public`), Runtime (duplicate ticks, backlog starvation, execution budget).
+Count: **1 Proven locally, 8 Partial, 2 Needs staging or owner.** Sub-claims that FAILED: Consent (stale-tab approval), Delivery (operator approve through the real route, same defect as Storage), Mail (duplicate concurrent submit answers 500), Storage (`make_public`), Runtime (duplicate welcome ticks, roundup duplicates answering 500, backlog starvation, execution budget), Deployment (no rollback or cron-pause runbook).
+
+Corrected 2026-09-16 after the whole-branch review: the first version labelled the Delivery, Mail and Deployment failures as plain Partial, Operator controls as Proven, and softened the roundup 500s. The Meta documentation findings in section 7 were also added then.
 
 ## How the run was made
 
@@ -216,7 +218,7 @@ Operator reconcile of a withdrawn `delivery_unknown` row upgraded its task the s
 
 Matrix: "Two channels succeed for one occurrence; timeout/ack loss/worker death produce reconcilable attempts rather than duplicate posts."
 
-### 3a. Two channels succeed for one occurrence: Proven locally, downstream of the Storage failure
+### 3a. Two channels succeed for one occurrence: FAILED through the approve route; proven after scheduling
 
 Same run (member A):
 
@@ -283,7 +285,7 @@ The committed Wave 2 probe, re-run at this head, shows the same: `drain (reaps a
 
 Consent was cleared underneath a queued E4, then drained: `{"drain":{"result":{"reserved":1,"accepted":0,"skipped":1,...},"sent":[]},"rows":["e4:skipped:withdrawn"]}`, `EXPECT ok M3: nothing sent to a member who is no longer opted in`. Tests PASSED: `tests/test_email_outbox.py::test_suppression_and_unsubscribe_checked_at_send_time`, `::test_an_address_suppressed_after_enqueue_is_never_sent`, `::test_the_frequency_cap_is_rechecked_at_send_time`.
 
-### 4d. Concurrent submits: Partial
+### 4d. Concurrent submits: FAILED (a duplicate submit answers 500)
 
 Two simultaneous `POST /admin/growth/emails/e1/send` with the same `campaign_id` (run `uklgx`, four API workers):
 
@@ -340,7 +342,7 @@ Private-by-default objects on real Spaces, the public ACL flip once 5a is fixed,
 
 Matrix: "Invite pause, publication pause and emergency stop behave as labeled; auto flags either work or are absent; cleanup deadlines visible."
 
-### Verdict: Proven locally
+### Verdict: Partial, pending owner ruling on the invite-pause copy
 
 Through the real tick, worker and API (run `uxk0s`):
 
@@ -356,7 +358,7 @@ EXPECT ok   approvals pause: member approval refused, the 7-day clock paused :: 
 
 Auto flags are absent: `tests/test_spotlight_controls.py::test_legacy_keys_gone_and_rejected` PASSED. Other tests PASSED: `::test_invites_gate_candidates_and_creation`, `::test_claim_reports_paused_and_halted`, `::test_removals_halted_by_emergency_stop_only`, `tests/test_spotlight_cleanup.py::test_overdue_removals_counted`, `::test_emergency_stop_halts_cleanup_and_counts_outstanding`; admin `publish is paused when the api says paused`, `publish is halted by the emergency stop`, `removals run while publication is paused`, `removals stop under the emergency stop`, `token health honours the emergency stop`.
 
-One observation for the owner to rule on, not counted as a failure: an E4 queued before the invite pause is still sent while the pause is on (`OBSERVED invite pause: an E4 queued before the pause, drained during it :: {"sent":1,...}`). The outbox drain does not read `invites_enabled`. The switch copy says "no card-ready email is sent" and also "Existing cards keep moving", so whether this is as labelled depends on which sentence governs.
+One observation for the owner to rule on, which keeps this gate at Partial until ruled: an E4 queued before the invite pause is still sent while the pause is on (`OBSERVED invite pause: an E4 queued before the pause, drained during it :: {"sent":1,...}`). The outbox drain does not read `invites_enabled`. The switch copy says "no card-ready email is sent" and also "Existing cards keep moving", so whether this is as labelled depends on which sentence governs.
 
 The Growth tab's rendering of these controls was proven by screenshot in Wave 3 and was not re-shot.
 
@@ -374,13 +376,20 @@ Nothing here can be proven without the owner's Meta access, and no Meta call was
 - The actual permalink: the worker asks `GET <media id>?fields=permalink` and Facebook's URL is built from the post id; both are stubbed here.
 - The removal process: Facebook `DELETE <post id>` and the Graph error codes the worker treats as "already gone" (code 100 with subcode 33, or a 404 carrying code 100) and as permission errors (10, 200) are unverified against real responses. Instagram has no API delete; those tasks go to a human.
 
+Confirmed from Meta's own documentation on 2026-09-16 (no API call made). These are known code changes required before a live post, not open questions for the owner:
+
+- Instagram content publishing accepts JPEG only. The worker uploads the PNG card, so every Instagram publish would fail.
+- On `POST /{page-id}/photos`, `message` is deprecated in favour of `caption`; the worker sends `message`.
+- `GET /debug_token` needs an app access token (or an app developer's token); the daily token check sends the Page token itself, so its answer cannot be trusted.
+- The worker's default Graph version `v21.0` is available until 2027-01-21; the current version is `v26.0`.
+
 What would prove it: the owner, with Meta Business access, confirms the IDs and connection, runs `debug_token` on the Page token for scopes, and a staging run publishes one PNG card to each platform, reads back the permalink and deletes or hides it.
 
 ## 8. Runtime
 
 Matrix: "Worst-case Graph polling fits execution budget or resumes from a checkpoint; duplicate/missed cron invocations reconcile; backlog pagination cannot starve old work."
 
-### 8a. Duplicate cron invocations: FAILED for welcomes, converges but noisy for roundups, clean for publishing
+### 8a. Duplicate cron invocations: FAILED for welcomes, FAILED for roundups (3 of 8 calls answer 500 though one occurrence results), clean for publishing
 
 Two ticks at once for one new member, against four API workers:
 
@@ -507,7 +516,7 @@ Green: API suite 655, admin 112 with `tsc` and `next build`, web 587 with `tsc`,
 
 Nothing about production configuration can be checked locally. Known open from the Wave 3c ledger: `AHAVAH_GROWTH_CRON_SECRET` is not yet set on the droplet or in Vercel (the owner has not approved it), so the growth crons answer 401. Still to confirm by the owner, by name only: the six admin Vercel variables (`AHAVAH_FB_PAGE_ID`, `AHAVAH_IG_USER_ID`, `META_GRAPH_VERSION`, `CRON_SECRET`, `AHAVAH_GROWTH_CRON_SECRET`, `AHAVAH_API_ORIGIN`) plus `AHAVAH_META_PAGE_TOKEN`, the droplet's `SESSION_TOKEN_SECRET` and object-store variables, and `DUO_BOTO_ENDPOINT_URL` being an https `*.digitaloceanspaces.com` endpoint (see Consent, "Needs the owner").
 
-### 10d. Explicit rollback and cron-pause runbook: does not exist
+### 10d. Explicit rollback and cron-pause runbook: FAILED (does not exist)
 
 Searched every Markdown file under `ahavah-api/docs`, `ahavah-admin` and `ahavah-web/docs` for rollback, runbook and cron pause. Nothing Spotlight-specific exists. The handoff has a "Deploy order, and why it is not reversible" section (API before web) but no rollback steps. A generic code rollback for the API droplet and for the web Vercel project exists only in a private session memory note, not in any repo; it does not cover the admin app, the forward-only migrations, or pausing the three Vercel crons. The in-app controls (publication pause, emergency stop) are the nearest thing to a cron pause, but they do not stop the tick from creating candidates and E4s (only `invites_enabled` does), and nothing documents the order to flip them in an incident.
 
@@ -532,7 +541,8 @@ Ordered by what blocks what.
 5. **Owner: set `AHAVAH_GROWTH_CRON_SECRET` and the admin Vercel variables (Deployment 10c).** Nothing runs until then; do it after 1 to 4 so the crons start on fixed code.
 6. **Write the rollback and cron-pause runbook (Deployment 10d).** Needed before activation, not after the first incident.
 7. **Decide the slow-Graph policy (Runtime 8d)**: fewer rows per run, a checkpoint, or explicit acceptance that a slow run parks rows for a human.
-8. **Owner: Meta verification (Real platform 7)**: IDs and connection, token scopes, PNG acceptance on the chosen Instagram path, permalinks, removal behaviour.
+8. **Fix the four Meta documentation findings (Real platform 7)**: JPEG for Instagram, `caption` on Page photos, an app access token for `debug_token`, Graph `v26.0`.
+8b. **Owner: Meta verification (Real platform 7)**: IDs and connection, token scopes, permalinks, removal behaviour.
 9. **Staging run of this matrix on the exact deploy heads**, including this probe against staging, real Spaces (ACL, CDN, preview under the CSP), real SMTP, real Graph latency and a production-data copy for migrations (Storage, Mail, Delivery, Deployment 10a).
 10. **Owner rulings that do not block but should be recorded**: whether moderation actions withdraw (Lifecycle 2b); whether an E4 queued before an invite pause should still send (Controls); roundup tiles stay off until a participant-consent route exists (Consent 1d).
 11. **First live exercise (11)**: one owner or member-approved test post on both platforms, verify both receipts, then the real withdrawal and removal path.

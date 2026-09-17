@@ -71,8 +71,8 @@ def test_click_route_omits_receipt_header_for_a_bot(client, make_person):
 
 
 # ---------------------------------------------------------------------------
-# M-b: _ua_class buckets the click user agent. Tested directly so the four
-# branches cannot silently drift.
+# M-b: _ua_class buckets the click user agent. Tested directly so its
+# branches (bot, including an empty agent, mobile, desktop) cannot silently drift.
 # ---------------------------------------------------------------------------
 
 def test_ua_class_buckets():

@@ -8,7 +8,8 @@ outbox with a stub SMTP client) go through this script instead, one JSON
 answer per invocation.
 
 Not a test: pytest never collects this directory. It only ever talks to the
-disposable local test database (DUO_DB_HOST from the test compose file). It
+disposable local test database (DUO_DB_HOST from the test compose file), and
+refuses to start unless DUO_ENV is dev. It
 never dials SMTP, the object store or any platform.
 
 Run inside the acceptance API container, for example:
@@ -195,6 +196,11 @@ COMMANDS = {
 }
 
 if __name__ == '__main__':
+    # This file ships inside the production images; refuse to write synthetic
+    # members and sessions anywhere but a dev or test stack.
+    if os.environ.get('DUO_ENV') != 'dev':
+        print('acceptance_helper refuses to run outside DUO_ENV=dev', file=sys.stderr)
+        sys.exit(3)
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         print(__doc__)
         sys.exit(2)

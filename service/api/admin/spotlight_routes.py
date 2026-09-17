@@ -1120,7 +1120,7 @@ def get_growth_removals():
         # database client to find one. Read under the same stop, for the
         # same reason as the count.
         abandoned = abandoned_job_rows(tx)
-        # Wave 3c task 4: `abandoned` above is capped at 50 rows while
+        # Wave 3c task 1: `abandoned` above is capped at 50 rows while
         # `abandoned_cleanup` is the uncapped total, so an operator reading
         # only the list has no way to tell it is partial. Additive: the
         # admin Growth tab is deployed separately.

@@ -431,7 +431,7 @@ def test_abandoned_job_rows_are_listed_on_the_removals_endpoint(client):
 
 
 def test_abandoned_truncated_is_true_once_the_50_row_cap_is_exceeded(client):
-    """Task 4 (Wave 3c). `abandoned` is capped at 50 rows by
+    """Task 1 (Wave 3c). `abandoned` is capped at 50 rows by
     `abandoned_job_rows`, while `abandoned_cleanup` is the uncapped count --
     so an operator looking only at the list has no way to tell it is
     partial. `abandoned_truncated` says so explicitly."""
