@@ -24,7 +24,20 @@
 -- conflict, rather than letting CREATE UNIQUE INDEX fail opaquely. Fix any
 -- conflict by cancelling the extra welcome request, then apply again.
 --
+-- One transaction, with publishing_queue held in SHARE mode from before the
+-- check until the index exists. SHARE blocks every insert, update and delete
+-- but still allows reads, so no welcome can be created or un-cancelled
+-- between a check that passed and the index build. psql runs this file with
+-- ON_ERROR_STOP, so a refusal ends the session and the transaction rolls
+-- back with nothing applied. apply-deploy-migrations.sh holds its advisory
+-- lock at session level, which survives the COMMIT (most of 0001 to 0031
+-- already carry their own BEGIN/COMMIT and apply through the same script).
+--
 -- Idempotent.
+BEGIN;
+
+LOCK TABLE publishing_queue IN SHARE MODE;
+
 DO $$
 DECLARE
   conflicts text;
@@ -48,3 +61,5 @@ END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS publishing_queue_one_live_welcome
     ON publishing_queue (subject_person_id, platform)
  WHERE kind = 'welcome' AND status <> 'cancelled';
+
+COMMIT;

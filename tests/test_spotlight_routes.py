@@ -1523,18 +1523,20 @@ def _one_connection_per_tx(m):
     m.setattr(database.api_tx, '__exit__', _exit)
 
 
-def _wait_for_lock_waiter(fragment: str, timeout: float = 10.0) -> bool:
-    """True once another backend is blocked on a lock while running a
-    statement containing `fragment`. Lets the thread that won a row hold its
-    transaction open until the loser is provably queued behind it."""
+def _wait_for_lock_waiter(pids, timeout: float = 10.0) -> bool:
+    """True once one of the backends in `pids` (the other racing threads'
+    own connections) is blocked on a lock. Matching on backend pid rather
+    than query text means an unrelated session on the shared test database
+    can never release the winner early. Lets the thread that won a row hold
+    its transaction open until the loser is provably queued behind it."""
     import database
     deadline = time.monotonic() + timeout
     with psycopg.connect(database._api_conninfo, autocommit=True) as conn:
         while time.monotonic() < deadline:
             n = conn.execute(
                 """SELECT count(*) FROM pg_stat_activity
-                    WHERE datname = current_database() AND wait_event_type = 'Lock'
-                      AND strpos(query, %(f)s) > 0""", dict(f=fragment)).fetchone()[0]
+                    WHERE pid = ANY(%(p)s) AND wait_event_type = 'Lock'""",
+                dict(p=list(pids))).fetchone()[0]
             if n:
                 return True
             time.sleep(0.02)
@@ -1645,15 +1647,18 @@ def test_two_racing_uploads_one_attaches_one_answers_409(app, monkeypatch, same_
     images = [_png_bytes(colour='white'), _png_bytes(colour='white' if same_bytes else 'black')]
     keys = [f'spotlight/{rk}/{rev_id}-{hashlib.sha256(d).hexdigest()[:16]}-facebook.png' for d in images]
     barrier = threading.Barrier(2)
+    pids = set()
     real_attach = sr.attach_platform_image
 
     def racing_attach(tx, *args):
+        me = tx.connection.info.backend_pid
+        pids.add(me)
         barrier.wait(timeout=30)
         outcome = real_attach(tx, *args)
         if outcome[0] == 'attached':
-            # Hold this transaction open until the other upload is blocked on
-            # the row lock this one took.
-            _wait_for_lock_waiter('FOR UPDATE')
+            # Hold this transaction open until the other upload's own backend
+            # is blocked on the row lock this one took.
+            _wait_for_lock_waiter(pids - {me})
         return outcome
 
     with monkeypatch.context() as m:

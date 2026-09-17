@@ -94,9 +94,13 @@ def post_admin_growth_email_send(s: t.SessionInfo, campaign: str):
     # snapshot cannot see, and dies inside outbox.enqueue (SerializationFailure
     # under REPEATABLE READ, the evidence's case). Nobody is queued twice, the
     # outbox key holds that; the loser answers 409 send_in_progress instead of
-    # 500, and a retry of the same campaign_id stays safe. Each recipient's
-    # transaction is already closed (rolled back) when the error reaches this
-    # except. Not retried here: the other submit is carrying the run.
+    # 500. run_campaign commits one transaction per recipient, so by the time
+    # the error reaches this except only the failing recipient's transaction
+    # has rolled back; the recipients this submit queued before it are
+    # committed and stay queued. Not retried here: the other submit is
+    # carrying the run. Re-submitting the same campaign_id is safe and
+    # finishes a half-queued cohort: rows already queued are skipped by the
+    # outbox key, and every recipient still missing is queued.
     try:
         res = run_campaign(api_tx, campaign, cid, mod.recipients(), mod.build_for, send=not dry,
                            from_addr=mod.FROM_ADDR,

@@ -9,7 +9,9 @@ The migration also refuses, with a message naming each conflict, to build
 the index over rows that already break it. That path is exercised against a
 temporary table named `publishing_queue`: a temp table shadows the real one
 for its own session (pg_temp is searched first), so the migration's own SQL
-runs unmodified without touching or locking the shared table.
+runs unmodified without touching or locking the shared table. The file
+carries its own BEGIN/COMMIT (and its LOCK TABLE lands on the shadow), so it
+runs on an autocommit connection, the way psql runs it.
 """
 from pathlib import Path
 from uuid import uuid4
@@ -77,16 +79,23 @@ def _shadow(conn, rows):
         conn.execute("INSERT INTO publishing_queue VALUES (%(p)s, %(pl)s, %(k)s, %(s)s)", r)
 
 
+def _end(conn):
+    """Close out whatever transaction the migration file left open (a refused
+    run leaves its own BEGIN aborted). The temp table dies with the session."""
+    if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+        conn.execute('ROLLBACK')
+
+
 def test_0050_pre_check_names_the_conflict_instead_of_failing_opaquely():
     person = 900000000 + uuid4().int % 1000000
-    with psycopg.connect(database._api_conninfo) as conn:
+    with psycopg.connect(database._api_conninfo, autocommit=True) as conn:
         try:
             _shadow(conn, [dict(p=person, pl='facebook', k='welcome', s='review'),
                            dict(p=person, pl='facebook', k='welcome', s='awaiting_member')])
             with pytest.raises(psycopg.errors.RaiseException) as raised:
                 conn.execute(_MIGRATION.read_text())
         finally:
-            conn.rollback()
+            _end(conn)
     message = str(raised.value)
     assert 'more than one live welcome' in message
     assert f'person {person} on facebook has 2' in message
@@ -96,7 +105,7 @@ def test_0050_pre_check_ignores_cancelled_rows_and_members_since_deleted():
     """A deleted member's rows keep `subject_person_id` NULL (ON DELETE SET
     NULL). A unique index treats NULLs as distinct, so those rows can never
     block the index, and the pre-check must not refuse over them either."""
-    with psycopg.connect(database._api_conninfo) as conn:
+    with psycopg.connect(database._api_conninfo, autocommit=True) as conn:
         try:
             _shadow(conn, [dict(p=None, pl='facebook', k='welcome', s='published'),
                            dict(p=None, pl='facebook', k='welcome', s='review'),
@@ -112,5 +121,5 @@ def test_0050_pre_check_ignores_cancelled_rows_and_members_since_deleted():
                       AND schemaname = (SELECT nspname FROM pg_namespace WHERE oid = pg_my_temp_schema())"""
             ).fetchone()[0]
         finally:
-            conn.rollback()
+            _end(conn)
     assert made == 1
