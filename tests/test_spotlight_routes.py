@@ -11,7 +11,11 @@ import base64
 import hashlib
 import io
 import secrets
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
+import psycopg
 import pytest
 from PIL import Image
 
@@ -1476,3 +1480,207 @@ def test_suggest_carries_a_default_caption(client, make_person):
     items = client.get('/admin/growth/spotlight/suggest',
                         headers={'Authorization': f'Bearer {tok}'}).get_json()
     assert items and items[0]['suggested_caption'].startswith('Member of the week: ')
+
+
+# ---------------------------------------------------------------------------
+# Wave 3d Task 3: duplicate calls converge and answer cleanly under a real race
+# ---------------------------------------------------------------------------
+# `api_tx` shares ONE connection per process behind a lock, so threads in this
+# process can never hold two transactions open at once: calling a route from
+# several threads here would only prove sequential behaviour. Production runs
+# several API workers, each with its own connection. `_one_connection_per_tx`
+# reproduces that for the duration of a burst: every `api_tx` opens its own
+# connection (same conninfo, same REPEATABLE READ default, same statement
+# timeout), so each thread's request really holds its own transaction against
+# the real test database.
+#
+# The barrier sits at the racing point inside the handler's transaction (after
+# the duplicate guard has already read its snapshot), so every thread is past
+# the guard before any of them commits. That makes the race certain on every
+# run rather than a matter of luck.
+
+def _one_connection_per_tx(m):
+    import database
+
+    def _enter(self):
+        self._own_conn = psycopg.Connection.connect(
+            conninfo=database._api_conninfo, row_factory=psycopg.rows.dict_row)
+        self.cur = self._own_conn.cursor()
+        if self.isolation_level != database._default_transaction_isolation:
+            self.cur.execute(f'SET TRANSACTION ISOLATION LEVEL {self.isolation_level}')
+        return self.cur
+
+    def _exit(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is None:
+                self._own_conn.commit()
+            else:
+                self._own_conn.rollback()
+        finally:
+            self._own_conn.close()
+
+    m.setattr(database.api_tx, '__enter__', _enter)
+    m.setattr(database.api_tx, '__exit__', _exit)
+
+
+def _wait_for_lock_waiter(fragment: str, timeout: float = 10.0) -> bool:
+    """True once another backend is blocked on a lock while running a
+    statement containing `fragment`. Lets the thread that won a row hold its
+    transaction open until the loser is provably queued behind it."""
+    import database
+    deadline = time.monotonic() + timeout
+    with psycopg.connect(database._api_conninfo, autocommit=True) as conn:
+        while time.monotonic() < deadline:
+            n = conn.execute(
+                """SELECT count(*) FROM pg_stat_activity
+                    WHERE datname = current_database() AND wait_event_type = 'Lock'
+                      AND strpos(query, %(f)s) > 0""", dict(f=fragment)).fetchone()[0]
+            if n:
+                return True
+            time.sleep(0.02)
+    return False
+
+
+def _burst(app, n, call):
+    """Runs `call(client, thread_index)` on `n` threads at once. An exception escaping the
+    route (Flask propagates them under TESTING, where production answers 500)
+    is recorded by its class name rather than lost."""
+    def worker(i):
+        with app.test_client() as c:
+            try:
+                return call(c, i)
+            except Exception as e:      # noqa: BLE001 -- recorded as the evidence
+                return type(e).__name__
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        return list(pool.map(worker, range(n)))
+
+
+def _status(result):
+    return result[0] if isinstance(result, tuple) else result
+
+
+def test_a_burst_of_duplicate_welcomes_converges_on_one_request_and_one_invite(app, make_person, monkeypatch):
+    import service.api.admin.spotlight_routes as sr
+    p = _make_eligible(make_person, name='WelcomeBurst')
+    with api_tx() as tx:
+        set_setting(tx, 'invites_enabled', 'true')
+        set_setting(tx, 'approvals_enabled', 'true')
+    try:
+        barrier = threading.Barrier(8)
+        real_create = sr.create_candidate
+
+        def racing_create(tx, **kw):
+            barrier.wait(timeout=30)
+            return real_create(tx, **kw)
+
+        with monkeypatch.context() as m:
+            _one_connection_per_tx(m)
+            m.setattr(sr, 'create_candidate', racing_create)
+
+            def call(c, _i):
+                r = c.post('/admin/growth/spotlight/welcome', json={'person_id': p['id']}, headers=H)
+                return (r.status_code, (r.get_json(silent=True) or {}).get('request_key'))
+
+            results = _burst(app, 8, call)
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')
+            set_setting(tx, 'invites_enabled', 'true')
+
+    with api_tx('read committed') as tx:
+        keys = {r['request_key'] for r in tx.execute(
+            """SELECT request_key FROM publishing_queue
+                WHERE subject_person_id = %(p)s AND kind = 'welcome'""", dict(p=p['id'])).fetchall()}
+        e4 = tx.execute("SELECT count(*) AS n FROM email_outbox WHERE campaign = 'e4' AND person_id = %(p)s",
+                        dict(p=p['id'])).fetchone()['n']
+    assert (len(keys), e4) == (1, 1), (results, len(keys), e4)
+    assert sorted(map(_status, results), key=str) == [200] + [409] * 7, results
+    assert [r[1] for r in results if _status(r) == 200] == list(keys)
+
+
+def test_a_burst_of_duplicate_roundups_in_one_week_all_answer_200(app, monkeypatch):
+    import service.api.admin.spotlight_routes as sr
+    with api_tx() as tx:
+        _clear_this_weeks_roundup(tx)
+        set_setting(tx, 'invites_enabled', 'true')
+    barrier = threading.Barrier(8)
+    real_snapshot = sr.roundup_snapshot
+
+    def racing_snapshot(tx):
+        barrier.wait(timeout=30)
+        return real_snapshot(tx)
+
+    with monkeypatch.context() as m:
+        _one_connection_per_tx(m)
+        m.setattr(sr, 'roundup_snapshot', racing_snapshot)
+
+        def call(c, _i):
+            r = c.post('/admin/growth/spotlight/roundup', json={}, headers=H)
+            return (r.status_code, r.get_json(silent=True))
+
+        results = _burst(app, 8, call)
+
+    week_key = sr._week_key()
+    with api_tx('read committed') as tx:
+        rows = tx.execute("SELECT count(*) AS n FROM publishing_queue WHERE request_key = %(k)s",
+                          dict(k=week_key)).fetchone()['n']
+        revisions = tx.execute("SELECT count(*) AS n FROM spotlight_revision WHERE request_key = %(k)s",
+                               dict(k=week_key)).fetchone()['n']
+        links = tx.execute("SELECT count(*) AS n FROM campaign_link WHERE kind = %(k)s",
+                           dict(k=f'post:{week_key}')).fetchone()['n']
+    assert (rows, revisions, links) == (2, 1, 1), results
+    assert list(map(_status, results)) == [200] * 8, results
+    bodies = [r[1] for r in results]
+    assert {b['request_key'] for b in bodies} == {week_key}
+    assert sorted(bool(b.get('already')) for b in bodies) == [False] + [True] * 7
+
+
+@pytest.mark.parametrize('same_bytes', [True, False], ids=['same-image', 'different-images'])
+def test_two_racing_uploads_one_attaches_one_answers_409(app, monkeypatch, same_bytes):
+    import service.api.admin.spotlight_routes as sr
+    import service.spotlight.storage as st
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+        rev_id = current_revision(tx, rk)['id']
+    images = [_png_bytes(colour='white'), _png_bytes(colour='white' if same_bytes else 'black')]
+    keys = [f'spotlight/{rk}/{rev_id}-{hashlib.sha256(d).hexdigest()[:16]}-facebook.png' for d in images]
+    barrier = threading.Barrier(2)
+    real_attach = sr.attach_platform_image
+
+    def racing_attach(tx, *args):
+        barrier.wait(timeout=30)
+        outcome = real_attach(tx, *args)
+        if outcome[0] == 'attached':
+            # Hold this transaction open until the other upload is blocked on
+            # the row lock this one took.
+            _wait_for_lock_waiter('FOR UPDATE')
+        return outcome
+
+    with monkeypatch.context() as m:
+        _one_connection_per_tx(m)
+        m.setattr(st, 'put_png', lambda k, d, public=False: None)
+        m.setattr(sr, 'attach_platform_image', racing_attach)
+
+        def call(c, i):
+            r = c.post(f'/admin/growth/queue/{rk}/image',
+                       json={'platform': 'facebook', 'png_base64': _b64(images[i])}, headers=H)
+            return (r.status_code, r.get_json(silent=True))
+
+        results = _burst(app, 2, call)
+
+    assert sorted(map(_status, results), key=str) == [200, 409], results
+    winner = next(i for i, r in enumerate(results) if _status(r) == 200)
+    loser = 1 - winner
+    assert results[winner][1]['image_url'].endswith(keys[winner])
+    assert results[loser][1] == {'error': 'image_race'}
+    with api_tx('read committed') as tx:
+        row = tx.execute("SELECT image_key FROM publishing_queue WHERE request_key = %(rk)s AND platform = 'facebook'",
+                         dict(rk=rk)).fetchone()
+        queued = [r['target'] for r in tx.execute(
+            "SELECT target FROM cleanup_job WHERE target = ANY(%(k)s::text[]) AND state = 'pending'",
+            dict(k=keys)).fetchall()]
+    assert row['image_key'] == keys[winner]
+    # The superseded rule, applied to the loser: identical bytes land on the
+    # winner's key, which the row names, so nothing is queued; different bytes
+    # left an object nothing will ever point at, which is queued for deletion.
+    assert queued == ([] if same_bytes else [keys[loser]])

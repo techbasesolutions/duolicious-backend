@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import threading
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
+import psycopg
 import pytest
 
 from database import api_tx
@@ -393,3 +397,105 @@ def test_e2_dry_run_send_endpoint_respects_the_six_day_cap(client, admin, make_p
     body = r.get_json()
     assert body['built'] == 1
     assert body['skipped_cap'] == 1
+
+
+# ---------------------------------------------------------------------------
+# Wave 3d Task 3: two submits of one campaign id under a real race
+# ---------------------------------------------------------------------------
+# `api_tx` shares one connection per process behind a lock, so two threads
+# here could never hold two transactions at once. `_one_connection_per_tx`
+# gives every `api_tx` its own connection for the duration of the race (same
+# conninfo, REPEATABLE READ default and statement timeout), the way separate
+# API workers each hold their own in production. Copied into
+# tests/test_spotlight_routes.py too: test files here do not import from each
+# other.
+
+def _one_connection_per_tx(m):
+    import database
+
+    def _enter(self):
+        self._own_conn = psycopg.Connection.connect(
+            conninfo=database._api_conninfo, row_factory=psycopg.rows.dict_row)
+        self.cur = self._own_conn.cursor()
+        if self.isolation_level != database._default_transaction_isolation:
+            self.cur.execute(f'SET TRANSACTION ISOLATION LEVEL {self.isolation_level}')
+        return self.cur
+
+    def _exit(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is None:
+                self._own_conn.commit()
+            else:
+                self._own_conn.rollback()
+        finally:
+            self._own_conn.close()
+
+    m.setattr(database.api_tx, '__enter__', _enter)
+    m.setattr(database.api_tx, '__exit__', _exit)
+
+
+def _wait_for_lock_waiter(fragment: str, timeout: float = 10.0) -> bool:
+    """True once another backend is blocked on a lock while running a
+    statement containing `fragment`."""
+    import database
+    deadline = time.monotonic() + timeout
+    with psycopg.connect(database._api_conninfo, autocommit=True) as conn:
+        while time.monotonic() < deadline:
+            n = conn.execute(
+                """SELECT count(*) FROM pg_stat_activity
+                    WHERE datname = current_database() AND wait_event_type = 'Lock'
+                      AND strpos(query, %(f)s) > 0""", dict(f=fragment)).fetchone()[0]
+            if n:
+                return True
+            time.sleep(0.02)
+    return False
+
+
+def test_two_concurrent_submits_of_one_campaign_id_answer_200_and_409(app, admin, make_person, monkeypatch):
+    """Runtime 4d: the losing submit died with SerializationFailure inside
+    outbox.enqueue and answered 500. Both threads pass the per-run check,
+    then meet at the enqueue barrier; the one whose INSERT lands first holds
+    its transaction open until the other is provably blocked behind it, so
+    the loser always meets the committed row it could not see."""
+    from service.campaigns import outbox
+    p = make_person(name='RaceTarget')
+    email = _sendable_email(p['id'], 'growth-race')
+    monkeypatch.setattr(e1, 'recipients', lambda: [dict(person_id=p['id'], email=email, name='RaceTarget')])
+    cid = f'e1-race-{uuid.uuid4().hex[:8]}'
+    barrier = threading.Barrier(2)
+    real_enqueue = outbox.enqueue
+
+    def racing_enqueue(tx, **kw):
+        barrier.wait(timeout=30)
+        row_id = real_enqueue(tx, **kw)
+        if row_id is not None:
+            _wait_for_lock_waiter('INSERT INTO email_outbox')
+        return row_id
+
+    def worker(_):
+        with app.test_client() as c:
+            try:
+                r = c.post('/admin/growth/emails/e1/send', headers=admin['headers'],
+                           json=dict(campaign_id=cid, dry_run=False))
+                return (r.status_code, r.get_json(silent=True))
+            except Exception as e:      # noqa: BLE001 -- recorded as the evidence
+                return type(e).__name__
+
+    with monkeypatch.context() as m:
+        _one_connection_per_tx(m)
+        m.setattr(outbox, 'enqueue', racing_enqueue)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(worker, range(2)))
+
+    with api_tx('read committed') as tx:
+        rows = tx.execute(
+            """SELECT count(*) AS n FROM email_outbox
+                WHERE campaign = 'e1' AND campaign_id = %(c)s AND person_id = %(p)s""",
+            dict(c=cid, p=p['id'])).fetchone()['n']
+    assert rows == 1, results
+    statuses = sorted((r[0] if isinstance(r, tuple) else r for r in results), key=str)
+    assert statuses == [200, 409], results
+    won = next(r for r in results if r[0] == 200)
+    lost = next(r for r in results if r[0] == 409)
+    assert won[1]['queued'] == 1
+    assert lost[1] == {'error': 'send_in_progress'}

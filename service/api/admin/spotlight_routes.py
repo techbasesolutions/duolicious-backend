@@ -33,6 +33,7 @@ from decimal import Decimal
 from typing import Optional
 
 import duotypes as t
+import psycopg
 from flask import abort, jsonify, request
 
 from database import api_tx
@@ -818,43 +819,59 @@ def post_growth_queue_image(request_key: str):
     # means the just-uploaded object is now an orphan -- nothing points at it
     # and nothing ever will -- so it is queued for deletion rather than left
     # behind.
-    with api_tx() as tx:
-        outcome, previous_key = attach_platform_image(tx, request_key, platform, revision_id,
-                                                      key, url, sha256)
-        if previous_key and previous_key != key and not is_referenced(tx, previous_key):
-            # Fix wave item 6: this upload displaced an earlier one. Keys are
-            # content-hashed, so different bytes for the same revision land on
-            # a different key and nothing names the old object any more -- the
-            # ordinary case while an operator iterates on artwork, and the one
-            # the superseded branch below never covered. Guarded by the same
-            # reference check: a sibling platform row or a revision may still
-            # name it (identical bytes share a key), in which case there is no
-            # orphan to clean up.
-            enqueue_asset_delete(tx, previous_key)
-        if outcome == 'superseded' and not is_referenced(tx, key):
-            # Nothing points at the just-uploaded object and nothing ever
-            # will, so it is queued for deletion (Wave 2 Task 5) rather than
-            # deleted inline: enqueueing is a database write and commits with
-            # this transaction, where a storage call would have held the api
-            # connection lock across a network round trip.
-            #
-            # Fix round 1, ruling 2: guarded by the same reference check the
-            # cleanup batch re-runs. The key is content-hashed, so a re-upload
-            # of identical bytes lands on the identical key -- if a live row
-            # or revision still names it, the object is in use and there is no
-            # orphan to clean up.
-            enqueue_asset_delete(tx, key)
-        if outcome == 'attached':
-            if complete_render_if_ready(tx, request_key, revision_id):
-                # A roundup (no subject) row is ready to schedule as soon as
-                # it is rendered. A subject row stays `awaiting_member` even
-                # once rendered -- approve_card is what moves it on to
-                # review, and only once the member actually consents.
-                tx.execute(
-                    """UPDATE publishing_queue SET status = 'review', updated_at = NOW()
-                        WHERE request_key = %(rk)s AND status = 'awaiting_render'""",
-                    dict(rk=request_key))
-            _audit(tx, s, 'growth.queue.image', request_key=request_key, platform=platform)
+    # Wave 3d Task 3 (Runtime 8a): two uploads for the same row can pass every
+    # check above together; the one that reaches the row lock second fails
+    # (SerializationFailure under REPEATABLE READ, the evidence's case) once
+    # the first commits. The winner attached the artwork, so the loser
+    # answers 409 image_race rather than 500, and the admin tick reads that
+    # as rendered by another run. Caught outside the `with` block so the
+    # loser's transaction rolls back first; not retried.
+    try:
+        with api_tx() as tx:
+            outcome, previous_key = attach_platform_image(tx, request_key, platform, revision_id,
+                                                          key, url, sha256)
+            if previous_key and previous_key != key and not is_referenced(tx, previous_key):
+                # Fix wave item 6: this upload displaced an earlier one. Keys are
+                # content-hashed, so different bytes for the same revision land on
+                # a different key and nothing names the old object any more -- the
+                # ordinary case while an operator iterates on artwork, and the one
+                # the superseded branch below never covered. Guarded by the same
+                # reference check: a sibling platform row or a revision may still
+                # name it (identical bytes share a key), in which case there is no
+                # orphan to clean up.
+                enqueue_asset_delete(tx, previous_key)
+            if outcome == 'superseded' and not is_referenced(tx, key):
+                # Nothing points at the just-uploaded object and nothing ever
+                # will, so it is queued for deletion (Wave 2 Task 5) rather than
+                # deleted inline: enqueueing is a database write and commits with
+                # this transaction, where a storage call would have held the api
+                # connection lock across a network round trip.
+                #
+                # Fix round 1, ruling 2: guarded by the same reference check the
+                # cleanup batch re-runs. The key is content-hashed, so a re-upload
+                # of identical bytes lands on the identical key -- if a live row
+                # or revision still names it, the object is in use and there is no
+                # orphan to clean up.
+                enqueue_asset_delete(tx, key)
+            if outcome == 'attached':
+                if complete_render_if_ready(tx, request_key, revision_id):
+                    # A roundup (no subject) row is ready to schedule as soon as
+                    # it is rendered. A subject row stays `awaiting_member` even
+                    # once rendered -- approve_card is what moves it on to
+                    # review, and only once the member actually consents.
+                    tx.execute(
+                        """UPDATE publishing_queue SET status = 'review', updated_at = NOW()
+                            WHERE request_key = %(rk)s AND status = 'awaiting_render'""",
+                        dict(rk=request_key))
+                _audit(tx, s, 'growth.queue.image', request_key=request_key, platform=platform)
+    except (psycopg.errors.UniqueViolation, psycopg.errors.SerializationFailure):
+        # Same orphan rule as 'superseded' below: identical bytes land on the
+        # winner's key, which a row now names, so nothing is queued; different
+        # bytes left an object nothing will ever point at.
+        with api_tx() as tx:
+            if not is_referenced(tx, key):
+                enqueue_asset_delete(tx, key)
+        return dict(error='image_race'), 409
     if outcome == 'superseded':
         return dict(error='superseded'), 409
     return dict(image_url=url)
@@ -894,50 +911,62 @@ def post_growth_spotlight_welcome():
     person_id = _body().get('person_id')
     if not person_id:
         abort(400)
-    with api_tx() as tx:
-        cfg = settings(tx)
-        # Task 9 (F12): invites_enabled gates candidate creation and E4.
-        if cfg.get('invites_enabled') != 'true':
-            return dict(error='invites_paused'), 409
-        # Fix wave item 5: a cancelled row is a request that did not happen,
-        # so it is not a duplicate. The guard matched on kind alone, which
-        # meant a member whose welcome was cancelled (by invite-pending's
-        # terminal path, or a withdrawal they have since reversed) could never
-        # be offered one again -- this route answered 409 forever and nothing
-        # re-creates a cancelled request. Every other status still blocks: the
-        # guard exists to stop two live welcome cards for the same member.
-        already = tx.execute(
-            """SELECT 1 FROM publishing_queue
-                WHERE subject_person_id = %(p)s AND kind = 'welcome'
-                  AND status <> 'cancelled' LIMIT 1""",
-            dict(p=person_id)).fetchone()
-        if already:
-            abort(409)
-        info = tx.execute(
-            """SELECT split_part(name, ' ', 1) AS first_name,
-                      COALESCE(country, location_short_friendly) AS country
-                 FROM person WHERE id = %(p)s""",
-            dict(p=person_id)).fetchone()
-        if not info:
-            abort(404)
-        caption = _welcome_caption(info['first_name'], info['country'])
-        try:
-            rk = create_candidate(tx, kind='welcome', subject_person_id=person_id,
-                                  caption=caption, created_by=_actor(s))
-        except ValueError as e:
-            abort(400, str(e))
-        # Added from the Task 2 review: a member must never receive an
-        # invite they cannot act on. Approvals off means there is no way to
-        # approve the card yet, so the candidate is created (ready the
-        # moment approvals resume) but E4 is withheld.
-        invite_sent = cfg.get('approvals_enabled') == 'true'
-        if invite_sent:
-            # Inside the transaction on purpose (F07): the candidate and the
-            # invite that announces it either both land or neither does. A
-            # failure here is NOT caught (unlike E5 on the receipt routes):
-            # no candidate without its invite record.
-            _enqueue_card_ready(tx, person_id, rk)
-        _audit(tx, s, 'growth.queue.welcome', person_id=person_id, request_key=rk, invite_sent=invite_sent)
+    # Wave 3d Task 3 (Runtime 8a): the `already` guard below is a read, and
+    # every racing worker passes it together. Migration 0050's partial unique
+    # index is the same guard in database form, so a racing loser fails on
+    # insert instead of creating a second card and a second E4. The except
+    # sits OUTSIDE the `with` block so the loser's transaction has already
+    # rolled back (its candidate and its invite with it) before it answers,
+    # the same shape `post_spotlight_card` uses. Either error can surface
+    # depending on timing under REPEATABLE READ. Not retried: the winner's
+    # welcome is the answer.
+    try:
+        with api_tx() as tx:
+            cfg = settings(tx)
+            # Task 9 (F12): invites_enabled gates candidate creation and E4.
+            if cfg.get('invites_enabled') != 'true':
+                return dict(error='invites_paused'), 409
+            # Fix wave item 5: a cancelled row is a request that did not happen,
+            # so it is not a duplicate. The guard matched on kind alone, which
+            # meant a member whose welcome was cancelled (by invite-pending's
+            # terminal path, or a withdrawal they have since reversed) could never
+            # be offered one again -- this route answered 409 forever and nothing
+            # re-creates a cancelled request. Every other status still blocks: the
+            # guard exists to stop two live welcome cards for the same member.
+            already = tx.execute(
+                """SELECT 1 FROM publishing_queue
+                    WHERE subject_person_id = %(p)s AND kind = 'welcome'
+                      AND status <> 'cancelled' LIMIT 1""",
+                dict(p=person_id)).fetchone()
+            if already:
+                abort(409)
+            info = tx.execute(
+                """SELECT split_part(name, ' ', 1) AS first_name,
+                          COALESCE(country, location_short_friendly) AS country
+                     FROM person WHERE id = %(p)s""",
+                dict(p=person_id)).fetchone()
+            if not info:
+                abort(404)
+            caption = _welcome_caption(info['first_name'], info['country'])
+            try:
+                rk = create_candidate(tx, kind='welcome', subject_person_id=person_id,
+                                      caption=caption, created_by=_actor(s))
+            except ValueError as e:
+                abort(400, str(e))
+            # Added from the Task 2 review: a member must never receive an
+            # invite they cannot act on. Approvals off means there is no way to
+            # approve the card yet, so the candidate is created (ready the
+            # moment approvals resume) but E4 is withheld.
+            invite_sent = cfg.get('approvals_enabled') == 'true'
+            if invite_sent:
+                # Inside the transaction on purpose (F07): the candidate and the
+                # invite that announces it either both land or neither does. A
+                # failure here is NOT caught (unlike E5 on the receipt routes):
+                # no candidate without its invite record.
+                _enqueue_card_ready(tx, person_id, rk)
+            _audit(tx, s, 'growth.queue.welcome', person_id=person_id, request_key=rk, invite_sent=invite_sent)
+    except (psycopg.errors.UniqueViolation, psycopg.errors.SerializationFailure):
+        abort(409)
     return dict(request_key=rk)
 
 
@@ -945,48 +974,57 @@ def post_growth_spotlight_welcome():
 def post_growth_spotlight_roundup():
     s = _gate()
     week_key = _week_key()
-    with api_tx() as tx:
-        # Task 9 (F12): invites_enabled gates candidate creation and E4.
-        if settings(tx).get('invites_enabled') != 'true':
-            return dict(error='invites_paused'), 409
-        # The weekly business key converges: a duplicate tick in the same
-        # week gets told "already" rather than creating a second roundup.
-        if tx.execute("SELECT 1 FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
-                      dict(rk=week_key)).fetchone():
-            return dict(request_key=week_key, already=True)
-        snapshot = roundup_snapshot(tx)
-        caption = _roundup_caption(snapshot['count'], snapshot['countries'])
-        rk = create_candidate(tx, kind='roundup', subject_person_id=None,
-                              caption=caption, created_by=_actor(s), request_key=week_key)
-        tx.execute(
-            "UPDATE publishing_queue SET payload = %(p)s::jsonb WHERE request_key = %(rk)s",
-            dict(p=json.dumps(snapshot), rk=rk))
-        # Owner decision (Task 8): count-only unless roundup_tiles_enabled is
-        # on. `roundup_snapshot` already returns `tiles=[]` in that case, so
-        # revision 1 from create_candidate (empty participants) stands --
-        # nothing else to do. With tiles, a fresh revision records every
-        # tiled member as a participant, so the fail-closed dispatch check
-        # (consent_complete) refuses the card until each one consents.
-        count_only = not snapshot['tiles']
-        if not count_only:
-            # Fix wave I1: read the caption off the CURRENT REVISION, not off
-            # an arbitrary queue row. Each row's caption now carries its own
-            # `?p=` platform stamp, so `LIMIT 1` over the rows would have
-            # frozen one platform's stamped link into the shared, immutable
-            # revision every row points at. The revision's own caption is the
-            # platform-neutral form `create_candidate` wrote.
-            caption_row = current_revision(tx, rk)
-            create_revision(
-                tx, rk, caption=caption_row['caption'], photo_uuid=None,
-                participants=[dict(person_id=tile['person_id'], first_name=tile['first_name'],
-                                   photo_url=tile['photo_url'], photo_uuid=tile['photo_uuid'])
-                              for tile in snapshot['tiles']],
-                # Fix round 1 (ruling 2): the same PLATFORMS constant
-                # create_candidate inserted rows with, not an unordered
-                # SELECT over those rows.
-                channels=list(PLATFORMS), created_by=_actor(s))
-        _audit(tx, s, 'growth.queue.roundup', request_key=rk,
-               tiles=len(snapshot['tiles']), count=snapshot['count'], count_only=count_only)
+    # Wave 3d Task 3 (Runtime 8a): the `already` read below converges a
+    # duplicate that arrives after the first roundup committed, but racing
+    # calls all pass it together and the losers fail on the
+    # (request_key, platform) unique key. The occurrence exists, so a loser
+    # answers the same "already" a later duplicate would, not a 500. Caught
+    # outside the `with` block so its transaction rolls back first.
+    try:
+        with api_tx() as tx:
+            # Task 9 (F12): invites_enabled gates candidate creation and E4.
+            if settings(tx).get('invites_enabled') != 'true':
+                return dict(error='invites_paused'), 409
+            # The weekly business key converges: a duplicate tick in the same
+            # week gets told "already" rather than creating a second roundup.
+            if tx.execute("SELECT 1 FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
+                          dict(rk=week_key)).fetchone():
+                return dict(request_key=week_key, already=True)
+            snapshot = roundup_snapshot(tx)
+            caption = _roundup_caption(snapshot['count'], snapshot['countries'])
+            rk = create_candidate(tx, kind='roundup', subject_person_id=None,
+                                  caption=caption, created_by=_actor(s), request_key=week_key)
+            tx.execute(
+                "UPDATE publishing_queue SET payload = %(p)s::jsonb WHERE request_key = %(rk)s",
+                dict(p=json.dumps(snapshot), rk=rk))
+            # Owner decision (Task 8): count-only unless roundup_tiles_enabled is
+            # on. `roundup_snapshot` already returns `tiles=[]` in that case, so
+            # revision 1 from create_candidate (empty participants) stands --
+            # nothing else to do. With tiles, a fresh revision records every
+            # tiled member as a participant, so the fail-closed dispatch check
+            # (consent_complete) refuses the card until each one consents.
+            count_only = not snapshot['tiles']
+            if not count_only:
+                # Fix wave I1: read the caption off the CURRENT REVISION, not off
+                # an arbitrary queue row. Each row's caption now carries its own
+                # `?p=` platform stamp, so `LIMIT 1` over the rows would have
+                # frozen one platform's stamped link into the shared, immutable
+                # revision every row points at. The revision's own caption is the
+                # platform-neutral form `create_candidate` wrote.
+                caption_row = current_revision(tx, rk)
+                create_revision(
+                    tx, rk, caption=caption_row['caption'], photo_uuid=None,
+                    participants=[dict(person_id=tile['person_id'], first_name=tile['first_name'],
+                                       photo_url=tile['photo_url'], photo_uuid=tile['photo_uuid'])
+                                  for tile in snapshot['tiles']],
+                    # Fix round 1 (ruling 2): the same PLATFORMS constant
+                    # create_candidate inserted rows with, not an unordered
+                    # SELECT over those rows.
+                    channels=list(PLATFORMS), created_by=_actor(s))
+            _audit(tx, s, 'growth.queue.roundup', request_key=rk,
+                   tiles=len(snapshot['tiles']), count=snapshot['count'], count_only=count_only)
+    except (psycopg.errors.UniqueViolation, psycopg.errors.SerializationFailure):
+        return dict(request_key=week_key, already=True)
     return dict(request_key=rk)
 
 

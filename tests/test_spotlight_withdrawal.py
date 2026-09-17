@@ -127,7 +127,9 @@ def test_second_call_is_idempotent_except_epoch(make_person):
     p = _make_eligible(make_person)
     with api_tx() as tx:
         _row_in(tx, p['id'], 'review')
-        _row_in(tx, p['id'], 'processing', delivery_state='attempting')
+        # A second live request for the same member has to be a different
+        # kind: migration 0050 allows one live welcome per member and platform.
+        _row_in(tx, p['id'], 'processing', kind='member_of_week', delivery_state='attempting')
         first = withdraw_member(tx, p['id'], 'opt_out')
         second = withdraw_member(tx, p['id'], 'opt_out')
         assert first['cancelled'] == 2

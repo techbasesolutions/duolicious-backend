@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 import duotypes as t
+import psycopg
 from flask import abort, jsonify, request
 
 from database import api_tx
@@ -88,12 +89,23 @@ def post_admin_growth_email_send(s: t.SessionInfo, campaign: str):
     from service.campaigns.runner import run_campaign
     from service.unsubscribe import make_url as _unsub_url
     from service.config import WEB_BASE_URL
-    res = run_campaign(api_tx, campaign, cid, mod.recipients(), mod.build_for, send=not dry,
-                       from_addr=mod.FROM_ADDR,
-                       unsub_scope=mod.UNSUB_SCOPE,
-                       cap_days=getattr(mod, 'CAP_DAYS', 7),
-                       list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url(mod.UNSUB_SCOPE, e, WEB_BASE_URL)}>",
-                       post_send=getattr(mod, 'post_send', None))
+    # Wave 3d Task 3 (Runtime 4d): a second submit of the same campaign_id
+    # racing the first meets a row the first has just queued but its own
+    # snapshot cannot see, and dies inside outbox.enqueue (SerializationFailure
+    # under REPEATABLE READ, the evidence's case). Nobody is queued twice, the
+    # outbox key holds that; the loser answers 409 send_in_progress instead of
+    # 500, and a retry of the same campaign_id stays safe. Each recipient's
+    # transaction is already closed (rolled back) when the error reaches this
+    # except. Not retried here: the other submit is carrying the run.
+    try:
+        res = run_campaign(api_tx, campaign, cid, mod.recipients(), mod.build_for, send=not dry,
+                           from_addr=mod.FROM_ADDR,
+                           unsub_scope=mod.UNSUB_SCOPE,
+                           cap_days=getattr(mod, 'CAP_DAYS', 7),
+                           list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url(mod.UNSUB_SCOPE, e, WEB_BASE_URL)}>",
+                           post_send=getattr(mod, 'post_send', None))
+    except (psycopg.errors.UniqueViolation, psycopg.errors.SerializationFailure):
+        return dict(error='send_in_progress'), 409
     # The audit row is written AFTER the run, not inside it, on purpose: a run
     # spans one transaction per recipient (see service/campaigns/runner.py), so
     # there is no single transaction the audit could share. `res` already
