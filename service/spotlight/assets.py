@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from service.spotlight.cleanup import enqueue_asset_delete, is_referenced
 from service.spotlight.revisions import attach_render
 from service.spotlight.storage import card_image_extension
 
@@ -130,7 +131,17 @@ def complete_render_if_ready(tx, request_key: str, revision_id: int) -> bool:
     the considered set for the per-row match below AND from the facebook pin,
     and its mere presence refuses the whole completion outright: a roundup's
     combined preview must never go out consistent-looking while one of its
-    platforms is in a state nobody can yet explain."""
+    platforms is in a state nobody can yet explain.
+
+    Fix wave B (M2): every considered row must also carry one identical
+    image_sha256. One tick renders once and uploads those bytes to every
+    platform row, but across ticks each row can attach a different render of
+    the same revision (one upload failed and the next tick rendered again).
+    Pinning facebook's hash then would let instagram publish bytes the member
+    never saw. So a mismatched set does not complete: the revision's
+    asset_hash stays NULL and the considered rows are un-rendered
+    (`_unrender_mismatched`), so the next tick lists the card again and
+    uploads one render to both."""
     rows = tx.execute(
         """SELECT platform, image_key, image_url, image_sha256, current_revision_id, delivery_state
              FROM publishing_queue
@@ -141,6 +152,9 @@ def complete_render_if_ready(tx, request_key: str, revision_id: int) -> bool:
         return False
     if any(r['current_revision_id'] != revision_id or not r['image_key'] or not r['image_sha256']
            for r in rows):
+        return False
+    if len({r['image_sha256'] for r in rows}) > 1:
+        _unrender_mismatched(tx, request_key, revision_id)
         return False
     pinned = next((r for r in rows if r['platform'] == 'facebook'), rows[0])
     try:
@@ -153,3 +167,41 @@ def complete_render_if_ready(tx, request_key: str, revision_id: int) -> bool:
         # The set is still ready -- just not newly so from this call.
         return False
     return True
+
+
+# Fix wave B (M2): the rows `complete_render_if_ready` just found carrying
+# different renders of one revision. Scoped to exactly its considered set
+# (uploadable status, pinned to this revision, delivery resolved), not
+# `revisions._Q_UNRENDER`'s wider re-point scope, which would also blank a
+# failed or in-flight sibling this check never looked at. Leaves the render
+# backoff alone: both uploads attached, so it is already clear.
+# RETURNING names the new (NULL) value, so the old key is read through a
+# `FOR UPDATE` CTE in the same statement, the shape `attach_platform_image`
+# uses for its displaced key.
+_Q_UNRENDER_MISMATCHED = """
+    WITH prev AS (
+        SELECT id, image_key FROM publishing_queue
+         WHERE request_key = %(rk)s
+           AND current_revision_id = %(rev)s
+           AND status IN ('awaiting_member', 'awaiting_render', 'review')
+           AND (delivery_state IS NULL OR delivery_state NOT IN ('attempting', 'delivery_unknown'))
+           AND image_key IS NOT NULL
+           FOR UPDATE
+    )
+    UPDATE publishing_queue
+       SET image_key = NULL, image_url = NULL, image_sha256 = NULL, updated_at = NOW()
+      FROM prev
+     WHERE publishing_queue.id = prev.id
+ RETURNING prev.image_key AS image_key
+"""
+
+
+def _unrender_mismatched(tx, request_key: str, revision_id: int) -> None:
+    """Blank the mismatched rows and queue each old key nothing else names
+    for deletion, in the caller's transaction (none opened here), the same
+    order `create_revision` uses: clear first, then enqueue."""
+    keys = {r['image_key'] for r in tx.execute(
+        _Q_UNRENDER_MISMATCHED, dict(rk=request_key, rev=revision_id)).fetchall()}
+    for key in sorted(keys):
+        if not is_referenced(tx, key):
+            enqueue_asset_delete(tx, key)

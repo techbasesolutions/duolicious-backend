@@ -551,3 +551,29 @@ def test_approve_without_an_integer_revision_is_400(client, make_person, monkeyp
     finally:
         with api_tx() as tx:
             set_setting(tx, 'approvals_enabled', 'false')
+
+
+@pytest.mark.parametrize('revision', ['missing', None])
+def test_paused_approvals_answer_before_the_revision_is_read(client, make_person, monkeypatch, revision):
+    """Fix wave B (M4): while approvals are off, a page served before Wave 3d
+    (its approve body names no revision) must still read the paused answer
+    (409 approvals_disabled), not a 400 the page shows as an error. Nothing
+    is recorded and the link stays usable for when approvals open."""
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, 'presign', lambda key, seconds=900: f'https://signed/{key}')
+    p = _make_eligible(make_person, name='PausedNoRevision')
+    email = _email(p['id'])
+    with api_tx() as tx:
+        set_setting(tx, 'approvals_enabled', 'false')
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        photo = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s",
+                           dict(id=p['id'])).fetchone()['u']
+        attach_render(tx, current_revision(tx, rk)['id'], 'h', 'k', 'https://cdn/k.png')
+        tok = make_card_token(tx, rk, email)
+    body = {'decision': 'approve', 'photo_uuid': photo}
+    if revision != 'missing':
+        body['revision'] = revision
+    r = client.post(f'/spotlight/card/{tok}', json=body)
+    assert r.status_code == 409 and r.get_json() == {'error': 'approvals_disabled'}
+    assert _consent_rows(rk) == []
+    assert _nonce_used(parse_card_token(tok)[2]) is False

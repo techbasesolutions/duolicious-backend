@@ -516,7 +516,9 @@ def test_caption_edit_unrenders_every_repointed_row_and_enqueues_the_old_keys(ma
         rev1 = current_revision(tx, rk)['id']
         old = {}
         for platform in ('facebook', 'instagram'):
-            sha = hashlib.sha256(f'{rk}-{platform}'.encode()).hexdigest()
+            # One render for both platforms (fix wave B, M2: a set whose
+            # platform rows carry different bytes never completes).
+            sha = hashlib.sha256(f'{rk}-rev1'.encode()).hexdigest()
             key = asset_key(rk, rev1, sha, platform)
             old[platform] = key
             tx.execute(

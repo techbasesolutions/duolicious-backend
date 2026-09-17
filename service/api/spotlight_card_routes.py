@@ -34,7 +34,7 @@ from service.api.decorators import get, post
 from service.api.unsubscribe_routes import unsub_limit
 from service.spotlight.approval import CARD_TOKEN_TTL_SECONDS, card_state, parse_card_token
 from service.spotlight.nonce import check_nonce, consume_nonce
-from service.spotlight.queue import set_status
+from service.spotlight.queue import set_status, settings
 from service.spotlight.revisions import approve_card, current_revision
 
 
@@ -146,6 +146,14 @@ def post_spotlight_card(token: str):
                 photo_uuid = body.get('photo_uuid')
                 if not photo_uuid:
                     abort(400)
+                # Fix wave B (M4): paused approvals answer before the revision
+                # is read. A page served before Wave 3d names no revision, and
+                # while approvals are off it must still read the paused 409
+                # that approve_card raises, not a 400 it shows as an error.
+                # Raised, not returned, so it leaves through the same except
+                # below with the same body. approve_card keeps its own check.
+                if settings(tx).get('approvals_enabled') != 'true':
+                    raise ValueError('approvals_disabled')
                 # Wave 3d Task 2: the page names the revision it showed, so
                 # consent binds to what the member saw. A bool is a Python
                 # int subclass, so it is refused explicitly.

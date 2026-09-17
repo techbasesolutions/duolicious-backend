@@ -483,11 +483,14 @@ def test_image_route_uses_content_hashed_key_and_private_acl(client, make_person
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         rev = current_revision(tx, rk)
     fb = _png_bytes(colour='white')
-    ig = _png_bytes(colour='black')
+    # One render uploaded to both platforms, as the tick does (fix wave B,
+    # M2: a set whose platform rows carry different bytes never completes).
+    ig = fb
     assert client.post(f'/admin/growth/queue/{rk}/image', json=dict(platform='facebook', png_base64=_b64(fb)), headers=H).status_code == 200
     assert client.post(f'/admin/growth/queue/{rk}/image', json=dict(platform='instagram', png_base64=_b64(ig)), headers=H).status_code == 200
     fb_sha = hashlib.sha256(fb).hexdigest()
     assert puts[0] == (f"spotlight/{rk}/{rev['id']}-{fb_sha[:16]}-facebook.png", fb_sha, False)
+    assert puts[1] == (f"spotlight/{rk}/{rev['id']}-{fb_sha[:16]}-instagram.png", fb_sha, False)
     with api_tx('read committed') as tx:
         rows = {r['platform']: r for r in tx.execute(
             "SELECT platform, image_key, image_sha256 FROM publishing_queue WHERE request_key = %(rk)s",

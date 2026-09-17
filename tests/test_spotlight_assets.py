@@ -1,6 +1,7 @@
 """service.spotlight.assets: content-hashed keys and their compare-and-set
 attach/completion (Wave 2 F06 part 2; fix round 1 rulings)."""
 import hashlib
+import secrets
 
 from database import api_tx
 from service.spotlight.assets import asset_key, attach_platform_image, complete_render_if_ready
@@ -98,7 +99,9 @@ def test_complete_render_refuses_while_a_sibling_is_parked_with_unresolved_deliv
     with api_tx() as tx:
         rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
         rev1 = current_revision(tx, rk)['id']
-        fb_sha1 = _sha(b'fb-rev1'); ig_sha1 = _sha(b'ig-rev1')
+        # One render uploaded to both platforms (fix wave B, M2: a set whose
+        # platform rows carry different bytes never completes).
+        fb_sha1 = ig_sha1 = _sha(b'rev1')
         fb_key1 = asset_key(rk, rev1, fb_sha1, 'facebook')
         ig_key1 = asset_key(rk, rev1, ig_sha1, 'instagram')
         assert attach_platform_image(tx, rk, 'facebook', rev1, fb_key1, f'https://cdn/{fb_key1}', fb_sha1)[0] == 'attached'
@@ -135,3 +138,85 @@ def test_complete_render_refuses_while_a_sibling_is_parked_with_unresolved_deliv
         fb_key2 = asset_key(rk, rev2, _sha(b'fb-rev2'), 'facebook')
         assert attach_platform_image(tx, rk, 'facebook', rev2, fb_key2, f'https://cdn/{fb_key2}',
                                      _sha(b'fb-rev2')) == ('superseded', None)
+
+
+_CRON = {'X-Growth-Cron': 'test-cron-secret'}
+
+
+def _two_platform_roundup_backdated(tx):
+    """A roundup placed ahead of every row already in the shared table, so
+    the tick's 200-row render listing reaches it whatever earlier tests
+    left behind."""
+    rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
+    tx.execute(
+        """UPDATE publishing_queue
+              SET created_at = (SELECT COALESCE(MIN(created_at), NOW()) - interval '1 day' FROM publishing_queue)
+            WHERE request_key = %(rk)s""", dict(rk=rk))
+    return rk
+
+
+def test_platform_renders_with_different_bytes_do_not_complete_and_are_listed_again(client):
+    """Fix wave B (M2): across two ticks each platform row can attach a
+    different render of the same revision. Completing on facebook's hash
+    alone would let instagram publish bytes the member never saw. So the set
+    does not complete, the revision stays unrendered, both rows lose their
+    artwork (the next tick re-uploads one render to both) and their keys are
+    queued for deletion, and the card is listed for rendering again."""
+    with api_tx() as tx:
+        rk = _two_platform_roundup_backdated(tx)
+        rev_id = current_revision(tx, rk)['id']
+        fb_sha, ig_sha = _sha(secrets.token_bytes(16)), _sha(secrets.token_bytes(16))
+        fb_key = asset_key(rk, rev_id, fb_sha, 'facebook', 'image/jpeg')
+        ig_key = asset_key(rk, rev_id, ig_sha, 'instagram', 'image/jpeg')
+        assert attach_platform_image(tx, rk, 'facebook', rev_id, fb_key, f'https://cdn/{fb_key}', fb_sha)[0] == 'attached'
+        assert complete_render_if_ready(tx, rk, rev_id) is False
+    with api_tx() as tx:
+        assert attach_platform_image(tx, rk, 'instagram', rev_id, ig_key, f'https://cdn/{ig_key}', ig_sha)[0] == 'attached'
+        assert complete_render_if_ready(tx, rk, rev_id) is False
+    try:
+        with api_tx('read committed') as tx:
+            rev = current_revision(tx, rk)
+            assert (rev['asset_hash'], rev['image_key']) == (None, None)
+            rows = tx.execute(
+                """SELECT image_key, image_url, image_sha256 FROM publishing_queue
+                    WHERE request_key = %(rk)s""", dict(rk=rk)).fetchall()
+            assert len(rows) == 2
+            assert all((r['image_key'], r['image_url'], r['image_sha256']) == (None, None, None) for r in rows)
+            queued = {r['target'] for r in tx.execute(
+                "SELECT target FROM cleanup_job WHERE target = ANY(%(k)s::text[]) AND state = 'pending'",
+                dict(k=[fb_key, ig_key])).fetchall()}
+            assert queued == {fb_key, ig_key}
+        r = client.get('/admin/growth/queue?needs_render=1', headers=_CRON)
+        assert r.status_code == 200
+        assert {row['platform'] for row in r.get_json() if row['request_key'] == rk} == {'facebook', 'instagram'}
+    finally:
+        with api_tx() as tx:
+            tx.execute("UPDATE publishing_queue SET status = 'cancelled' WHERE request_key = %(rk)s", dict(rk=rk))
+
+
+def test_platform_renders_with_identical_bytes_complete_as_before(client):
+    """Fix wave B (M2), the ordinary case: one render uploaded to both
+    platforms completes the set, pinned to facebook's row, and the card is
+    no longer listed for rendering."""
+    with api_tx() as tx:
+        rk = _two_platform_roundup_backdated(tx)
+        rev_id = current_revision(tx, rk)['id']
+        sha = _sha(secrets.token_bytes(16))
+        fb_key = asset_key(rk, rev_id, sha, 'facebook', 'image/jpeg')
+        ig_key = asset_key(rk, rev_id, sha, 'instagram', 'image/jpeg')
+        assert attach_platform_image(tx, rk, 'instagram', rev_id, ig_key, f'https://cdn/{ig_key}', sha)[0] == 'attached'
+        assert complete_render_if_ready(tx, rk, rev_id) is False
+        assert attach_platform_image(tx, rk, 'facebook', rev_id, fb_key, f'https://cdn/{fb_key}', sha)[0] == 'attached'
+        assert complete_render_if_ready(tx, rk, rev_id) is True
+    try:
+        with api_tx('read committed') as tx:
+            rev = current_revision(tx, rk)
+            assert (rev['asset_hash'], rev['image_key']) == (sha, fb_key)
+            assert {r['image_sha256'] for r in tx.execute(
+                "SELECT image_sha256 FROM publishing_queue WHERE request_key = %(rk)s", dict(rk=rk)).fetchall()} == {sha}
+        r = client.get('/admin/growth/queue?needs_render=1', headers=_CRON)
+        assert r.status_code == 200
+        assert not [row for row in r.get_json() if row['request_key'] == rk]
+    finally:
+        with api_tx() as tx:
+            tx.execute("UPDATE publishing_queue SET status = 'cancelled' WHERE request_key = %(rk)s", dict(rk=rk))

@@ -938,10 +938,15 @@ def post_growth_queue_image(request_key: str):
 # 1 (M1): also a URL written without its scheme (`//host/...`), and any word
 # carrying a signature or token on its own (`X-Amz-...`, `Signature=`,
 # `Credential=`, `?token=`, `&sig=`). The admin tick applies the same rule.
+# Fix wave B (T4 m3): also `access_token=...` quoted inside a sentence and a
+# bare `token=...` or `sig=...` with no `?` or `&` in front of it.
 _URL_IN_REASON = re.compile(
-    r'(?:https?:)?//\S+|\S*(?:X-Amz-|Signature=|Credential=|[?&](?:token|sig)=)\S*',
+    r'(?:https?:)?//\S+|\S*(?:X-Amz-|(?:access_)?token=|sig=|Signature=|Credential=)\S*',
     re.IGNORECASE)
 RENDER_REASON_MAX = 200
+# Fix wave B (T4 m4): what a reason that was nothing but a URL (or a token)
+# is stored as, so the failure never reads back as blank.
+RENDER_REASON_REDACTED = 'render_failed_url_redacted'
 
 # 15 minutes, doubled for every failure already recorded, capped at 24 hours:
 # 15m, 30m, 1h, 2h, 4h, 8h, 16h, then 24h. The exponent is clamped at 7
@@ -964,8 +969,12 @@ _Q_RENDER_FAILED = """
 def _render_reason(value: str) -> Optional[str]:
     """No URL (so no signed URL or token), whitespace collapsed where one was
     cut out, at most RENDER_REASON_MAX characters. Stripped before the cap, so
-    a URL can never survive by being cut short."""
+    a URL can never survive by being cut short. A reason with text that
+    sanitises to nothing is stored as RENDER_REASON_REDACTED rather than NULL
+    (fix wave B, T4 m4); a blank reason stays NULL."""
     cleaned = ' '.join(_URL_IN_REASON.sub(' ', value).split())[:RENDER_REASON_MAX].strip()
+    if not cleaned and value.strip():
+        return RENDER_REASON_REDACTED
     return cleaned or None
 
 
@@ -982,9 +991,9 @@ def _lock_render_rows(tx, request_key: str) -> list:
 def post_growth_queue_render_failed(request_key: str):
     """The render tick reports a card it could not render or upload (a lost
     render race is not reported). Every row of the request backs off, so a
-    card that keeps failing stops taking a place in the tick's oldest-first
-    listing until its time passes; a successful attach resets its row
-    (`attach_platform_image`).
+    card that keeps failing stops taking a place in the tick's listing (served
+    in the order cards became eligible) until its time passes; a successful
+    attach resets its row (`attach_platform_image`).
 
     READ COMMITTED, not the default snapshot level: two reports racing on the
     same card must both count, and under a snapshot the second writer would

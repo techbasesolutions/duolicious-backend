@@ -562,3 +562,38 @@ def test_render_failed_reason_drops_scheme_less_urls_and_signature_fragments(cli
         assert value == 'photo_host_refused done'
     finally:
         _retire([rk])
+
+
+def _stored_reason(rk):
+    with api_tx('read committed') as tx:
+        return tx.execute("SELECT render_error FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
+                          dict(rk=rk)).fetchone()['render_error']
+
+
+def test_render_failed_reason_drops_access_tokens_and_bare_tokens(client):
+    """Fix wave B (T4 m3): a Graph API error can quote `access_token=...`
+    inside a sentence, and a token can arrive bare (`token=...`) with no
+    `?` or `&` in front of it. Both words are cut, the sentence is kept."""
+    with api_tx() as tx:
+        rk = _roundups(tx, 1)[0]
+    token = secrets.token_hex(12)
+    reason = f'graph refused access_token=EAAB{token} for the page then token={token} was stale'
+    try:
+        assert _fail(client, rk, reason).status_code == 200
+        assert _stored_reason(rk) == 'graph refused for the page then was stale'
+    finally:
+        _retire([rk])
+
+
+def test_render_failed_reason_that_is_only_a_url_keeps_a_label(client):
+    """Fix wave B (T4 m4): a reason that is nothing but a URL sanitises to
+    nothing. It is stored as a fixed label rather than NULL, so the failure
+    still reads as a failure."""
+    with api_tx() as tx:
+        rk = _roundups(tx, 1)[0]
+    token = secrets.token_hex(12)
+    try:
+        assert _fail(client, rk, f'https://cdn.example/p.png?X-Amz-Signature={token}').status_code == 200
+        assert _stored_reason(rk) == 'render_failed_url_redacted'
+    finally:
+        _retire([rk])
