@@ -16,21 +16,23 @@ Heads run against:
 
 | Gate | Verdict | One-line reason |
 | --- | --- | --- |
-| Consent | **Partial, one sub-claim FAILED** | A member who approves from a tab showing revision 1 has consent recorded on revision 2, which the browser never showed. |
+| Consent | **Partial, one sub-claim FAILED**. Wave 3d re-run (2026-09-17): that sub-claim is now Proven locally; gate Partial | 3c run: a member who approves from a tab showing revision 1 has consent recorded on revision 2, which the browser never showed. Re-run: the stale POST answers `new_revision` and records nothing, and Approve waits for the card image; the preview under the production CSP still needs the owner. |
 | Lifecycle | Partial | Opt-out and self-deletion in all eight queue states leave no untracked post (driven end to end); no moderation action exists to test. |
-| Delivery | **Partial, one sub-claim FAILED** (same defect as Storage 5a) | Two channels, separate runs, partial failure, lost confirmation, worker death and late receipts all reconcile; the real operator approve route cannot schedule a rendered card (see Storage), and real Graph timeouts are not exercised. |
-| Mail | **Partial, one sub-claim FAILED** | Restart, death mid-send, acceptance uncertainty and send-time consent proven; a duplicate concurrent submit answers 500 part-way through its cohort, and real SMTP is not exercised. |
-| Storage | **Partial, one sub-claim FAILED** | `storage.make_public` raises `AttributeError` on the real boto3 object, so approving any rendered card answers 503; its unit test passes against a stub that invents the method. |
+| Delivery | **Partial, one sub-claim FAILED** (same defect as Storage 5a). Wave 3d re-run: 3a now Proven locally; gate Partial | Two channels, separate runs, partial failure, lost confirmation, worker death and late receipts all reconcile; 3c run: the real operator approve route could not schedule a rendered card. Re-run: both channels publish through the real approve route with no continuation; real Graph timeouts are still not exercised. |
+| Mail | **Partial, one sub-claim FAILED**. Wave 3d re-run: 4d now Proven locally; gate Partial | Restart, death mid-send, acceptance uncertainty and send-time consent proven; 3c run: a duplicate concurrent submit answered 500. Re-run: one 200, one 409 `send_in_progress`, nobody queued twice; real SMTP is not exercised. |
+| Storage | **Partial, one sub-claim FAILED**. Wave 3d re-run: 5a now Proven locally; gate Partial | 3c run: `storage.make_public` raised `AttributeError` on the real boto3 object, so approving any rendered card answered 503. Re-run: approve answers 200 and the object gains the public-read grant on s3mock; real Spaces ACL and CDN need staging. |
 | Operator controls | Partial, pending owner ruling on the invite-pause copy | Invite pause, publication pause, emergency stop, absent auto flags and visible deadlines behave as labelled through the real worker and API. |
 | Real platform | Needs staging or owner | Account IDs, ownership, token scopes, image format, permalinks and removal need the owner's Meta access. |
-| Runtime | **Partial, three sub-claims FAILED** | Two concurrent ticks create two welcome requests and two E4s; the 200-row listings starve old work; slow Graph exceeds the 60 s budget with no checkpoint. |
+| Runtime | **Partial, three sub-claims FAILED**. Wave 3d re-run: 8a, 8c and 8d now Proven locally; gate Partial | 3c run: two concurrent ticks created two welcome requests and two E4s; the 200-row listings starved old work; slow Graph exceeded the 60 s budget with no checkpoint. Re-run: duplicates converge and answer cleanly, old renders and removals are served first (including simulated daily ticks), slow Graph ends within 60 s or releases the row; 8b (missed Monday roundup) and real Graph latency are unchanged. |
 | Measurement | Proven locally | Web click route to receipt to attribution; bots, replays, forged and expired receipts earn nothing; per-platform totals reconcile. |
-| Deployment | **Partial, one sub-claim FAILED** (no runbook) | Migrations apply and re-apply cleanly on a fresh disposable database and every suite and build is green; a production-copy migration, secrets and config need the owner, and no rollback or cron-pause runbook exists in any repo. |
+| Deployment | **Partial, one sub-claim FAILED** (no runbook). Wave 3d re-run: 10d not re-run (a document, not a probe check) | Migrations apply and re-apply cleanly on a fresh disposable database and every suite and build is green; a production-copy migration, secrets and config need the owner, and no rollback or cron-pause runbook existed in any repo at the 3c heads (one now exists at `docs/runbooks/spotlight-rollback-and-cron-pause.md`; this re-run did not verify it). |
 | First live exercise | Needs staging or owner | Owner-gated by definition, and blocked by the failures above. |
 
 Count: **1 Proven locally, 8 Partial, 2 Needs staging or owner.** Sub-claims that FAILED: Consent (stale-tab approval), Delivery (operator approve through the real route, same defect as Storage), Mail (duplicate concurrent submit answers 500), Storage (`make_public`), Runtime (duplicate welcome ticks, roundup duplicates answering 500, backlog starvation, execution budget), Deployment (no rollback or cron-pause runbook).
 
 Corrected 2026-09-16 after the whole-branch review: the first version labelled the Delivery, Mail and Deployment failures as plain Partial, Operator controls as Proven, and softened the roundup 500s. The Meta documentation findings in section 7 were also added then.
+
+Updated 2026-09-17 after the Wave 3d re-run (section "Wave 3d re-run (2026-09-17)" at the end, heads api `2642849`, web `a3cc1a2`, admin `87690f6`): every FAILED sub-claim re-run by the probe (1a, 3a, 4d, 5a, 8a, 8c, 8d) is now Proven locally; 10d was not re-run. The count above is the 3c run's and is left as it was.
 
 ## How the run was made
 
@@ -546,3 +548,193 @@ Ordered by what blocks what.
 9. **Staging run of this matrix on the exact deploy heads**, including this probe against staging, real Spaces (ACL, CDN, preview under the CSP), real SMTP, real Graph latency and a production-data copy for migrations (Storage, Mail, Delivery, Deployment 10a).
 10. **Owner rulings that do not block but should be recorded**: whether moderation actions withdraw (Lifecycle 2b); whether an E4 queued before an invite pause should still send (Controls); roundup tiles stay off until a participant-consent route exists (Consent 1d).
 11. **First live exercise (11)**: one owner or member-approved test post on both platforms, verify both receipts, then the real withdrawal and removal path.
+
+## Wave 3d re-run (2026-09-17)
+
+Re-run of every sub-claim that FAILED above, against the final Wave 3d branch heads, on the same disposable local stack. Nothing in application code was changed. No production host was contacted, no Meta API was called and no real mail was sent. The original sections above are left as they were; the summary table rows for the affected gates carry a note pointing here.
+
+Heads run against:
+
+| Repo | Branch | Head |
+| --- | --- | --- |
+| `ahavah-api` | `spotlight-wave-3d` | `2642849` |
+| `ahavah-web` | `spotlight-wave-3d` | `a3cc1a2` |
+| `ahavah-admin` | `spotlight-wave-3d` | `87690f6` (the probe itself is committed on top as `6643cfe`, test file only) |
+
+### How the re-run was made
+
+The probe now lives on the Wave 3d admin branch at `ahavah-admin/tests/_evidence/acceptance-local-probe.mjs` (still not collected by `node --test`). It was updated only where the Wave 3d contracts changed:
+
+- The approve POST names `revision`, read from the card GET (member approvals in the probe and in the browser).
+- The make_public continuation is removed. `adminApprove` calls the real operator route and nothing else; every non-200 answer is counted (`operator approvals through the real route that did not answer 200`).
+- The renderer is the real JPEG renderer (`next/og` then `sharp`); the Graph stub reads `caption` on Page photos; the probe records the first bytes of every image the browser and Graph fetched.
+- The removals worker listing is read as `?pending=1&worker=1`.
+- The budget section loads the real `publish-due` route module (one row per run, the shared 45 s deadline, removals after publishing) on a scaled clock: every timer is scaled 1 real ms = 200 virtual ms, and `publishing.now` reads the same virtual time.
+
+Checks added, each named in the output below: the image-load gate on the stale tab (the preview image response is held until released), the object ACL before and after the operator approve (read back from s3mock), JPEG bytes plus browser and Graph byte equality, quiet lost render races, four concurrent uploads of one image, roundup answers all 200, a daily-tick starvation scenario on simulated days, 250 due removal tasks against the worker listing, the e1 status pair and a re-submit, and a 14.9 s run with an explicit `max` of 2.
+
+Stack, all local (the test database was not reset: it held 1,617 queue rows and no members at the start, and 0050 and 0051 were already tracked):
+
+```
+# ahavah-api (postgres was already up)
+MSYS_NO_PATHCONV=1 docker compose -f docker-compose.test.yml up -d s3mock redis
+MSYS_NO_PATHCONV=1 bash scripts/apply-deploy-migrations.sh
+  -> exit 0, 0 "Applying", 51 "Already applied", last "Already applied 0051_spotlight_render_backoff.sql"
+MSYS_NO_PATHCONV=1 docker compose -f docker-compose.test.yml run -d --name ahavah-acceptance-api -p 5000:5000 \
+  -v /d/Antigravity/ahavah-api:/app -e REDIS_HOST=redis -e PYTHONPATH=/app --entrypoint bash api \
+  -c "cd /app && python3 database/initapi.py && exec gunicorn --workers 4 --bind 0.0.0.0:5000 --timeout 0 service.api:app"
+
+# ahavah-web
+MSYS_NO_PATHCONV=1 AHAVAH_API_ORIGIN=http://127.0.0.1:5000 pnpm exec next dev -p 3107
+
+# ahavah-admin (Node v24.13.1; headless Chrome through playwright-core)
+node tests/_evidence/acceptance-local-probe.mjs consent   # run np1wl: EXPECTATIONS: 40 ok, 0 failed
+node tests/_evidence/acceptance-local-probe.mjs runtime   # run nq586: EXPECTATIONS: 14 ok, 0 failed
+node tests/_evidence/acceptance-local-probe.mjs mail      # run nr6g2: EXPECTATIONS: 6 ok, 0 failed
+node tests/_evidence/acceptance-local-probe.mjs budget    # run nt4zd: EXPECTATIONS: 3 ok, 0 failed (run no7o6 before it: the same)
+```
+
+Disclosed: one earlier consent attempt (run `nohlv`) stopped on a probe loader bug, not an application fault: the vm transpile has no `esModuleInterop`, so the renderer's `sharp` default import was undefined. Its four cards were reported render-failed on the shared test database; the loader was fixed and run `np1wl` is the one quoted. Every run ended `OBSERVED refused outbound hosts :: []` and `OBSERVED operator approvals through the real route that did not answer 200 :: {"count":0,"first":[]}`. The API log (gunicorn, four workers) holds no traceback, `SerializationFailure`, `UniqueViolation` or `AttributeError` across all four runs. Screenshots are in `.superpowers/sdd/2026-09-16-spotlight-wave-3d/shots/acceptance-rerun/` (git-ignored scratch).
+
+Sections not re-run because none of their sub-claims failed: lifecycle, controls, measurement. Deployment 10d (the runbook) is a document, not a probe check, and was not re-run here.
+
+### 1a. Browser shows the final revision (stale tab): now Proven locally
+
+Member C opens revision 1, an operator rewrites the caption, the tick renders revision 2, and C presses Approve on the tab still showing revision 1. The re-read card image was held so the gate could be seen.
+
+```
+EXPECT ok   A: browser shows the bytes of revision 1 :: {"state":"default","shown":"2bbedaa191a0","rev1":"2bbedaa191a0"}
+EXPECT ok   A: browser now shows the bytes of revision 2, not revision 1 :: {"shown":"392d3dddc873","rev2":"392d3dddc873"}
+EXPECT ok   A: approve is a POST and binds consent to revision 2 :: {"status":200,"consent":[{"revision_id":881,"revision":2,"person_id":613,"role":"subject"}]}
+OBSERVED C: tab still shows :: {"shown":"d5b931536c0d","rev1":"d5b931536c0d","rev2_now_current":"49618b4618a8","rev2_caption":"Operator rewrote this caption for Accnp1wlC https://get.ahavah.app/s/Y6xyP19Y"}
+OBSERVED C: POST from the stale tab :: {"status":200,"body":{"ok":true,"result":"new_revision","revision":2},"page_state":"default","consent":[]}
+EXPECT ok   C: consent is never recorded against a revision the browser did not show :: {"browser_showed_revision":1,"consent_recorded_on_revision":[]}
+EXPECT ok   C: the stale POST answers new_revision, records nothing, and the tab asks again instead of showing Approved :: {"status":200,"body":{"ok":true,"result":"new_revision","revision":2},"page_state":"default","consent":0}
+EXPECT ok   C: Approve stays disabled while the re-read card image has not loaded :: {"held_image_responses":1,"approve_disabled":true}
+EXPECT ok   C: once the image loads Approve enables, and the tab now shows the bytes of revision 2 :: {"approve_enabled":true,"shown":"49618b4618a8","rev2":"49618b4618a8"}
+EXPECT ok   C: approving the card now on screen binds consent to revision 2 :: {"status":200,"body":{"ok":true,"result":"approved"},"page_state":"approved","consent":[{"revision_id":882,"revision":2,"person_id":615,"role":"subject"}]}
+```
+
+Verdict: **now Proven locally.** The original EXPECT line passes unchanged. Screenshots: `consent-C-2-stale-tab-asked-again-image-held.png` (the "This card changed" notice, Approve disabled, no image yet) and `consent-C-3-image-loaded-approve-enabled.png` (revision 2 on screen, Approve enabled). An observation, not a failure: while the image loads, the card area is blank, with no placeholder.
+
+### 5a. Making an approved card public: now Proven locally
+
+Through the real operator approve route, with the object's ACL read back from s3mock before and after:
+
+```
+EXPECT ok   A: operator approve facebook -> scheduled through the real route :: {"status":200,"body":{"scheduled_for":"2026-09-17T14:55:44.497000+00:00","status":"scheduled"}}
+EXPECT ok   A: facebook image object is private before approve and public-read after it, row scheduled :: {"key":"spotlight/09de6361b75d473dada8312e93c4edb0/881-392d3dddc873597f-facebook.jpg","before":{"status":200,"public":false,"grants":1},"after":{"status":200,"public":true,"grants":2},"row_status":"scheduled"}
+EXPECT ok   A: operator approve instagram -> scheduled through the real route :: {"status":200,"body":{"scheduled_for":"2026-09-17T14:55:45.081000+00:00","status":"scheduled"}}
+EXPECT ok   A: instagram image object is private before approve and public-read after it, row scheduled :: {"key":"spotlight/09de6361b75d473dada8312e93c4edb0/881-392d3dddc873597f-instagram.jpg","before":{"status":200,"public":false,"grants":1},"after":{"status":200,"public":true,"grants":2},"row_status":"scheduled"}
+```
+
+Verdict: **now Proven locally.** Approve answers 200, the row is `scheduled`, and the object gains the AllUsers READ grant. s3mock records ACLs but does not enforce them, so a public read of a private object on real Spaces (and CDN behaviour) still needs staging, as recorded under Storage.
+
+### 3a. Two channels succeed for one occurrence, through the real approve route: now Proven locally
+
+```
+OBSERVED publishDue (A) :: {"claimed":2,"published":2,"failed":0,"review":0,"delivery_unknown":0,"stale":0,"receipt_failed":0,"skipped":0,"dry":false,"paused":false,"halted":false,"unrecorded":[]}
+EXPECT ok   A: both platform rows published in one run :: [{"platform":"facebook","status":"published","post_url":"https://www.facebook.com/probe-page_np1wl3"},{"platform":"instagram","status":"published","post_url":"https://www.instagram.com/p/igmedianp1wl2/"}]
+EXPECT ok   A: Graph received exactly two publishes, one per platform :: ["instagram","facebook"]
+EXPECT ok   A: the bytes Graph fetched are the approved revision 2 bytes the browser showed :: [{"platform":"instagram","status":200,"sha":"392d3dddc873"},{"platform":"facebook","status":200,"sha":"392d3dddc873"}]
+EXPECT ok   A: the rendered card bytes are JPEG (FF D8 FF) in the browser and in both Graph fetches, and Graph fetched exactly the bytes the browser showed :: {"browser":{"head":"ffd8ff","content_type":"image/jpeg","sha":"392d3dddc873"},"graph":[{"platform":"instagram","head":"ffd8ff","sha":"392d3dddc873"},{"platform":"facebook","head":"ffd8ff","sha":"392d3dddc873"}],"keys":["spotlight/09de6361b75d473dada8312e93c4edb0/881-392d3dddc873597f-facebook.jpg","spotlight/09de6361b75d473dada8312e93c4edb0/881-392d3dddc873597f-instagram.jpg"]}
+EXPECT ok   A: the Facebook call sent caption, not message
+EXPECT ok   A: the caption Graph received is the queue row caption carrying the edited text :: ["Edited caption for Accnp1wlA https://get.ahavah.app/s/99RUKHZP?p=instagram","Edited caption for Accnp1wlA https://get.ahavah.app/s/99RUKHZP?p=facebook"]
+EXPECT ok   A: one occurrence for the request, not one per platform :: [{"person_id":613,"kind":"welcome"}]
+EXPECT ok   A: E5 queued once :: ["e4:queued","e5:queued"]
+OBSERVED D runs :: {"run1":{"claimed":1,"failed":1,"published":0},"run2":{"claimed":1,"published":1},"run3":{"claimed":1,"published":1,"review":0}}
+EXPECT ok   D: run 1 Instagram failed before publishing, run 2 Instagram published, run 3 Facebook published :: ["facebook:published:attempts=1","instagram:published:attempts=2"]
+EXPECT ok   D: one occurrence, E5 once
+```
+
+Verdict: **now Proven locally**, with no probe continuation. Note: member A's run passes an explicit `max` of 2 to the worker, as in the original run; the deployed `publish-due` route claims one row per minute, so in production the two channels publish in consecutive runs, which is member D's path (three separate one-row runs).
+
+The added JPEG check: the browser's preview bytes, the object behind both platform rows and both Graph fetches all start `ffd8ff`, and Graph fetched exactly the bytes the browser showed (sha `392d3dddc873...`, keys ending `-facebook.jpg` and `-instagram.jpg`).
+
+### 4d. Concurrent submits: now Proven locally
+
+The e1 cohort on the cleaned test database was smaller than the 39 people the original run raced over, so the probe first added 15 ordinary synthetic members (`probe_members_added_to_the_cohort` below) so the two submits overlap.
+
+```
+OBSERVED e1 dry run :: {"built":37,"campaign_id":"acceptance-nr6g2","dry_run":true,"error":null,"failed_email":null,"queued":0,"skipped_cap":1,"skipped_suppressed":0,"skipped_unsubscribed":0,"probe_members_added_to_the_cohort":15}
+OBSERVED concurrent submits :: {"responses":[{"status":409,"error":"send_in_progress"},{"status":200,"queued":37,"error":null}],"people":37,"max_rows_per_person":1}
+EXPECT ok   e1: concurrent submits never queue a person twice :: {"people":37,"built":37}
+EXPECT ok   e1: two concurrent submits answer one 200 and one 409 send_in_progress, no 500 :: ["409:send_in_progress","200"]
+EXPECT ok   e1: a later re-submit of the same run answers 200 and still queues nobody twice :: {"status":200,"body":{"built":37,"campaign_id":"acceptance-nr6g2","dry_run":false,"error":null,"failed_email":null,"queued":0,"skipped_cap":1,"skipped_suppressed":0,"skipped_unsubscribed":0},"people":37}
+```
+
+Verdict: **now Proven locally.** One submit answers 200 having queued all 37, the other 409 `send_in_progress`, no 500, and a later re-submit queues nobody twice. The send still runs inside the HTTP request (the resumable job stays an owner decision, plan "Out").
+
+### 8a. Duplicate cron invocations: now Proven locally
+
+```
+OBSERVED concurrent ticks :: {"a":{"welcomes_created":0,"welcomes_skipped":1,"rendered":1},"b":{"welcomes_created":1,"welcomes_skipped":0,"rendered":1}}
+EXPECT ok   T1: duplicate ticks produce one welcome request and one E4 :: {"request_keys":1,"e4":1}
+OBSERVED T1: render outcome of the two concurrent ticks :: {"a":{"rendered":1,"failures":[]},"b":{"rendered":1,"failures":[]},"rows":[{"platform":"facebook","render_attempts":0,"render_error":null,"rendered":true},{"platform":"instagram","render_attempts":0,"render_error":null,"rendered":true}]}
+EXPECT ok   T1: the card is rendered once and neither tick reports a render failure for it (a lost race is quiet) :: {"failures":[],"render_attempts":[0,0],"rendered":true}
+OBSERVED T3: four concurrent uploads, statuses and bodies :: {"statuses":[200,200,409,200],"bodies":[{"image_url":"https://user-images.ahavah.app/spotlight/81808587fecf4b5aa255c3942e2003a2/885-73ea9c04461352a2-facebook.jpg"},{"image_url":"https://user-images.ahavah.app/spotlight/81808587fecf4b5aa255c3942e2003a2/885-73ea9c04461352a2-facebook.jpg"},{"error":"image_race"},{"image_url":"https://user-images.ahavah.app/spotlight/81808587fecf4b5aa255c3942e2003a2/885-73ea9c04461352a2-facebook.jpg"}],"rows":[{"platform":"facebook","image_key":"spotlight/81808587fecf4b5aa255c3942e2003a2/885-73ea9c04461352a2-facebook.jpg","image_sha256":"73ea9c04461352a250cd90db17ada2f15289732228bed6e3875c24eb111c5db2"},{"platform":"instagram","image_key":null,"image_sha256":null}]}
+EXPECT ok   T3: concurrent uploads of one image never answer 5xx; each is 200 or a 409 lost race, and the row carries one image :: ["200","200","409:image_race","200"]
+OBSERVED welcome burst statuses :: [409,200,409,409,409,409,409,409]
+EXPECT ok   T2: a burst of duplicate welcome calls converges on one request and one E4 :: {"request_keys":1,"e4":1}
+OBSERVED roundup burst :: {"statuses":[200,200,200,200,200,200,200,200],"bodies":["{\"request_key\":\"roundup:2026-W38\"}","{\"already\":true,\"request_key\":\"roundup:2026-W38\"}"],"rows":2,"revisions":1,"links":1}
+EXPECT ok   roundup: one logical occurrence (two platform rows, one revision, one link)
+EXPECT ok   roundup: every duplicate call answers cleanly (no 5xx) :: [200,200,200,200,200,200,200,200]
+EXPECT ok   roundup: every duplicate call answers 200 with the one request key (Wave 3d contract) :: ["200:created","200:already","200:already","200:already","200:already","200:already","200:already","200:already"]
+OBSERVED concurrent publish runs :: [{"claimed":2,"published":2,"stale":0},{"claimed":0,"published":0,"stale":0},{"claimed":2,"published":2,"stale":0},{"followup_claimed":0,"published":0}]
+EXPECT ok   U1: each platform published exactly once across concurrent runs :: {"rows":["facebook:published","instagram:published"],"graph_publish_calls":2}
+EXPECT ok   U2: each platform published exactly once across concurrent runs :: {"rows":["facebook:published","instagram:published"],"graph_publish_calls":2}
+```
+
+Verdict: **now Proven locally** for welcomes (one request key and one E4 under two ticks and an eight-call burst), roundups (all eight answer 200, one occurrence), concurrent image upload (no 5xx: of four identical uploads three answered 200, since identical bytes land on the same key, and one answered 409 `image_race`) and publishing (unchanged). A lost render race is quiet: no render failure and `render_attempts` stays 0. 8b (the missed Monday roundup) was not a FAILED sub-claim and is unchanged.
+
+### 8c. Backlog pagination cannot starve old work: now Proven locally
+
+The original scenario (an older card, 205 newer rows that never render), then the daily-tick case the Wave 3d review raised (205 rows OLDER than the card, failing on every tick). The tick is daily, so one simulated day is every needs-render row's `created_at` and `render_next_attempt_at` moved one day earlier, which is the same as the clock moving a day for those rows. The failures are reported by the real tick through `render-failed`. Then 250 due removal tasks (created newest first against their deadlines, so a newest-first listing would hand out a different set) plus 250 overdue manual Instagram tasks with even earlier deadlines.
+
+```
+OBSERVED needs_render: qualifying rows vs rows the tick is handed :: {"qualifying":45,"oldest_qualifying":"2026-09-17 06:22:02.971067+00:00","handed_to_tick":0}
+OBSERVED pending removal tasks: due vs handed to the worker :: {"due":126,"oldest_due":"2026-09-17 06:21:59.708785+00:00","handed_to_worker":25,"oldest_handed":"2026-09-17T06:22:05.756508+00:00"}
+OBSERVED ticks with the poison backlog :: [{"rendered":1,"render_failed":198},{"rendered":0,"render_failed":7}]
+EXPECT ok   V: an older card is rendered despite 205 newer unrenderable rows :: {"asset_hash":"64882a9f124b6e8b1e5edc936a6f330d81481fa90479820acfb2cd196855a743"}
+OBSERVED poison rows the real tick reported render-failed (backed off) :: {"n":205,"max_attempts":1}
+OBSERVED V2 daily ticks (rows ahead of the card at start, day bound) :: {"ahead":205,"day_bound":2,"days":[{"day":1,"rendered_groups":0,"render_failed":200,"v2_rendered":false,"poison_reported":200,"poison_max_attempts":1},{"day":2,"rendered_groups":1,"render_failed":183,"v2_rendered":true,"poison_reported":205,"poison_max_attempts":2}]}
+EXPECT ok   V2: a card is rendered despite 205 older rows that fail on every daily tick, within the listing bound :: {"rendered_on_day":2,"day_bound":2,"poison_reported_day1":200}
+OBSERVED removals: due delete_via_api vs the worker listing :: {"due_delete_via_api":275,"handed":200,"reasons":["delete_via_api"],"first":{"external_post_id":"probe-due-nq586-1","deadline_at":"2025-08-13T16:01:35.464366+00:00"},"last":{"external_post_id":"probe-due-nq586-200","deadline_at":"2025-08-21T23:01:35.464366+00:00"},"probe_tasks_handed":200,"operator_panel_pending":200}
+EXPECT ok   removals: with 250 due, the worker is handed the 200 earliest-deadline delete_via_api tasks in deadline order, manual tasks excluded :: {"handed":200,"matches_earliest_200":true,"first":"probe-due-nq586-1"}
+```
+
+Verdict: **now Proven locally.** The original V check passes. With oldest-first ordering it would pass even without backoff, so V2 is the check that tells the fix apart: on day 1 the 200 oldest failing rows are handed out and reported, on day 2 they sit behind the card and it renders (a plain `created_at ASC` order would hand the same 200 out again). The worker is handed exactly the 200 earliest-deadline `delete_via_api` tasks, in deadline order, with no manual task among them; the operator panel's `pending=1` listing still answers (200 rows). Limits: the days are simulated by moving timestamps, not a real clock, and the probe's rows were deleted afterwards.
+
+### 8d. Graph polling fits the execution budget: now Proven locally
+
+The real `publish-due` route (`GET` with the cron bearer), so the claim is the route's one row and publishing and removals share one deadline. The Graph stub answers every call after a fixed latency.
+
+```
+OBSERVED route: 1 Instagram row, Graph answers in 0.3 s, container ready on first poll :: {"virtual_seconds":13,"within_60s":true,"claim_max":1,"published":1,"failed":0,"delivery_unknown":0,"media_publish_calls":1,"outcomes":[{"id":"b-0","status":"published","post_url":"https://www.instagram.com/p/x/","at_virtual_s":13}]}
+OBSERVED route: 1 Instagram row, Graph answers in 2 s, container ready on the 5th poll :: {"virtual_seconds":37,"within_60s":true,"claim_max":1,"published":1,"failed":0,"delivery_unknown":0,"media_publish_calls":1,"outcomes":[{"id":"b-0","status":"published","post_url":"https://www.instagram.com/p/x/","at_virtual_s":37}]}
+OBSERVED route: 1 Instagram row, Graph answers in 10 s, container ready on the 5th poll :: {"virtual_seconds":51,"within_60s":true,"claim_max":1,"published":0,"failed":1,"delivery_unknown":0,"media_publish_calls":0,"outcomes":[{"id":"b-0","status":"failed","error":"The social platform did not confirm the request.","post_url":null,"at_virtual_s":51}]}
+EXPECT ok   budget 10 s: the run ends within 60 s, or the row is released as not attempted, and nothing is posted twice :: {"virtual_seconds":51,"outcomes":[{"id":"b-0","status":"failed","error":"The social platform did not confirm the request.","post_url":null,"at_virtual_s":51}],"media_publish_calls":0}
+OBSERVED route: 1 Instagram row, Graph answers in 14.9 s (just under the 15 s timeout), ready on first poll :: {"virtual_seconds":48,"within_60s":true,"claim_max":1,"published":1,"failed":0,"delivery_unknown":0,"media_publish_calls":1,"outcomes":[{"id":"b-0","status":"published","post_url":null,"at_virtual_s":48}]}
+EXPECT ok   budget 14.9 s: the run ends within 60 s, or the row is released as not attempted, and nothing is posted twice :: {"virtual_seconds":48,"outcomes":[{"id":"b-0","status":"published","post_url":null,"at_virtual_s":48}],"media_publish_calls":1}
+OBSERVED explicit max 2: 2 Instagram rows, Graph answers in 14.9 s, ready on first poll :: {"virtual_seconds":48,"within_60s":true,"claim_max":2,"published":1,"failed":1,"delivery_unknown":0,"media_publish_calls":1,"outcomes":[{"id":"b-0","status":"published","post_url":null,"at_virtual_s":48},{"id":"b-1","status":"failed","error":"Out of time for this run; it will retry.","post_url":null,"at_virtual_s":48}]}
+EXPECT ok   budget 14.9 s with an explicit max of 2: within 60 s, the row reached past the deadline is released as not attempted, nothing posted twice :: {"virtual_seconds":48,"outcomes":[{"id":"b-0","status":"published","post_url":null,"at_virtual_s":48},{"id":"b-1","status":"failed","error":"Out of time for this run; it will retry.","post_url":null,"at_virtual_s":48}],"media_publish_calls":1}
+```
+
+Verdict: **now Proven locally.** At 10 s the run ends by 51 virtual seconds: a status poll that starts shortly before the 45 s deadline is cut off by its abandonable timeout, and the row is released as an ordinary retryable `failed` (not `delivery_unknown`), `media_publish` never called. Its error reads "The social platform did not confirm the request." rather than the out-of-time message, because the cut-off comes from the call's own timeout, not the pre-call check; the effect is the same, and the row spends one attempt (the Wave 3d ruling). At 14.9 s the post is published by 48 s without `post_url` (the permalink lookup is abandoned, never the publish). With an explicit `max` of 2 the second row is released with "Out of time for this run; it will retry." and nothing is posted twice. The virtual clock also scales the probe's own real processing time by 200 (the 0.3 s case reads 13 virtual seconds), so these figures overstate the elapsed time. Real Graph latency and container processing times still need staging.
+
+### 10d. Rollback and cron-pause runbook: not re-run
+
+Not a probe check. The runbook now exists at `docs/runbooks/spotlight-rollback-and-cron-pause.md` (Wave 3d Task 7, reviewed and fixed in two rounds, then the final fix wave). This re-run did not re-verify its content, so the Deployment row keeps its original verdict with a note.
+
+### Re-run summary
+
+| Sub-claim | 3c run | Wave 3d re-run |
+| --- | --- | --- |
+| 1a Consent, stale tab | FAILED | Proven locally (plus the image-load gate) |
+| 3a Delivery, two channels through the real approve route | FAILED | Proven locally |
+| 4d Mail, duplicate concurrent submit | FAILED (500) | Proven locally (200 and 409 `send_in_progress`) |
+| 5a Storage, approve makes the card public | FAILED (503) | Proven locally on s3mock (ACL read back); real Spaces needs staging |
+| 8a Runtime, duplicate welcomes, roundups, uploads | FAILED | Proven locally |
+| 8c Runtime, backlog starvation (renders and removals) | FAILED | Proven locally (including simulated daily ticks) |
+| 8d Runtime, execution budget | FAILED | Proven locally (virtual clock); real Graph latency needs staging |
+| 10d Deployment, runbook | FAILED (absent) | Not re-run (document; now exists) |
