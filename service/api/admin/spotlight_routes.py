@@ -359,11 +359,18 @@ _Q_ROWS = f"""
        AND (%(needs_render)s::bool IS NOT TRUE
             OR q.render_next_attempt_at IS NULL
             OR q.render_next_attempt_at <= NOW())
-     -- The tick is served oldest first, so the oldest waiting card is always
-     -- reached (newest first, 205 newer failing cards hid an older one). The
-     -- Growth tab (no filter) keeps its newest-first order.
-     ORDER BY CASE WHEN %(needs_render)s::bool THEN q.created_at END ASC NULLS LAST,
-              q.created_at DESC
+     -- The tick is served cards in the order they became eligible: a card
+     -- never reported failed became eligible when it was created, a card in
+     -- backoff when its backoff ends. Newest first, 205 newer failing cards
+     -- hid an older one (8c). Plain oldest first (Task 4 fix round 1, C1) was
+     -- no better for a tick that runs once a day: every backoff step under a
+     -- day has passed by the next run, so the same ~100 oldest failing cards
+     -- were handed out every day and a newer card that would render was
+     -- never reached. A card that just failed now goes behind every card
+     -- still waiting. The Growth tab (no filter) keeps newest first.
+     ORDER BY CASE WHEN %(needs_render)s::bool
+                   THEN COALESCE(q.render_next_attempt_at, q.created_at) END ASC NULLS LAST,
+              q.created_at DESC, q.request_key, q.id
      LIMIT 200
 """
 
@@ -542,11 +549,22 @@ _Q_REMOVALS = """
                 AND t.reason IN ('delete_via_api', 'manual_instagram', 'investigate')))
        AND (%(attention)s::bool IS NOT TRUE
             OR (t.done_at IS NULL AND t.reason = 'needs_attention'))
-     -- Wave 3d Task 4 (acceptance 8c): the worker (`pending=1`) is served the
-     -- tasks closest to their removal deadline first; newest first handed it
-     -- the newest 200 of 8198 due tasks and left the oldest to go overdue.
-     -- The attention view and the unfiltered list keep newest first.
-     ORDER BY CASE WHEN %(pending)s::bool THEN t.deadline_at END ASC NULLS LAST,
+       -- Wave 3d Task 4 fix round 1 (I1): `worker=1` is the admin worker's
+       -- own drain, only the due tasks it can action. `manual_instagram` and
+       -- `investigate` wait for a human and the worker skips them without
+       -- moving `next_attempt_at`, so once more than 200 of those were
+       -- overdue and sorted first they hid every `delete_via_api` task.
+       -- `pending=1` keeps all three reasons for the operator panel.
+       AND (%(worker)s::bool IS NOT TRUE
+            OR (t.done_at IS NULL AND t.next_attempt_at <= NOW()
+                AND t.reason = 'delete_via_api'))
+     -- Wave 3d Task 4 (acceptance 8c): due tasks (`pending=1`, `worker=1`)
+     -- are served closest to their removal deadline first, ties oldest task
+     -- first; newest first handed out the newest 200 of 8198 due tasks and
+     -- left the oldest to go overdue. The attention view and the unfiltered
+     -- list keep newest first.
+     ORDER BY CASE WHEN %(pending)s::bool OR %(worker)s::bool THEN t.deadline_at END ASC NULLS LAST,
+              CASE WHEN %(pending)s::bool OR %(worker)s::bool THEN t.id END ASC,
               t.created_at DESC
      LIMIT 200
 """
@@ -904,8 +922,13 @@ def post_growth_queue_image(request_key: str):
 
 # Wave 3d Task 4 (acceptance 8c). A reason is whatever the renderer threw, and
 # a photo fetch can throw with the photo's signed URL in its message, so every
-# URL is removed before the reason is stored and the rest is capped.
-_URL_IN_REASON = re.compile(r'https?://\S+', re.IGNORECASE)
+# URL is removed before the reason is stored and the rest is capped. Fix round
+# 1 (M1): also a URL written without its scheme (`//host/...`), and any word
+# carrying a signature or token on its own (`X-Amz-...`, `Signature=`,
+# `Credential=`, `?token=`, `&sig=`). The admin tick applies the same rule.
+_URL_IN_REASON = re.compile(
+    r'(?:https?:)?//\S+|\S*(?:X-Amz-|Signature=|Credential=|[?&](?:token|sig)=)\S*',
+    re.IGNORECASE)
 RENDER_REASON_MAX = 200
 
 # 15 minutes, doubled for every failure already recorded, capped at 24 hours:
@@ -960,6 +983,13 @@ def post_growth_queue_render_failed(request_key: str):
         return dict(error='bad_request'), 400
     stored = _render_reason(reason)
     with api_tx('read committed') as tx:
+        # Fix round 1 (M3): during a duplicate cron run this can, rarely,
+        # deadlock with the other run's image attach on the same card (the
+        # attach holds its own platform row and, once the set completes,
+        # moves every row of the key to review; this locks both in id order).
+        # Postgres aborts one side: either the report 500s (the tick swallows
+        # it) or the attach does (a render failure the tick reports). Both
+        # heal on the next run, which lists the card again.
         if not _lock_render_rows(tx, request_key):
             abort(404)
         rows = tx.execute(_Q_RENDER_FAILED, dict(rk=request_key, reason=stored)).fetchall()
@@ -1227,13 +1257,15 @@ def get_growth_removals():
     _gate()
     pending = request.args.get('pending') in ('1', 'true', 'yes')
     attention = request.args.get('attention') in ('1', 'true', 'yes')
+    worker = request.args.get('worker') in ('1', 'true', 'yes')
     with api_tx('read committed') as tx:
         # Task 9 (F12): external_access_enabled is the emergency stop for
         # every outbound platform call, removals (deletions) included -- the
         # tasks stay pending in the database for later, this just refuses to
         # hand them to the worker while the stop is engaged.
         halted = settings(tx).get('external_access_enabled') != 'true'
-        rows = [] if halted else tx.execute(_Q_REMOVALS, dict(pending=pending, attention=attention)).fetchall()
+        rows = [] if halted else tx.execute(_Q_REMOVALS, dict(pending=pending, attention=attention,
+                                                          worker=worker)).fetchall()
         # Both counts are read even under the stop, and deliberately: they
         # are plain database reads, and a stop that has been engaged for a
         # while is exactly when a growing removal backlog or a pile of

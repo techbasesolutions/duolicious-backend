@@ -66,8 +66,12 @@ _Q_OLD_KEYS = f"""
                           AND s.image_key = q.image_key)
 """
 
+# Wave 3d Task 4 fix round 1 (I2): a new revision is new content, so the
+# render backoff the old one earned is cleared with its artwork and the card
+# is tried again at the next tick.
 _Q_UNRENDER = f"""
-    UPDATE publishing_queue SET image_key = NULL, image_url = NULL, image_sha256 = NULL
+    UPDATE publishing_queue SET image_key = NULL, image_url = NULL, image_sha256 = NULL,
+                                render_attempts = 0, render_next_attempt_at = NULL, render_error = NULL
      WHERE request_key = %(rk)s AND {_REPOINT_SCOPE.format(q='')}
 """
 

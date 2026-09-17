@@ -385,7 +385,8 @@ def test_pending_removals_are_served_earliest_deadline_first(client):
         pending = client.get('/admin/growth/removals?pending=1', headers=H).get_json()['tasks']
         assert len(pending) == 200
         assert [t['id'] for t in pending] == ids[:200]
-        # (d) The unfiltered list the Growth tab reads is unchanged: newest first.
+        # (d) The unfiltered list is unchanged: newest first. (The Growth
+        # tab's removals panel reads `pending=1`, so it now sees deadline order.)
         listed = [t['id'] for t in client.get('/admin/growth/removals', headers=H).get_json()['tasks']
                   if t['id'] in set(ids)]
         assert listed == sorted(listed, key=ids.index, reverse=True)
@@ -409,3 +410,155 @@ def test_the_unfiltered_growth_queue_is_still_newest_first(client):
         assert seen == list(reversed(keys))
     finally:
         _retire(keys)
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1
+# ---------------------------------------------------------------------------
+
+def test_a_good_card_is_reached_while_old_cards_fail_every_daily_tick(client, monkeypatch):
+    """C1. The tick runs once a day and is handed 200 rows (100 cards). With
+    150 older cards that fail every time, oldest first handed the tick the
+    same 100 failing cards every day, because a backoff step under 24 hours
+    has always passed by the next tick, and a newer card that would render
+    was never reached. Ordered by when each card became eligible, a card
+    that just failed goes behind the cards still waiting.
+
+    Each round lists `needs_render` like the tick, reports every listed
+    failing card and attaches the good card if it is listed, then advances
+    the clock a day: every timestamp of these cards moves 24 hours back,
+    which is what a day passing looks like from NOW()."""
+    import service.spotlight.storage as st
+    monkeypatch.setattr(st, 'put_png', lambda key, data, public=False: None)
+    failing_count = 150
+    bound = -(-failing_count // 100) + 1
+    with api_tx() as tx:
+        base = _earliest_created_at(tx)
+        failing = _roundups(tx, failing_count)
+        good_rk = _roundups(tx, 1)[0]
+        for i, rk in enumerate(failing):
+            _date(tx, rk, base + i * _SECOND)
+        _date(tx, good_rk, base + (failing_count + 50) * _SECOND)
+    mine = [*failing, good_rk]
+    png = base64.b64encode(_png_bytes()).decode()
+    reached = None
+    try:
+        for day in range(1, bound + 1):
+            listed = []
+            for r in _needs_render(client):
+                if r['request_key'] not in listed:
+                    listed.append(r['request_key'])
+            for rk in listed:
+                if rk == good_rk:
+                    for platform in ('facebook', 'instagram'):
+                        r = client.post(f'/admin/growth/queue/{rk}/image',
+                                        json={'platform': platform, 'png_base64': png}, headers=H)
+                        assert r.status_code == 200, r.get_json()
+                    reached = day
+                elif rk in failing:
+                    assert _fail(client, rk).status_code == 200
+            if reached:
+                break
+            with api_tx() as tx:
+                tx.execute("""UPDATE publishing_queue
+                                 SET created_at = created_at - interval '24 hours',
+                                     render_next_attempt_at = render_next_attempt_at - interval '24 hours'
+                               WHERE request_key = ANY(%(k)s::text[])""", dict(k=mine))
+        assert reached is not None and reached <= bound, (reached, bound)
+    finally:
+        _retire(mine)
+
+
+def test_the_worker_listing_reaches_a_delete_task_behind_overdue_manual_tasks(client):
+    """I1. `pending=1` also carries `manual_instagram` and `investigate`
+    tasks, which the worker skips without moving `next_attempt_at`. Once more
+    than 200 of those are overdue and sorted first by deadline, the worker
+    never received a `delete_via_api` task again. `worker=1` hands it only
+    the tasks it can action."""
+    with api_tx() as tx:
+        base = tx.execute(
+            """SELECT COALESCE(MIN(deadline_at), NOW()) - interval '1 day' AS t
+                 FROM spotlight_removal_task WHERE done_at IS NULL""").fetchone()['t']
+        manual = [tx.execute(
+            """INSERT INTO spotlight_removal_task (platform, external_post_id, reason, next_attempt_at, deadline_at)
+               VALUES ('instagram', %(ext)s, 'manual_instagram', NOW() - interval '1 minute', %(d)s)
+               RETURNING id""", dict(ext=f'manual-{i}', d=base + i * _SECOND)).fetchone()['id']
+            for i in range(250)]
+        delete_id = tx.execute(
+            """INSERT INTO spotlight_removal_task (platform, external_post_id, reason, next_attempt_at, deadline_at)
+               VALUES ('facebook', 'delete-me', 'delete_via_api', NOW() - interval '1 minute', %(d)s)
+               RETURNING id""", dict(d=base + 300 * _SECOND)).fetchone()['id']
+    ids = [*manual, delete_id]
+    try:
+        worker = client.get('/admin/growth/removals?pending=1&worker=1', headers=H).get_json()['tasks']
+        assert delete_id in [t['id'] for t in worker]
+        assert {t['reason'] for t in worker} == {'delete_via_api'}
+        # The operator panel keeps every actionable reason.
+        panel = client.get('/admin/growth/removals?pending=1', headers=H).get_json()['tasks']
+        assert [t['id'] for t in panel] == manual[:200]
+    finally:
+        with api_tx() as tx:
+            tx.execute("UPDATE spotlight_removal_task SET done_at = NOW() WHERE id = ANY(%(i)s)", dict(i=ids))
+
+
+def test_removals_with_the_same_deadline_are_served_in_id_order(client):
+    """M5: a tie on deadline breaks by id, oldest task first."""
+    with api_tx() as tx:
+        deadline = tx.execute(
+            """SELECT COALESCE(MIN(deadline_at), NOW()) - interval '1 day' AS t
+                 FROM spotlight_removal_task WHERE done_at IS NULL""").fetchone()['t']
+        ids = [tx.execute(
+            """INSERT INTO spotlight_removal_task
+                      (platform, external_post_id, reason, next_attempt_at, deadline_at, created_at)
+               VALUES ('facebook', %(ext)s, 'delete_via_api', NOW() - interval '1 minute', %(d)s,
+                       NOW() - %(age)s * interval '1 millisecond')
+               RETURNING id""", dict(ext=f'tie-{i}', d=deadline, age=3 - i)).fetchone()['id']
+            for i in range(3)]
+    try:
+        pending = client.get('/admin/growth/removals?pending=1', headers=H).get_json()['tasks']
+        assert [t['id'] for t in pending[:3]] == ids
+    finally:
+        with api_tx() as tx:
+            tx.execute("UPDATE spotlight_removal_task SET done_at = NOW() WHERE id = ANY(%(i)s)", dict(i=ids))
+
+
+def test_a_new_revision_clears_the_render_backoff(client):
+    """I2. A caption edit is new content: the card must be tried again at the
+    next tick, not wait out the backoff its old artwork earned."""
+    from service.spotlight.revisions import create_revision
+    with api_tx() as tx:
+        base = _earliest_created_at(tx)
+        rk = _roundups(tx, 1)[0]
+        _date(tx, rk, base)
+    try:
+        assert _fail(client, rk).status_code == 200
+        assert _fail(client, rk).status_code == 200
+        assert rk not in {r['request_key'] for r in _needs_render(client)}
+        with api_tx() as tx:
+            create_revision(tx, rk, caption='edited', photo_uuid=None, participants=[],
+                            channels=['facebook', 'instagram'], created_by='t')
+        listed = [r for r in _needs_render(client) if r['request_key'] == rk]
+        assert len(listed) == 2
+        assert all((r['render_attempts'], r['render_next_attempt_at'], r['render_error']) == (0, None, None)
+                   for r in listed)
+    finally:
+        _retire([rk])
+
+
+def test_render_failed_reason_drops_scheme_less_urls_and_signature_fragments(client):
+    """M1: a signed URL is not always written with its scheme, and a
+    signature can arrive on its own as a query fragment."""
+    with api_tx() as tx:
+        rk = _roundups(tx, 1)[0]
+    token = secrets.token_hex(12)
+    reason = (f'photo_host_refused //cdn.example/p.png?x={token} '
+              f'X-Amz-Credential={token}/aws4_request Signature={token} '
+              f'retry?token={token} &sig={token} done')
+    try:
+        assert _fail(client, rk, reason).status_code == 200
+        with api_tx('read committed') as tx:
+            value = tx.execute("SELECT render_error FROM publishing_queue WHERE request_key = %(rk)s LIMIT 1",
+                               dict(rk=rk)).fetchone()['render_error']
+        assert value == 'photo_host_refused done'
+    finally:
+        _retire([rk])
