@@ -227,6 +227,8 @@ The member approves the bytes they see; both platforms must publish those same b
 
 - [ ] Whole-branch review across the three repos; one fix wave if needed.
 - [ ] Re-run the acceptance probes for every sub-claim that FAILED (1a, 5a, 8a, 8c, 8d) and the 4d concurrent submit against the final heads; append a dated "Wave 3d re-run" section to the acceptance document with the new output. A sub-claim still failing blocks the deploy.
+- [ ] Before the deploy, on production, read only: `SELECT count(*) FROM publishing_queue WHERE image_key IS NOT NULL` and `SELECT count(*) FROM spotlight_revision WHERE asset_hash IS NOT NULL`. Zero on both means no PNG card exists and nothing needs re-rendering; a non-zero count means those cards are re-rendered after the admin deploy.
+- [ ] Deploy conditions: `CRON_SECRET` and `AHAVAH_GROWTH_CRON_SECRET` stay unset until the admin deploy is live (the old tick uploads PNG, treats `image_race` as a failure and posts with `message` on v21); `approvals_enabled` stays off until the web deploy is live; the owner sets `AHAVAH_META_APP_ID` and `AHAVAH_META_APP_SECRET` before `CRON_SECRET`.
 - [ ] On the owner's go: run the pre-check query from the header of `migrations/0050_spotlight_welcome_unique.sql` on production (it excludes NULL subjects, which a unique index never treats as conflicts), then deploy API (migrations 0050, 0051 apply), web, admin. Verify health, containers, cron container restart count 0, `spotlight_setting` flags unchanged, and the admin build lists the three crons.
 - [ ] Update the memory note and handoff with the new heads.
 
