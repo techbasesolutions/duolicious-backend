@@ -18,8 +18,9 @@ while the rest is being worked.
    turn it off. This is the emergency stop by name in the code and the UI:
    with it off, nothing is sent to Meta, no posts and no deletions
    (`ahavah-admin/src/components/admin/growth-controls.tsx`, key
-   `external_access_enabled`). Equivalent API call, with an admin session
-   cookie:
+   `external_access_enabled`). Equivalent API call, with an admin's session
+   token as `Authorization: Bearer <token>` (the API reads the bearer
+   header, not a cookie):
 
    ```
    POST /admin/growth/settings
@@ -28,11 +29,43 @@ while the rest is being worked.
 
    Confirm: the switch reads off and red in the Growth tab, or the response
    is `{"ok": true, "key": "external_access_enabled", "value": "false"}`.
-   `GET /admin/growth/queue/claim` (or the next `publish-due` cron run) then
-   reports `"halted": true`; `GET /admin/growth/removals` reports the same
-   under `halted` and still returns the `overdue` and `outstanding_cleanup`
-   counts, which stay visible on purpose (`service/api/admin/spotlight_routes.py`,
-   `get_growth_removals`).
+   Then read it back, read-only:
+
+   - `GET /admin/growth/settings`, same bearer header. It answers one flat
+     object of the stored controls, every value a string, for example
+     `{"approvals_enabled": "false", "external_access_enabled": "false",
+     "invites_enabled": "true", "publication_enabled": "true", ...}` (only
+     the five controls plus `token_expires_at` and `token_valid`;
+     `get_growth_settings` in `service/api/admin/spotlight_routes.py`).
+     Anything other than `"true"` counts as off: the claim and removals
+     routes both test `!= 'true'`.
+   - The worker's own view: `GET /api/growth/publish-due?dry=1` on the admin
+     app, with `Authorization: Bearer <CRON_SECRET>`. A dry run reads the
+     settings and lists due rows; it never claims anything and never calls
+     Meta (`publishDue` and `processRemovals` in
+     `ahavah-admin/src/lib/publishing.ts`). It answers
+     `{"publish": {"claimed": 0, ..., "dry": true, "paused": <bool>,
+     "halted": true, ...}, "removals": {..., "halted": true}}`. `claimed` is
+     a count, not a list. With `CRON_SECRET` unset (section 3, option A) it
+     answers 401 instead, and it answers 503 with an `error` if the admin app
+     cannot read the API. A scheduled (not dry) run under the stop returns
+     the same shape with `"dry": false`, `publish.claimed` 0 and
+     `publish.halted` true.
+   - `GET /admin/growth/removals` reports `"halted": true` and still returns
+     the `overdue` and `outstanding_cleanup` counts, which stay visible on
+     purpose (`get_growth_removals`).
+
+   **Never call `POST /admin/growth/queue/claim` by hand, not even to check
+   the flags.** It is POST only and it is not a read. With both controls on
+   it runs `claim_spotlight_posts`, which moves up to 2 real rows (the route's
+   default `max`) to `status = 'processing'` with `delivery_state =
+   'attempting'` and a ten minute lease (`migrations/0044_spotlight_wave1.sql`).
+   Nothing will publish them, so when the lease runs out
+   `reap_expired_leases` (`service/spotlight/queue.py`) parks them in
+   `review` with `error = 'lease_expired'`, indistinguishable from a publish
+   that may have reached the platform, and a human then has to check each
+   one by hand. Even under the stop it still reaps expired leases and writes
+   an audit row.
 
 2. **Invites off.** Growth tab -> Controls -> the "Invites" switch, turn it
    off (key `invites_enabled`). Equivalent API call:
@@ -251,6 +284,52 @@ Deployments list shows that deployment promoted back to Production, and the
 live site or admin app reflects the older build (check a page or string that
 changed in the bad deploy).
 
+### The three rollbacks are coupled since Wave 3d
+
+Do not treat the API, web and admin rollbacks as independent. The production
+heads before Wave 3d, which are the rollback targets, are:
+
+| Repo | Rollback target | How |
+| --- | --- | --- |
+| `ahavah-api` | `5500740` | push to `ahavah/main` or check out on the droplet, as above |
+| `ahavah-web` | `e452c8a` | Instant Rollback to the production deployment built from that commit |
+| `ahavah-admin` | `30daef1` | Instant Rollback to the production deployment built from that commit |
+
+What breaks when only part of the set is rolled back:
+
+| What is rolled back | What happens | Why (verified in code) |
+| --- | --- | --- |
+| Web alone (API stays new) | With approvals on, every member "approve" answers 400 and no consent is recorded. "Skip" still works. With approvals off no approval lands either way (409 `approvals_disabled`, or a 400 on an API head where the approvals check still runs after the revision check). | The old card page posts `{decision, photo_uuid}` with no `revision` (`ahavah-web` at `e452c8a`, `src/app/spotlight/card/[token]/page.tsx`). The new `post_spotlight_card` (`service/api/spotlight_card_routes.py`) aborts 400 unless `revision` is an integer. |
+| API alone, admin stays new | No card renders. Every upload from the tick is refused 400 `invalid_image`, and the tick's follow-up render-failed report gets a 404 that the tick swallows, so the card is simply listed again next tick and fails again. | The API at `5500740` reads only `png_base64`; the new admin sends `image_base64` plus `content_type: 'image/jpeg'` (`queueImage` in `ahavah-admin/src/lib/growth-server.ts`). The old route decodes an empty string and `validate_png` refuses it. `POST /admin/growth/queue/<key>/render-failed` does not exist before Wave 3d; `runTick` in `ahavah-admin/src/lib/tick.ts` catches that failure and carries on. |
+| API alone, admin stays new (removals) | The removals worker's `worker=1` filter is ignored, so its listing is again the newest 200 pending tasks of every reason, and a backlog of `manual_instagram` or `investigate` tasks can hide the `delete_via_api` tasks it can act on. | `worker` is read only by the new `get_growth_removals` and `_Q_REMOVALS`; the old query orders by `created_at DESC`, limit 200. |
+| API to any commit before `52763e8` (which includes `5500740`) | Every operator approve of a rendered card answers 503 `storage_unavailable` and the row goes back to `review`. Nothing can be scheduled. | Before `52763e8`, `make_public` in `service/spotlight/storage.py` calls `put_object_acl` on an `s3.Object` resource, which boto3 1.35.99 does not have; `post_growth_queue_approve` turns that into the 503 (`docs/superpowers/plans/2026-09-16-spotlight-acceptance-local.md`, Storage 5a). |
+| API alone, web stays new | Silent: nothing errors. A member approving from a stale tab has consent recorded against the current revision, a card they may not have seen. | The old `post_spotlight_card` never reads `revision`, and the old `approve_card` (`service/spotlight/revisions.py`) has no `shown_revision` check. |
+| Admin alone (API stays new) | Cards still render, but as PNG: the new API still accepts `png_base64`. The old publisher posts Facebook photos with `message`, defaults to Graph v21.0, and treats a lost `image_race` as a render failure. | `queueImage` and `publishRow` in `ahavah-admin` at `30daef1`. These are the reasons the Wave 3d plan keeps `CRON_SECRET` and `AHAVAH_GROWTH_CRON_SECRET` unset until the new admin is live; the plan records that Instagram publishes JPEG only (`docs/superpowers/plans/2026-09-16-spotlight-wave-3d.md`, Task 6 and the deploy conditions). |
+
+Rules:
+
+1. **Before any API rollback, turn `approvals_enabled` and
+   `publication_enabled` off** (`POST /admin/growth/settings`, as in section
+   1; `approvals_enabled` is one of the accepted keys even though the Growth
+   tab only shows it as a chip) and confirm both read `"false"` on
+   `GET /admin/growth/settings`. Keep them off for as long as any repo is on
+   a different side of Wave 3d from the others.
+2. **The API and admin roll back together**, to `5500740` and `30daef1`. Stop
+   the Vercel crons first (section 3) so no tick runs between the two, and
+   keep them stopped while the admin is on `30daef1`, per the Wave 3d deploy
+   conditions (section 6, step 4).
+3. **Web never rolls back without the API while approvals are on.** With
+   approvals off, web at `e452c8a` against the new API refuses approvals but
+   harms nothing, and web left new against the old API is harmless too.
+4. Rolling the API back to `5500740` needs no schema change: the only
+   migration files added since are `0050` and `0051` (`git diff --stat
+   5500740 <wave 3d head> -- migrations/` lists nothing else), so
+   `scripts/apply-deploy-migrations.sh` finds no changed checksum and never
+   looks at the two applied files the old checkout does not carry. See
+   section 5 for what the old code does on the new schema.
+5. Going forward again, deploy in the Wave 3d plan's order: API, then web,
+   then admin.
+
 ## 5. What cannot be rolled back
 
 - **Forward-only migrations.** Every Spotlight migration from 0046 to 0051
@@ -274,11 +353,24 @@ changed in the bad deploy).
   - `0049_cleanup_job_updated_at.sql` -- adds `updated_at timestamptz NOT
     NULL DEFAULT NOW()`, backfilled in the same statement. Old code that
     never sets it just doesn't touch it. Runs cleanly.
-  - `0050_spotlight_welcome_unique.sql` -- adds a unique index enforcing at
-    most one live welcome per member and platform. Old code that predates
-    the matching `except psycopg.errors.UniqueViolation` handler in
-    `service/api/admin/spotlight_routes.py` (the code this migration was
-    written to support) does **not** catch the resulting conflict: a race
+  - `0050_spotlight_welcome_unique.sql` -- one transaction: `BEGIN`;
+    `LOCK TABLE publishing_queue IN SHARE MODE` (reads continue, every
+    insert, update and delete waits); a `DO` block that raises, naming each
+    member and platform, if any `subject_person_id` holds more than one
+    welcome with `status <> 'cancelled'` on the same platform (rows with a
+    NULL `subject_person_id`, a deleted member's, are excluded from the
+    check); `CREATE UNIQUE INDEX IF NOT EXISTS
+    publishing_queue_one_live_welcome ON publishing_queue (subject_person_id,
+    platform) WHERE kind = 'welcome' AND status <> 'cancelled'`; `COMMIT`.
+    A refusal rolls the whole file back with nothing applied, and because
+    `scripts/apply-deploy-migrations.sh` runs psql with `ON_ERROR_STOP=1`
+    under `set -euo pipefail`, the deploy stops there; the fix is to cancel
+    the extra welcome and apply again. Old code that predates the matching
+    `except (psycopg.errors.UniqueViolation,
+    psycopg.errors.SerializationFailure)` handler, which answers 409, in
+    `post_growth_spotlight_welcome` (`service/api/admin/spotlight_routes.py`,
+    added in `3fb97e3`, so absent from the `5500740` rollback target) does
+    **not** catch the resulting conflict: a race
     that used to silently create duplicate welcome rows now raises an
     unhandled integrity error on the second, concurrent insert instead of
     the newer code's clean `409`. This is the one migration on this list
@@ -286,10 +378,18 @@ changed in the bad deploy).
     but a code rollback to before the corresponding application fix can
     surface a 500 on a race that previously succeeded quietly. It does not
     corrupt data or block deploys either way.
-  - `0051` (render attempt tracking on `publishing_queue`, if present at
-    rollback time) -- adds `render_attempts` and `render_next_attempt_at`
-    columns. Additive, nullable/defaulted. Old code never reads them. Runs
-    cleanly.
+  - `0051_spotlight_render_backoff.sql` -- one `ALTER TABLE
+    publishing_queue` adding three columns, each `ADD COLUMN IF NOT EXISTS`:
+    `render_attempts int NOT NULL DEFAULT 0`, `render_next_attempt_at
+    timestamptz` and `render_error text` (both nullable, no default). Purely
+    additive: nothing is dropped, renamed or constrained. Old code runs on
+    it: the only `INSERT INTO publishing_queue` at `5500740`
+    (`service/spotlight/queue.py`, `create_candidate`) names its columns, so
+    the new ones take their defaults, and nothing in that code reads them
+    (the claim function returns whole rows, so the old claim response
+    carries them along unused). What the old code loses is the behaviour,
+    not correctness: its render listing ignores the backoff and serves the
+    newest 200 first again.
 
   In short: rolling the API code back while the database stays on the newer
   schema is safe for every migration in this range except the narrow race
@@ -395,16 +495,41 @@ Reverse order, with a check before each step:
 
 4. **Re-enable the Vercel crons** (section 3), whichever option was used:
    put `CRON_SECRET` back in Vercel and redeploy, or restore the three
-   entries in `ahavah-admin/vercel.json` and push. Confirm: Vercel's Cron
-   Jobs page shows the three schedules active again, and a manual call to
-   `/api/growth/publish-due` with the correct bearer token answers 200.
+   entries in `ahavah-admin/vercel.json` and push. Only do this once all of
+   these hold, per the Wave 3d deploy conditions
+   (`docs/superpowers/plans/2026-09-16-spotlight-wave-3d.md`):
+   - the admin app is on a Wave 3d head, not `30daef1` (section 4: the old
+     tick uploads PNG, treats `image_race` as a failure and posts with
+     `message`). While the admin is on `30daef1`, `CRON_SECRET` and
+     `AHAVAH_GROWTH_CRON_SECRET` stay unset;
+   - `AHAVAH_META_APP_ID` and `AHAVAH_META_APP_SECRET` are already set in
+     the admin project, before `CRON_SECRET`. Without them the daily
+     token-health cron cannot check the page token and answers `valid: null`
+     without reporting anything to the API (`reportTokenHealth` in
+     `ahavah-admin/src/lib/publishing.ts`);
+   - `AHAVAH_GROWTH_CRON_SECRET` holds the same value in the admin project
+     and in the API's `.env.production` (`.env.production.template`); with it
+     unset or different, every cron call the admin app makes to the API is
+     refused.
+
+   Confirm: Vercel's Cron Jobs page shows the three schedules active again,
+   and `GET /api/growth/publish-due?dry=1` with `Authorization: Bearer
+   <CRON_SECRET>` answers 200 with `publish.dry` true. Use the dry run for
+   this check, not a plain call: a plain call is a real run.
 
 5. **Turn `publication_enabled` and `external_access_enabled` back on**
    (Growth tab -> Controls, or the same `POST /admin/growth/settings` calls
    as section 1 with `"value": "true"`) only after steps 1 to 4 are
-   confirmed. Confirm: `GET /admin/growth/queue/claim` no longer reports
-   `halted` or `paused`; the next `publish-due` cron run shows real claims
-   rather than an empty list.
+   confirmed, and only if section 4's coupling rules are met (every repo on
+   the same side of Wave 3d). Confirm, read-only: `GET
+   /admin/growth/settings` shows `"publication_enabled": "true"` and
+   `"external_access_enabled": "true"`, and `GET
+   /api/growth/publish-due?dry=1` answers `publish.paused` false,
+   `publish.halted` false and `removals.halted` false. The next scheduled
+   `publish-due` run then returns `"dry": false` with `publish.paused` and
+   `publish.halted` false; `publish.claimed` is a count and is legitimately
+   0 when nothing is due. Do not use `POST /admin/growth/queue/claim` to
+   check (section 1).
 
 6. **Turn `invites_enabled` back on last.** Before flipping it, check the
    Growth tab's queue for anything that piled up while invites were paused
