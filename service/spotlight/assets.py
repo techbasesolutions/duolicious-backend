@@ -57,7 +57,13 @@ def attach_platform_image(tx, request_key: str, platform: str, revision_id: int,
     delivery unresolved (`delivery_state` `attempting` or
     `delivery_unknown`) -- the same rows `create_revision`'s un-render step
     leaves untouched because a live post may be behind them. Attaching a
-    fresh upload there would overwrite the artwork that post shows."""
+    fresh upload there would overwrite the artwork that post shows.
+
+    Wave 3d Task 4: a successful attach also clears this row's render
+    backoff (`render_attempts`, `render_next_attempt_at`, `render_error`) in
+    the same UPDATE. A render reported failed afterwards starts again from
+    15 minutes. A sibling platform row keeps its own state until its own
+    upload attaches."""
     row = tx.execute(
         """WITH prev AS (
                SELECT id, image_key FROM publishing_queue
@@ -65,7 +71,8 @@ def attach_platform_image(tx, request_key: str, platform: str, revision_id: int,
                   FOR UPDATE
            )
            UPDATE publishing_queue
-               SET image_key = %(k)s, image_url = %(u)s, image_sha256 = %(h)s, updated_at = NOW()
+               SET image_key = %(k)s, image_url = %(u)s, image_sha256 = %(h)s, updated_at = NOW(),
+                   render_attempts = 0, render_next_attempt_at = NULL, render_error = NULL
               FROM prev
              WHERE publishing_queue.id = prev.id
                AND current_revision_id = %(rev)s

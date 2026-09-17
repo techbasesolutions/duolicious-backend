@@ -74,12 +74,24 @@ def test_claim_reports_paused_and_halted(client, make_person):
         with api_tx() as tx: _restore_defaults(tx)
 
 
+def _serve_first(tx, rk):
+    """Wave 3d Task 4: the worker's `pending=1` list is served earliest
+    deadline first and capped at 200, and this suite commits to one shared
+    database. A task this test looks for there is dated ahead of every open
+    task earlier tests left behind, or enough leftovers would push it out."""
+    tx.execute("""UPDATE spotlight_removal_task
+                     SET deadline_at = (SELECT COALESCE(MIN(deadline_at), NOW()) - interval '1 day'
+                                          FROM spotlight_removal_task WHERE done_at IS NULL)
+                   WHERE request_key = %(rk)s AND done_at IS NULL""", dict(rk=rk))
+
+
 def test_removals_halted_by_emergency_stop_only(client, make_person):
     p = _make_eligible(make_person)
     with api_tx() as tx:
         rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
         tx.execute("UPDATE publishing_queue SET status = 'published', external_post_id = '5' WHERE request_key = %(rk)s", dict(rk=rk))
         from service.spotlight.withdrawal import withdraw_member; withdraw_member(tx, p['id'], 'opt_out')
+        _serve_first(tx, rk)
     try:
         with api_tx() as tx: _set(tx, publication_enabled='false', external_access_enabled='true')
         body = client.get('/admin/growth/removals?pending=1', headers=H).get_json()

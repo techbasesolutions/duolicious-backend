@@ -59,6 +59,17 @@ def _session_for(p, signed_in: bool = True) -> str:
     return tok
 
 
+def _serve_first(tx, rk):
+    """Wave 3d Task 4: the worker's `pending=1` list is served earliest
+    deadline first and capped at 200, and this suite commits to one shared
+    database. A task this test looks for there is dated ahead of every open
+    task earlier tests left behind, or enough leftovers would push it out."""
+    tx.execute("""UPDATE spotlight_removal_task
+                     SET deadline_at = (SELECT COALESCE(MIN(deadline_at), NOW()) - interval '1 day'
+                                          FROM spotlight_removal_task WHERE done_at IS NULL)
+                   WHERE request_key = %(rk)s AND done_at IS NULL""", dict(rk=rk))
+
+
 def _make_admin(make_person):
     p = make_person(name='SpotlightAdmin')
     with api_tx() as tx:
@@ -591,6 +602,7 @@ def test_removals_listed_and_marked_done(client, make_person):
         # Opting out cancels the queue and files a removal task for anything
         # already published (service/spotlight/queue.py::cancel_for_member).
         set_spotlight_opt_in(tx, p['id'], False)
+        _serve_first(tx, rk)
     H = {'X-Growth-Cron': 'test-cron-secret'}
     body = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
     assert body['halted'] is False
@@ -625,6 +637,7 @@ def test_removal_done_queues_the_stored_image_and_keeps_the_key(client, make_per
                              image_sha256 = 'removedsha'
                        WHERE request_key = %(rk)s AND platform = 'instagram'""", dict(rk=rk, k=key))
         set_spotlight_opt_in(tx, p['id'], False)
+        _serve_first(tx, rk)
     H = {'X-Growth-Cron': 'test-cron-secret'}
     task = [r for r in client.get('/admin/growth/removals?pending=1', headers=H).get_json()['tasks'] if r['request_key'] == rk][0]
     assert client.post(f"/admin/growth/removals/{task['id']}/done", json={}, headers=H).status_code == 200
@@ -1165,6 +1178,12 @@ def test_queue_needs_render_filter_lists_unrendered_revisions(client, make_perso
         rendered_rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c', created_by='t')
         _render(tx, rendered_rk)
         unrendered_rk = create_candidate(tx, kind='roundup', subject_person_id=None, caption='c2', created_by='t')
+        # Wave 3d Task 4: `needs_render` is served oldest first and capped at
+        # 200, and this suite commits to one shared database, so the row is
+        # dated ahead of every unrendered row earlier tests left behind.
+        tx.execute("""UPDATE publishing_queue
+                         SET created_at = (SELECT MIN(created_at) - interval '1 day' FROM publishing_queue)
+                       WHERE request_key = %(rk)s""", dict(rk=unrendered_rk))
     H = {'X-Growth-Cron': 'test-cron-secret'}
     rows = client.get('/admin/growth/queue?needs_render=1', headers=H).get_json()
     keys = {r['request_key'] for r in rows}

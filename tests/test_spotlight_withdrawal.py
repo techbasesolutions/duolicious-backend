@@ -512,6 +512,17 @@ def test_review_row_with_an_unresolved_delivery_is_never_cancelled(make_person):
                 ('investigate', None, p['id'])] * 2
 
 
+def _serve_first(tx, rk):
+    """Wave 3d Task 4: the worker's `pending=1` list is served earliest
+    deadline first and capped at 200, and this suite commits to one shared
+    database. A task this test looks for there is dated ahead of every open
+    task earlier tests left behind, or enough leftovers would push it out."""
+    tx.execute("""UPDATE spotlight_removal_task
+                     SET deadline_at = (SELECT COALESCE(MIN(deadline_at), NOW()) - interval '1 day'
+                                          FROM spotlight_removal_task WHERE done_at IS NULL)
+                   WHERE request_key = %(rk)s AND done_at IS NULL""", dict(rk=rk))
+
+
 def test_investigate_task_is_listed_for_the_operator(make_person, client):
     """The removals surface lists an `investigate` task like any other; the
     admin worker leaves every reason other than `delete_via_api` alone."""
@@ -520,6 +531,7 @@ def test_investigate_task_is_listed_for_the_operator(make_person, client):
     with api_tx() as tx:
         rk = _row_in(tx, p['id'], 'review', delivery_state='attempting')
         withdraw_member(tx, p['id'], 'opt_out')
+        _serve_first(tx, rk)
     listed = client.get('/admin/growth/removals?pending=1', headers=_auth_headers_for(admin)).get_json()
     mine = [t for t in listed['tasks'] if t['request_key'] == rk]
     assert len(mine) == 2 and {t['reason'] for t in mine} == {'investigate'}

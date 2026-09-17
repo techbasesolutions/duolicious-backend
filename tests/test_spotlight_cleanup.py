@@ -358,6 +358,17 @@ def test_overdue_removals_counted(client, make_person):
     assert body['overdue'] >= 2 and 'outstanding_cleanup' in body
 
 
+def _serve_first(tx, rk):
+    """Wave 3d Task 4: the worker's `pending=1` list is served earliest
+    deadline first and capped at 200, and this suite commits to one shared
+    database. A task this test looks for there is dated ahead of every open
+    task earlier tests left behind, or enough leftovers would push it out."""
+    tx.execute("""UPDATE spotlight_removal_task
+                     SET deadline_at = (SELECT COALESCE(MIN(deadline_at), NOW()) - interval '1 day'
+                                          FROM spotlight_removal_task WHERE done_at IS NULL)
+                   WHERE request_key = %(rk)s AND done_at IS NULL""", dict(rk=rk))
+
+
 def test_removals_rows_carry_their_retry_and_deadline_state(client, make_person):
     """Fix wave item 8. The removals list is what an operator works from, and
     it was answering with the task's identity only: no attempt count, no last
@@ -375,6 +386,7 @@ def test_removals_rows_carry_their_retry_and_deadline_state(client, make_person)
         tx.execute("""UPDATE spotlight_removal_task
                          SET attempts = 3, last_error = 'graph api said no'
                        WHERE request_key = %(rk)s""", dict(rk=rk))
+        _serve_first(tx, rk)
     body = client.get('/admin/growth/removals?pending=1', headers=H).get_json()
     mine = [t for t in body['tasks'] if t['request_key'] == rk]
     assert mine

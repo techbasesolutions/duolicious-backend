@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import uuid as uuid_mod
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -315,6 +316,9 @@ _Q_ROWS = f"""
            q.attempts,
            q.external_post_id,
            q.error,
+           q.render_attempts,
+           q.render_next_attempt_at,
+           q.render_error,
            q.current_revision_id,
            r.revision AS revision_number,
            r.asset_hash AS revision_asset_hash,
@@ -349,7 +353,17 @@ _Q_ROWS = f"""
        AND (%(needs_render)s::bool IS NOT TRUE
             OR (r.asset_hash IS NULL
                 AND q.status NOT IN ('cancelled', 'published', 'processing', 'scheduled')))
-     ORDER BY q.created_at DESC
+       -- Wave 3d Task 4 (acceptance 8c): a card whose render was reported
+       -- failed sits out its backoff (`post_growth_queue_render_failed`), so
+       -- one that keeps failing cannot hold a place in the tick's 200 rows.
+       AND (%(needs_render)s::bool IS NOT TRUE
+            OR q.render_next_attempt_at IS NULL
+            OR q.render_next_attempt_at <= NOW())
+     -- The tick is served oldest first, so the oldest waiting card is always
+     -- reached (newest first, 205 newer failing cards hid an older one). The
+     -- Growth tab (no filter) keeps its newest-first order.
+     ORDER BY CASE WHEN %(needs_render)s::bool THEN q.created_at END ASC NULLS LAST,
+              q.created_at DESC
      LIMIT 200
 """
 
@@ -528,7 +542,12 @@ _Q_REMOVALS = """
                 AND t.reason IN ('delete_via_api', 'manual_instagram', 'investigate')))
        AND (%(attention)s::bool IS NOT TRUE
             OR (t.done_at IS NULL AND t.reason = 'needs_attention'))
-     ORDER BY t.created_at DESC
+     -- Wave 3d Task 4 (acceptance 8c): the worker (`pending=1`) is served the
+     -- tasks closest to their removal deadline first; newest first handed it
+     -- the newest 200 of 8198 due tasks and left the oldest to go overdue.
+     -- The attention view and the unfiltered list keep newest first.
+     ORDER BY CASE WHEN %(pending)s::bool THEN t.deadline_at END ASC NULLS LAST,
+              t.created_at DESC
      LIMIT 200
 """
 
@@ -569,6 +588,12 @@ def _queue_row(r, consent_ok: Optional[bool] = None) -> dict:
         revision=r['revision_number'],
         consent_complete=consent_ok,
         render_blocked=bool(r['render_blocked']),
+        # Wave 3d Task 4: additive. How many renders have failed since the
+        # last successful attach, when the tick may try again, and the last
+        # sanitised reason (never `error`, which publishing owns).
+        render_attempts=r['render_attempts'],
+        render_next_attempt_at=_plain(r['render_next_attempt_at']),
+        render_error=r['render_error'],
     )
     # Only kind 'roundup' rows carry a payload snapshot (stamped at creation
     # by post_growth_spotlight_roundup); every other kind leaves these keys
@@ -875,6 +900,74 @@ def post_growth_queue_image(request_key: str):
     if outcome == 'superseded':
         return dict(error='superseded'), 409
     return dict(image_url=url)
+
+
+# Wave 3d Task 4 (acceptance 8c). A reason is whatever the renderer threw, and
+# a photo fetch can throw with the photo's signed URL in its message, so every
+# URL is removed before the reason is stored and the rest is capped.
+_URL_IN_REASON = re.compile(r'https?://\S+', re.IGNORECASE)
+RENDER_REASON_MAX = 200
+
+# 15 minutes, doubled for every failure already recorded, capped at 24 hours:
+# 15m, 30m, 1h, 2h, 4h, 8h, 16h, then 24h. The exponent is clamped at 7
+# (15 minutes * 2^7 is already past the cap), which changes no answer but
+# keeps a card that has failed for months from overflowing the interval.
+# `render_attempts` on the right-hand side is the value before this update.
+# `updated_at` is left alone on purpose: this is render bookkeeping, and the
+# retention sweep dates a published row's artwork by `updated_at`.
+_Q_RENDER_FAILED = """
+    UPDATE publishing_queue
+       SET render_attempts = render_attempts + 1,
+           render_next_attempt_at = NOW() + LEAST(interval '15 minutes' * 2 ^ LEAST(render_attempts, 7),
+                                                  interval '24 hours'),
+           render_error = %(reason)s
+     WHERE request_key = %(rk)s
+ RETURNING render_attempts, render_next_attempt_at
+"""
+
+
+def _render_reason(value: str) -> Optional[str]:
+    """No URL (so no signed URL or token), whitespace collapsed where one was
+    cut out, at most RENDER_REASON_MAX characters. Stripped before the cap, so
+    a URL can never survive by being cut short."""
+    cleaned = ' '.join(_URL_IN_REASON.sub(' ', value).split())[:RENDER_REASON_MAX].strip()
+    return cleaned or None
+
+
+def _lock_render_rows(tx, request_key: str) -> list:
+    """Every row of the request, locked in one fixed order, so two reports for
+    the same card (a duplicate cron run) queue behind each other rather than
+    each holding one platform row and waiting on the other's."""
+    return tx.execute(
+        "SELECT id FROM publishing_queue WHERE request_key = %(rk)s ORDER BY id FOR UPDATE",
+        dict(rk=request_key)).fetchall()
+
+
+@post('/admin/growth/queue/<request_key>/render-failed', limiter=growth_limit)
+def post_growth_queue_render_failed(request_key: str):
+    """The render tick reports a card it could not render or upload (a lost
+    render race is not reported). Every row of the request backs off, so a
+    card that keeps failing stops taking a place in the tick's oldest-first
+    listing until its time passes; a successful attach resets its row
+    (`attach_platform_image`).
+
+    READ COMMITTED, not the default snapshot level: two reports racing on the
+    same card must both count, and under a snapshot the second writer would
+    fail on the row the first one updated instead of re-reading it."""
+    s = _gate()
+    reason = _body().get('reason')
+    if not isinstance(reason, str):
+        return dict(error='bad_request'), 400
+    stored = _render_reason(reason)
+    with api_tx('read committed') as tx:
+        if not _lock_render_rows(tx, request_key):
+            abort(404)
+        rows = tx.execute(_Q_RENDER_FAILED, dict(rk=request_key, reason=stored)).fetchall()
+        attempts = max(r['render_attempts'] for r in rows)
+        next_attempt_at = max(r['render_next_attempt_at'] for r in rows)
+        _audit(tx, s, 'growth.queue.render_failed', request_key=request_key, render_attempts=attempts)
+    return dict(request_key=request_key, render_attempts=attempts,
+                render_next_attempt_at=_plain(next_attempt_at))
 
 
 @get('/admin/growth/candidates', limiter=growth_limit)
