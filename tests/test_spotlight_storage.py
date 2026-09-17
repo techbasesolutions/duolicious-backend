@@ -57,6 +57,36 @@ def test_validate_card_image_rejects_a_bad_jpeg(data, reason):
         st.validate_card_image(data, 'image/jpeg')
 
 
+def _jpeg_claiming(width, height):
+    """A small, real 1080 JPEG whose baseline SOF header is patched to claim
+    other dimensions: a few kilobytes on the wire that a full decode would
+    turn into width * height * 3 bytes of pixels."""
+    data = bytearray(_jpeg())
+    sof = data.index(b'\xff\xc0')
+    # FF C0, length (2), precision (1), then height (2) and width (2).
+    data[sof + 5:sof + 7] = height.to_bytes(2, 'big')
+    data[sof + 7:sof + 9] = width.to_bytes(2, 'big')
+    return bytes(data)
+
+
+@pytest.mark.parametrize('width,height', [(4000, 4000), (12000, 12000)], ids=['large', 'decompression-bomb'])
+def test_a_jpeg_claiming_the_wrong_size_is_refused_before_it_is_decoded(monkeypatch, width, height):
+    """Fix round 1 (I1). The dimensions are read off the header and refused
+    before any full decode: a 19 KB JPEG claiming 12000 by 12000 used to be
+    decoded (about 585 MB at peak) before bad_dimensions. `ImageFile.load`
+    is made to raise, so a decode would surface as not_png instead. 12000 by
+    12000 is past Pillow's decompression bomb warning threshold, which the
+    validator turns into a refusal of its own."""
+    from PIL import ImageFile
+
+    def no_decode(self):
+        raise AssertionError('the image must not be decoded')
+
+    monkeypatch.setattr(ImageFile.ImageFile, 'load', no_decode)
+    with pytest.raises(st.InvalidImage, match='bad_dimensions'):
+        st.validate_card_image(_jpeg_claiming(width, height), 'image/jpeg')
+
+
 def test_validate_card_image_rejects_an_oversize_jpeg():
     with pytest.raises(st.InvalidImage, match='too_large'):
         st.validate_card_image(_jpeg(), 'image/jpeg', max_bytes=10)

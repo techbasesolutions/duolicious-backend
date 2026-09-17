@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import warnings
 
 from PIL import Image
 
@@ -124,7 +125,15 @@ def validate_card_image(data: bytes, content_type: str, *, size=(1080, 1080),
     Pillow invalidates the image object after `verify()`, so the dimensions
     and format are read off a second, fresh open. Pillow's `verify()` checks
     next to nothing in a JPEG, so a JPEG is also fully decoded (`load()`),
-    which refuses one cut off mid scan."""
+    which refuses one cut off mid scan.
+
+    Fix round 1 (I1): that decode runs only after the format and the
+    dimensions, read off the header, have both passed. A few kilobytes of
+    JPEG can claim 12000 by 12000 pixels, and decoding it first cost about
+    585 MB at peak before the size check refused it. Pillow only warns
+    (`DecompressionBombWarning`) for an image between its pixel limit and
+    twice that; inside this call the warning is an error, and an image that
+    large is refused as `bad_dimensions`, since no card is that size."""
     if content_type not in CARD_IMAGE_TYPES:
         raise ValueError('unsupported_content_type')
     magic, expected_format, _ = CARD_IMAGE_TYPES[content_type]
@@ -132,19 +141,26 @@ def validate_card_image(data: bytes, content_type: str, *, size=(1080, 1080),
         raise InvalidImage('too_large')
     if not data.startswith(magic):
         raise InvalidImage('not_png')
-    try:
-        Image.open(io.BytesIO(data)).verify()
-        img = Image.open(io.BytesIO(data))
-        width, height = img.size
-        fmt = img.format
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', Image.DecompressionBombWarning)
+        try:
+            Image.open(io.BytesIO(data)).verify()
+            img = Image.open(io.BytesIO(data))
+            width, height = img.size
+            fmt = img.format
+        except (Image.DecompressionBombWarning, Image.DecompressionBombError) as e:
+            raise InvalidImage('bad_dimensions') from e
+        except Exception as e:
+            raise InvalidImage('not_png') from e
+        if fmt != expected_format:
+            raise InvalidImage('not_png')
+        if (width, height) != tuple(size):
+            raise InvalidImage('bad_dimensions')
         if fmt == 'JPEG':
-            img.load()
-    except Exception as e:
-        raise InvalidImage('not_png') from e
-    if fmt != expected_format:
-        raise InvalidImage('not_png')
-    if (width, height) != tuple(size):
-        raise InvalidImage('bad_dimensions')
+            try:
+                img.load()
+            except Exception as e:
+                raise InvalidImage('not_png') from e
     return hashlib.sha256(data).hexdigest()
 
 

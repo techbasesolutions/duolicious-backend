@@ -379,6 +379,27 @@ def test_image_route_rejects_invalid_png(client, make_person, monkeypatch):
     assert puts == []
 
 
+def test_image_route_stores_a_png_sent_as_image_base64_under_a_png_key(client, make_person, monkeypatch):
+    """Fix round 1 (M1): `image_base64` with `content_type: image/png` is the
+    new field carrying a PNG, stored as `image/png` under a `.png` key."""
+    import service.spotlight.storage as st
+    puts = []
+    monkeypatch.setattr(st, 'put_card_image',
+                         lambda key, data, content_type, public=False: puts.append((key, content_type)))
+    p = _make_eligible(make_person)
+    with api_tx() as tx:
+        rk = create_candidate(tx, kind='welcome', subject_person_id=p['id'], caption='c', created_by='t')
+        rev_id = current_revision(tx, rk)['id']
+    data = _png_bytes()
+    sha = hashlib.sha256(data).hexdigest()
+    r = client.post(f'/admin/growth/queue/{rk}/image',
+                    json=dict(platform='facebook', image_base64=_b64(data), content_type='image/png'), headers=H)
+    assert r.status_code == 200, r.get_json()
+    key = f'spotlight/{rk}/{rev_id}-{sha[:16]}-facebook.png'
+    assert r.get_json()['image_url'].endswith('/' + key)
+    assert puts == [(key, 'image/png')]
+
+
 def test_image_route_stores_a_jpeg_card_under_a_jpg_key(client, make_person, monkeypatch):
     """Wave 3d Task 6: Instagram publishes JPEG only, and the member approves
     the very bytes both platforms publish, so the admin uploads one JPEG
