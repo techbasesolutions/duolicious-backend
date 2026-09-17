@@ -54,10 +54,12 @@ while the rest is being worked.
    `external_access_enabled` from being independent controls, and it does
    not stop an E4 that was already queued in the email outbox before the
    switch was flipped: the outbox drain does not read `invites_enabled`, so
-   that mail still sends while invites are off. If a card-ready email must
-   not go out at all, the emergency stop (step 1) plus pausing the crons
-   (section 2 below) is what actually prevents it, because the outbox drain
-   runs from the same cron routes as everything else.
+   that mail still sends while invites are off. Nothing in the in-app
+   controls, and nothing in pausing the Vercel admin crons (section 3
+   below), stops that drain either: it is a separate loop on the API's own
+   droplet, unrelated to either. If a card-ready email, or any other queued
+   campaign mail, must not go out at all, section 2 below is what actually
+   stops it.
 
    `publication_enabled` (the ordinary pause, "nothing is claimed for
    posting; rendering, approvals and removals continue") and
@@ -66,7 +68,92 @@ while the rest is being worked.
    not part of the stop sequence above because the emergency stop already
    covers everything they would otherwise limit.
 
-## 2. Stop the crons
+## 2. Stop mail actually sending: the API's own outbox drain
+
+Section 1's controls and section 3's Vercel cron pause stop the admin app
+from creating new candidates, claiming rows for posting, and answering its
+own cron routes at all. Neither one touches the process that actually sends
+mail. `email_outbox_forever` in `service/cron/emailoutbox/__init__.py` runs
+inside the API's own `cron` Docker container on the droplet, polling every
+`DUO_CRON_EMAIL_OUTBOX_POLL_SECONDS` (default 30 seconds,
+`docker-compose.production.yml`) and calling `service/campaigns/outbox.drain`,
+"the only place SMTP is spoken anywhere in the system" per its own docstring.
+It reads neither `invites_enabled` nor `external_access_enabled`, and it has
+nothing to do with the three Vercel crons in section 3. If a queued E4, E5,
+or any other campaign mail must not go out, this container has to be stopped
+directly.
+
+On the droplet, in `/opt/ahavah-api` (the deploy workflow's own working
+directory):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.production.yml --env-file .env.production stop cron
+```
+
+Confirm it stopped: `docker compose -f docker-compose.yml -f
+docker-compose.production.yml --env-file .env.production ps cron` shows no
+running container. Confirm nothing is still sending, read-only, safe to run
+repeatedly (`email_outbox.sent_at` is stamped only on a successful send,
+`service/campaigns/outbox.py`):
+
+```sql
+SELECT count(*) AS sent_since_stop FROM email_outbox WHERE sent_at > '<time you ran the stop command, UTC>';
+```
+
+Run it again a few minutes later; it should still read 0. A single row
+appearing shortly after the stop command usually means one send was already
+in flight (the drain calls SMTP synchronously) when `stop`'s grace period
+began, not that the stop failed; a count that keeps growing means it did.
+
+**This is a blunt instrument.** The `cron` container runs one `asyncio.gather`
+of everything below (`service/cron/__init__.py`); stopping the whole
+container to silence mail pauses all of it, so an operator needs to know
+what else goes quiet and for how long that is acceptable:
+
+- `email_outbox_forever` -- the target of this step.
+- `spotlight_cleanup_forever`, `spotlight_retention_forever` -- Spotlight's
+  own cleanup and retention sweeps. Safe to pause for the length of an
+  incident; work queues and drains once resumed. Do not leave it down long
+  enough for a removal task's 72-hour deadline
+  (`spotlight_removal_task.deadline_at`, migration 0046) to pass unwatched,
+  since the overdue count this pause otherwise keeps visible stops updating
+  too.
+- `autodeactivate2_forever`, `delete_garbage_records_forever`,
+  `clean_photos_forever`, `clean_audio_forever`, `report_profiles_forever`,
+  `send_beta_reengagement_forever` -- routine housekeeping and reporting.
+  Safe to pause for hours; nothing time-critical.
+- `entitlements_forever` -- strips an expired premium entitlement, hourly.
+  Pausing lets an already-expired subscriber keep premium access a little
+  longer than they should. Low stakes for a short pause.
+- `hard_delete_expired_forever` -- hard-deletes accounts past their 7-day
+  pending-deletion grace window, hourly. Pausing delays those deletions;
+  keep this outage short, since this is the step that actually honours a
+  member's deletion request.
+- `predict_nsfw_photos_forever` -- moderates newly uploaded photos. Pausing
+  this stops NSFW screening on anything uploaded while the container is
+  down. Treat this as the strongest reason to keep the outage as short as
+  possible, not something to leave paused casually.
+- `build_firehol_forever` -- the single writer of the FireHOL IP blocklist
+  the API workers mmap, every 4 hours. Pausing beyond a few hours lets the
+  blocklist go stale (newly published malicious ranges are not picked up);
+  IPs already in the last-written blocklist stay blocked regardless.
+- `send_notifications_forever`, `verify_forever` -- push notifications and
+  identity/photo verification processing. Pausing delays both; they queue
+  and catch up once resumed.
+- `check_connections_forever`, `http_server` -- an internal connection
+  health check and the container's own `/health` endpoint on port 8080. No
+  user-facing effect from pausing either.
+
+Resume:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.production.yml --env-file .env.production up -d cron
+```
+
+Confirm: `docker compose ... ps cron` shows it running, and `docker logs
+--tail 20 <cron container>` shows no traceback.
+
+## 3. Stop the Vercel crons (admin app)
 
 Two ways. Pick one depending on whether you need it back quickly or need it
 to stay off through unrelated deploys.
@@ -110,7 +197,12 @@ function logs (Option A). `GET /api/growth/publish-due` (or the other two)
 called directly, with no `Authorization` header, answers `401 {"error": "Not
 authorised."}` in both cases.
 
-## 3. Roll back each deploy
+The "faster" versus "survives a redeploy" comparison above is reasoned from
+Vercel's documented behaviour for `vercel.json` cron registration and
+environment variable changes, not from timing either option on this
+project's own Vercel account.
+
+## 4. Roll back each deploy
 
 **API (the droplet).** A rollback is re-deploying a previous commit. Either:
 
@@ -141,14 +233,18 @@ Deployments list shows that deployment promoted back to Production, and the
 live site or admin app reflects the older build (check a page or string that
 changed in the bad deploy).
 
-## 4. What cannot be rolled back
+## 5. What cannot be rolled back
 
 - **Forward-only migrations.** Every Spotlight migration from 0046 to 0051
   is additive; rolling the API's code back to a commit before any of these
   does not require rolling the schema back, because the old code simply
   never reads the new tables, columns or indexes:
   - `0046_spotlight_wave2.sql` -- adds the `email_outbox` and `cleanup_job`
-    tables outright. Old code never queries them. Runs cleanly.
+    tables outright, adds `attempts`, `next_attempt_at`, `deadline_at`,
+    `last_error` and `evidence` columns to `spotlight_removal_task`
+    (backfilling `deadline_at` on every existing row), and adds
+    `image_sha256` to `publishing_queue`. Old code never queries the new
+    tables and never reads any of the new columns. Runs cleanly.
   - `0047_cleanup_job_partial_unique.sql` -- replaces an unconditional
     unique constraint on `cleanup_job (kind, target)` with a partial one
     scoped to `state = 'pending'`. Old code's `INSERT ... ON CONFLICT` still
@@ -198,34 +294,48 @@ changed in the bad deploy).
 - **Mail already accepted by the provider.** Once Resend (the SMTP/API
   provider behind `service/mail`) has accepted a message, it cannot be
   recalled from a recipient's inbox by anything in this codebase. Turning
-  off `invites_enabled`, the emergency stop, or pausing the crons only stops
-  future sends and (per the caveat in section 1) does not even stop mail
-  already sitting in the outbox waiting to drain.
+  off `invites_enabled`, the emergency stop, or pausing the Vercel crons
+  (section 3) stops future sends but, per the caveat in section 1, does not
+  stop mail already queued in `email_outbox` from draining; only stopping
+  the droplet's `cron` container (section 2) does that, and even then any
+  send already handed to Resend before the container stopped is gone.
 
-## 5. How to resume
+## 6. How to resume
 
 Reverse order, with a check before each step:
 
-1. **Redeploy or re-enable crons first**, whichever was used in section 2:
+1. **Confirm the deploy is healthy** before touching anything else: the
+   API's `/health` endpoint is up, `docker compose ps` shows `api` and
+   `chat` running with no recent restarts, and (if admin or web were rolled
+   back) the Vercel deployment you promoted is serving traffic without
+   elevated error rates in its function logs.
+
+2. **Restart the droplet's `cron` container** (section 2), as soon as step 1
+   is confirmed, before touching any Spotlight-specific control: it also
+   runs NSFW photo moderation, push notifications, identity verification,
+   the FireHOL blocklist writer and the GDPR pending-deletion hard-delete,
+   none of which should stay paused any longer than the incident actually
+   required. `docker compose -f docker-compose.yml -f
+   docker-compose.production.yml --env-file .env.production up -d cron`.
+   Confirm: `docker compose ... ps cron` shows it running with no recent
+   restarts, `docker logs --tail 20 <cron container>` shows no traceback,
+   and if mail was queued during the outage, the `sent_since_stop` query
+   from section 2 starts returning a growing count again.
+
+3. **Re-enable the Vercel crons** (section 3), whichever option was used:
    put `CRON_SECRET` back in Vercel and redeploy, or restore the three
    entries in `ahavah-admin/vercel.json` and push. Confirm: Vercel's Cron
    Jobs page shows the three schedules active again, and a manual call to
    `/api/growth/publish-due` with the correct bearer token answers 200.
 
-2. **Confirm the deploy is healthy** before touching any control: the API's
-   `/health` endpoint is up, `docker compose ps` shows `api`, `chat` and
-   `cron` running with no recent restarts, and (if admin or web were rolled
-   back) the Vercel deployment you promoted is serving traffic without
-   elevated error rates in its function logs.
-
-3. **Turn `publication_enabled` and `external_access_enabled` back on**
+4. **Turn `publication_enabled` and `external_access_enabled` back on**
    (Growth tab -> Controls, or the same `POST /admin/growth/settings` calls
-   as section 1 with `"value": "true"`) only after step 2 is confirmed.
-   Confirm: `GET /admin/growth/queue/claim` no longer reports `halted` or
-   `paused`; the next `publish-due` cron run shows real claims rather than
-   an empty list.
+   as section 1 with `"value": "true"`) only after steps 1 to 3 are
+   confirmed. Confirm: `GET /admin/growth/queue/claim` no longer reports
+   `halted` or `paused`; the next `publish-due` cron run shows real claims
+   rather than an empty list.
 
-4. **Turn `invites_enabled` back on last.** Before flipping it, check the
+5. **Turn `invites_enabled` back on last.** Before flipping it, check the
    Growth tab's queue for anything that piled up while invites were paused
    (an ageing `invites_pending_oldest_days` on `GET /admin/growth/candidates`
    is the signal), and check the removal list is not carrying an unexpected
