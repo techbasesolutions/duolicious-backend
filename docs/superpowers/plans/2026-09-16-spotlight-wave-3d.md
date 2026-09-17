@@ -122,6 +122,7 @@ In the route, parse `revision` with `isinstance(value, int) and not isinstance(v
 SELECT subject_person_id, platform, count(*)
   FROM publishing_queue
  WHERE kind = 'welcome' AND status <> 'cancelled'
+   AND subject_person_id IS NOT NULL
  GROUP BY 1, 2 HAVING count(*) > 1;
 ```
 
@@ -226,7 +227,7 @@ The member approves the bytes they see; both platforms must publish those same b
 
 - [ ] Whole-branch review across the three repos; one fix wave if needed.
 - [ ] Re-run the acceptance probes for every sub-claim that FAILED (1a, 5a, 8a, 8c, 8d) and the 4d concurrent submit against the final heads; append a dated "Wave 3d re-run" section to the acceptance document with the new output. A sub-claim still failing blocks the deploy.
-- [ ] On the owner's go: run Task 3's pre-check query on production, then deploy API (migrations 0050, 0051 apply), web, admin. Verify health, containers, cron container restart count 0, `spotlight_setting` flags unchanged, and the admin build lists the three crons.
+- [ ] On the owner's go: run the pre-check query from the header of `migrations/0050_spotlight_welcome_unique.sql` on production (it excludes NULL subjects, which a unique index never treats as conflicts), then deploy API (migrations 0050, 0051 apply), web, admin. Verify health, containers, cron container restart count 0, `spotlight_setting` flags unchanged, and the admin build lists the three crons.
 - [ ] Update the memory note and handoff with the new heads.
 
 ## Self-review record
