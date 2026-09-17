@@ -118,10 +118,11 @@ what else goes quiet and for how long that is acceptable:
   (`spotlight_removal_task.deadline_at`, migration 0046) to pass unwatched,
   since the overdue count this pause otherwise keeps visible stops updating
   too.
-- `autodeactivate2_forever`, `delete_garbage_records_forever`,
-  `clean_photos_forever`, `clean_audio_forever`, `report_profiles_forever`,
-  `send_beta_reengagement_forever` -- routine housekeeping and reporting.
-  Safe to pause for hours; nothing time-critical.
+- `autodeactivate2_forever`, `clean_photos_forever`, `clean_audio_forever`,
+  `send_beta_reengagement_forever` -- routine housekeeping and reporting
+  (re-read: autodeactivation email, unused-photo and unused-audio object
+  store cleanup, beta re-engagement email; none of the three touches
+  moderation or safety). Safe to pause for hours; nothing time-critical.
 - `entitlements_forever` -- strips an expired premium entitlement, hourly.
   Pausing lets an already-expired subscriber keep premium access a little
   longer than they should. Low stakes for a short pause.
@@ -129,10 +130,27 @@ what else goes quiet and for how long that is acceptable:
   pending-deletion grace window, hourly. Pausing delays those deletions;
   keep this outage short, since this is the step that actually honours a
   member's deletion request.
-- `predict_nsfw_photos_forever` -- moderates newly uploaded photos. Pausing
+- `predict_nsfw_photos_forever` -- scores newly uploaded photos for NSFW
+  content (`antiabuse.antiporn.predict_nsfw`, writing `nsfw_score`). Pausing
   this stops NSFW screening on anything uploaded while the container is
-  down. Treat this as the strongest reason to keep the outage as short as
-  possible, not something to leave paused casually.
+  down.
+- `delete_garbage_records_forever` -- not routine housekeeping: its query
+  (`Q_DELETE_GARBAGE_RECORDS`) is what actually acts on that score, hard-
+  deleting any photo with `nsfw_score > 0.8` and emailing the admin inbox a
+  false-positive review list (`service/cron/garbagerecords/__init__.py`,
+  `_send_nsfw_admin_notice`). Pausing it, together with the scoring job
+  above, means a newly uploaded NSFW photo is neither scored nor removed for
+  as long as the container is down. Treat these two jobs together as the
+  strongest reason to keep the outage as short as possible, not something to
+  leave paused casually.
+- `report_profiles_forever` -- not routine reporting either: it scans
+  unmoderated profile text with `antiabuse.childsafety.potential_minor` and
+  automatically lodges a child-safety report on anything it flags
+  (`service/cron/profilereporter/__init__.py`, using
+  `antiabuse.lodgereport.skip_by_uuid`). Pausing it suspends automated
+  minor-detection reporting on new and unmoderated profiles for as long as
+  the container is down. Same standard as the NSFW pair above: keep the
+  outage short.
 - `build_firehol_forever` -- the single writer of the FireHOL IP blocklist
   the API workers mmap, every 4 hours. Pausing beyond a few hours lets the
   blocklist go stale (newly published malicious ranges are not picked up);
@@ -310,32 +328,85 @@ Reverse order, with a check before each step:
    back) the Vercel deployment you promoted is serving traffic without
    elevated error rates in its function logs.
 
-2. **Restart the droplet's `cron` container** (section 2), as soon as step 1
-   is confirmed, before touching any Spotlight-specific control: it also
-   runs NSFW photo moderation, push notifications, identity verification,
-   the FireHOL blocklist writer and the GDPR pending-deletion hard-delete,
-   none of which should stay paused any longer than the incident actually
-   required. `docker compose -f docker-compose.yml -f
-   docker-compose.production.yml --env-file .env.production up -d cron`.
-   Confirm: `docker compose ... ps cron` shows it running with no recent
-   restarts, `docker logs --tail 20 <cron container>` shows no traceback,
-   and if mail was queued during the outage, the `sent_since_stop` query
-   from section 2 starts returning a growing count again.
+2. **Before restarting `cron`, check what mail is actually queued and hold
+   anything that must not go out.** This is the last moment it can still be
+   stopped: the moment the container comes back, `email_outbox_forever`
+   drains every due row on its next poll. Read-only, grouped by campaign and
+   state (`service/campaigns/outbox.py`, `STATES`):
 
-3. **Re-enable the Vercel crons** (section 3), whichever option was used:
+   ```sql
+   SELECT campaign, state, count(*) AS n
+     FROM email_outbox
+    GROUP BY campaign, state
+    ORDER BY campaign, state;
+   ```
+
+   To see the actual queued rows for one campaign (for example a bad E4
+   batch), read-only:
+
+   ```sql
+   SELECT id, campaign_id, email, next_attempt_at
+     FROM email_outbox
+    WHERE campaign = '<campaign>' AND state = 'queued'
+    ORDER BY next_attempt_at;
+   ```
+
+   If any of those rows must not send, hold them with `state = 'skipped'`,
+   not `'failed'` or `'acceptance_unknown'`: `reserve()`'s claim predicate
+   only ever picks up `state = 'queued'` rows
+   (`service/campaigns/outbox.py`, `_Q_RESERVE`), so `'skipped'`, `'failed'`
+   and `'acceptance_unknown'` are all terminal as far as the drain is
+   concerned, but `'skipped'` is the state the codebase itself already uses
+   for "nothing went wrong, we simply must not send it" (`mark_skipped`'s
+   own docstring; it is the same state and reason string `withdraw_member`
+   writes directly onto a queued Spotlight invite when a member withdraws).
+   `email_outbox` has no separate "updated at" column to set alongside it;
+   `last_error` is the one column `_Q_SKIP` sets with the state, and it
+   doubles as the reason field. Wrapped in a transaction so the count can be
+   reviewed before it commits:
+
+   ```sql
+   BEGIN;
+   UPDATE email_outbox
+      SET state = 'skipped', last_error = 'operator hold: <why>'
+    WHERE campaign = '<campaign>' AND state = 'queued'
+   -- add "AND campaign_id = '<campaign_id>'" to hold one run only
+   RETURNING id, campaign_id, email;
+   -- if the returned rows are exactly the ones that must not send, COMMIT;
+   -- otherwise ROLLBACK and narrow the WHERE.
+   ```
+
+   Run this only for mail a human has already decided must not send; it is
+   irreversible in the sense that a skipped row is never picked up again by
+   this drain.
+
+3. **Restart the droplet's `cron` container** (section 2), as soon as step 1
+   is confirmed and any mail that had to be held is held: it also runs NSFW
+   photo scoring and removal, automated child-safety reporting, push
+   notifications, identity verification, the FireHOL blocklist writer and
+   the GDPR pending-deletion hard-delete, none of which should stay paused
+   any longer than the incident actually required. `docker compose -f
+   docker-compose.yml -f docker-compose.production.yml --env-file
+   .env.production up -d cron`. Confirm: `docker compose ... ps cron` shows
+   it running with no recent restarts, `docker logs --tail 20 <cron
+   container>` shows no traceback, and if mail was queued during the
+   outage, the `sent_since_stop` query from section 2 starts returning a
+   growing count again for whatever was not held back.
+
+4. **Re-enable the Vercel crons** (section 3), whichever option was used:
    put `CRON_SECRET` back in Vercel and redeploy, or restore the three
    entries in `ahavah-admin/vercel.json` and push. Confirm: Vercel's Cron
    Jobs page shows the three schedules active again, and a manual call to
    `/api/growth/publish-due` with the correct bearer token answers 200.
 
-4. **Turn `publication_enabled` and `external_access_enabled` back on**
+5. **Turn `publication_enabled` and `external_access_enabled` back on**
    (Growth tab -> Controls, or the same `POST /admin/growth/settings` calls
-   as section 1 with `"value": "true"`) only after steps 1 to 3 are
+   as section 1 with `"value": "true"`) only after steps 1 to 4 are
    confirmed. Confirm: `GET /admin/growth/queue/claim` no longer reports
    `halted` or `paused`; the next `publish-due` cron run shows real claims
    rather than an empty list.
 
-5. **Turn `invites_enabled` back on last.** Before flipping it, check the
+6. **Turn `invites_enabled` back on last.** Before flipping it, check the
    Growth tab's queue for anything that piled up while invites were paused
    (an ageing `invites_pending_oldest_days` on `GET /admin/growth/candidates`
    is the signal), and check the removal list is not carrying an unexpected
