@@ -81,7 +81,9 @@ def _person(name: str, gender: str = 'Woman') -> dict:
 
 def cmd_member(name: str, gender: str = 'Woman') -> None:
     p = _person(name, gender)
-    photo = str(uuid4())
+    # A real photo id is a 64-character hex string, not an RFC uuid:
+    # upload_photo mints them with secrets.token_hex(32).
+    photo = secrets.token_hex(32)
     with api_tx() as tx:
         tx.execute(
             """UPDATE person SET activated = TRUE, spotlight_opt_in = TRUE, spotlight_opt_in_at = NOW(),

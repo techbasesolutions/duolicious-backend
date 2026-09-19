@@ -13,6 +13,7 @@ runs unmodified without touching or locking the shared table. The file
 carries its own BEGIN/COMMIT (and its LOCK TABLE lands on the shadow), so it
 runs on an autocommit connection, the way psql runs it.
 """
+import secrets
 from pathlib import Path
 from uuid import uuid4
 
@@ -36,8 +37,8 @@ def _make_eligible(make_person, name='Elig0050', gender='Woman'):
              WHERE id = %(id)s""", dict(id=p['id']))
         tx.execute("""
             INSERT INTO photo (uuid, person_id, position, moderation_status, blurhash, hash)
-            VALUES (gen_random_uuid(), %(id)s, 1, 'approved', 'testblurhash', gen_random_uuid()::text)""",
-                   dict(id=p['id']))
+            VALUES (%(u)s, %(id)s, 1, 'approved', 'testblurhash', gen_random_uuid()::text)""",
+                   dict(u=secrets.token_hex(32), id=p['id']))
     return p
 
 

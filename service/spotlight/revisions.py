@@ -140,10 +140,16 @@ def create_revision(tx, request_key: str, *, caption: str, photo_uuid: Optional[
     next_rev = tx.execute(
         "SELECT COALESCE(MAX(revision), 0) + 1 AS n FROM spotlight_revision WHERE request_key = %(rk)s",
         dict(rk=request_key)).fetchone()['n']
+    # `photo_uuid` is bound as plain text, with no cast. A photo id is not an
+    # RFC uuid: `photo.uuid` is a text column and `upload_photo` mints ids with
+    # `secrets.token_hex(32)`, so a real id is 64 hex characters. The old
+    # `%(photo)s::uuid` cast (against the `uuid` column migration 0044
+    # declared) made every card for a real member raise
+    # InvalidTextRepresentation. Migration 0052 moves the column to text.
     row = tx.execute(
         """INSERT INTO spotlight_revision
                (request_key, revision, caption, photo_uuid, layout_version, channels, participants, created_by)
-           VALUES (%(rk)s, %(rev)s, %(cap)s, %(photo)s::uuid, %(lv)s, %(ch)s, %(part)s::jsonb, %(by)s)
+           VALUES (%(rk)s, %(rev)s, %(cap)s, %(photo)s, %(lv)s, %(ch)s, %(part)s::jsonb, %(by)s)
            RETURNING id""",
         dict(rk=request_key, rev=next_rev, cap=caption, photo=photo_uuid, lv=layout_version,
              ch=channels, part=json.dumps(participants or []), by=created_by)).fetchone()

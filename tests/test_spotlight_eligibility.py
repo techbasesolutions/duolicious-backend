@@ -1,3 +1,4 @@
+import secrets
 import pytest
 from database import api_tx
 from service.spotlight.eligibility import eligibility, primary_photo_uuid, photo_url, REASONS
@@ -13,10 +14,11 @@ def _make_eligible(make_person, name='Elig', gender='Woman'):
                    deletion_requested_at = NULL, spotlight_last_featured_at = NULL
              WHERE id = %(id)s""", dict(id=p['id']))
         # photo has NOT NULL blurhash and hash columns with no default (checked \d photo);
-        # uuid is a text column (not native uuid type) but gen_random_uuid() casts in fine.
+        # uuid is a text column, and a real photo id is a 64-character hex string
+        # (upload_photo mints them with secrets.token_hex(32)), so the fixture does too.
         tx.execute("""
             INSERT INTO photo (uuid, person_id, position, moderation_status, blurhash, hash)
-            VALUES (gen_random_uuid(), %(id)s, 1, 'approved', 'testblurhash', gen_random_uuid()::text)""", dict(id=p['id']))
+            VALUES (%(u)s, %(id)s, 1, 'approved', 'testblurhash', gen_random_uuid()::text)""", dict(u=secrets.token_hex(32), id=p['id']))
     return p
 
 

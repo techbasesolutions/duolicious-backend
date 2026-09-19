@@ -93,11 +93,12 @@ def _make_eligible(make_person, name='Elig', gender='Woman'):
                    deletion_requested_at = NULL, spotlight_last_featured_at = NULL
              WHERE id = %(id)s""", dict(id=p['id']))
         # photo has NOT NULL blurhash and hash columns with no default; uuid is a
-        # text column but gen_random_uuid() casts in fine (task 2 report).
+        # text column holding a 64-character hex id (upload_photo mints them with
+        # secrets.token_hex(32)), so the fixture does too.
         tx.execute("""
             INSERT INTO photo (uuid, person_id, position, moderation_status, blurhash, hash)
-            VALUES (gen_random_uuid(), %(id)s, 1, 'approved', 'testblurhash', gen_random_uuid()::text)""",
-                   dict(id=p['id']))
+            VALUES (%(u)s, %(id)s, 1, 'approved', 'testblurhash', gen_random_uuid()::text)""",
+                   dict(u=secrets.token_hex(32), id=p['id']))
     return p
 
 

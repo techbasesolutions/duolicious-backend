@@ -1,7 +1,9 @@
+import secrets
 import pytest, uuid
 from database import api_tx
 from service.campaigns import make_campaign_link
 from service.config import WEB_BASE_URL
+from service.spotlight.approval import make_card_token
 from service.spotlight.queue import create_candidate, set_setting
 from service.spotlight.revisions import (create_revision, current_revision, attach_render, record_consent,
                                          consent_complete, edit_caption, approve_card)
@@ -16,10 +18,11 @@ def _make_eligible(make_person, name='Elig', gender='Woman'):
                    deletion_requested_at = NULL, spotlight_last_featured_at = NULL
              WHERE id = %(id)s""", dict(id=p['id']))
         # photo has NOT NULL blurhash and hash columns with no default (checked \d photo);
-        # uuid is a text column (not native uuid type) but gen_random_uuid() casts in fine.
+        # uuid is a text column, and a real photo id is a 64-character hex string
+        # (upload_photo mints them with secrets.token_hex(32)), so the fixture does too.
         tx.execute("""
             INSERT INTO photo (uuid, person_id, position, moderation_status, blurhash, hash)
-            VALUES (gen_random_uuid(), %(id)s, 1, 'approved', 'testblurhash', gen_random_uuid()::text)""", dict(id=p['id']))
+            VALUES (%(u)s, %(id)s, 1, 'approved', 'testblurhash', gen_random_uuid()::text)""", dict(u=secrets.token_hex(32), id=p['id']))
     return p
 
 
@@ -127,7 +130,7 @@ def test_approvals_disabled_by_default(make_person):
 def test_different_photo_makes_new_revision_without_consent(make_person):
     p = _make_eligible(make_person)
     with api_tx() as tx:
-        tx.execute("INSERT INTO photo (uuid, person_id, position, moderation_status, blurhash, hash) VALUES (gen_random_uuid(), %(id)s, 2, 'approved', 'x', 'y')", dict(id=p['id']))
+        tx.execute("INSERT INTO photo (uuid, person_id, position, moderation_status, blurhash, hash) VALUES (%(u)s, %(id)s, 2, 'approved', 'x', 'y')", dict(u=secrets.token_hex(32), id=p['id']))
         second = tx.execute("SELECT uuid::text AS u FROM photo WHERE person_id = %(id)s AND position = 2", dict(id=p['id'])).fetchone()['u']
     # adapt the INSERT to the real NOT NULL photo columns recorded in the Phase B task-2 report
     with api_tx() as tx:
@@ -227,6 +230,66 @@ def test_approve_from_an_older_revision_records_nothing(make_person):
             assert approve_card(tx, rk, p['id'], photo, shown_revision=2) == 'approved'
             assert consent_complete(tx, rev2_id) is True
             assert consent_complete(tx, rev1['id']) is False
+    finally:
+        with api_tx() as tx:
+            set_setting(tx, 'approvals_enabled', 'false')
+
+
+def test_production_shaped_photo_id_carries_through_the_whole_welcome_path(client, make_person, monkeypatch):
+    """A real photo id is a 64-character hex string, not an RFC uuid.
+
+    `photo.uuid` and `onboardee_photo.uuid` are `text`, and
+    `service.person.upload_photo` mints their ids with
+    `secrets.token_hex(32)`. Every fixture in this suite used
+    `gen_random_uuid()` instead, so the whole spotlight path was only ever
+    exercised with RFC-shaped ids and a production id was never tried.
+
+    `spotlight_revision.photo_uuid` was declared `uuid` (migration 0044) and
+    `create_revision` inserted through `%(photo)s::uuid`, so in production
+    every welcome and member-of-week card for a real member raised
+    `psycopg.errors.InvalidTextRepresentation: invalid input syntax for type
+    uuid` and the welcome route answered 500.
+
+    The whole path is walked with a production-shaped id: the route creates
+    the candidate, the revision stores the id byte for byte, the member's
+    card GET hands it back, and approving with it records consent."""
+    import service.api.admin.spotlight_routes as sr
+    import service.spotlight.storage as st
+    monkeypatch.setattr(sr, '_enqueue_card_ready', lambda tx, pid, rk: None)
+    monkeypatch.setattr(st, 'presign', lambda key, seconds=900: f'https://signed/{key}')
+    photo_id = secrets.token_hex(32)
+    assert len(photo_id) == 64
+    p = _make_eligible(make_person, name='HexPhotoId')
+    with api_tx() as tx:
+        tx.execute("UPDATE photo SET uuid = %(u)s WHERE person_id = %(id)s", dict(u=photo_id, id=p['id']))
+        email = tx.execute("SELECT email FROM person WHERE id = %(id)s", dict(id=p['id'])).fetchone()['email']
+        set_setting(tx, 'approvals_enabled', 'true')
+    try:
+        r = client.post('/admin/growth/spotlight/welcome', json={'person_id': p['id']},
+                        headers={'X-Growth-Cron': 'test-cron-secret'})
+        assert r.status_code == 200, r.get_data(as_text=True)
+        rk = r.get_json()['request_key']
+        with api_tx() as tx:
+            rev = current_revision(tx, rk)
+            assert rev['photo_uuid'] == photo_id
+            attach_render(tx, rev['id'], 'hash-hex', 'key-hex', 'https://cdn/key-hex.png')
+            token = make_card_token(tx, rk, email)
+        card = client.get(f'/spotlight/card/{token}')
+        assert card.status_code == 200
+        body = card.get_json()
+        assert body['photo_uuid'] == photo_id
+        assert [ph['uuid'] for ph in body['photos']] == [photo_id]
+        decision = client.post(f'/spotlight/card/{token}',
+                               json={'decision': 'approve', 'photo_uuid': photo_id,
+                                     'revision': rev['revision']})
+        assert decision.status_code == 200, decision.get_data(as_text=True)
+        assert decision.get_json()['result'] == 'approved'
+        with api_tx('read committed') as tx:
+            assert consent_complete(tx, rev['id']) is True
+            stored = tx.execute(
+                "SELECT photo_uuid::text AS u FROM spotlight_revision WHERE id = %(id)s",
+                dict(id=rev['id'])).fetchone()['u']
+        assert stored == photo_id
     finally:
         with api_tx() as tx:
             set_setting(tx, 'approvals_enabled', 'false')

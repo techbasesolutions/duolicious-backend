@@ -32,6 +32,7 @@ tests/test_spotlight_routes.py on purpose -- test files in this suite do not
 import from each other.
 """
 from __future__ import annotations
+import secrets
 
 import hashlib
 from uuid import uuid4
@@ -64,8 +65,8 @@ def _make_eligible(make_person, name='Elig', gender='Woman'):
              WHERE id = %(id)s""", dict(id=p['id']))
         tx.execute("""
             INSERT INTO photo (uuid, person_id, position, moderation_status, blurhash, hash)
-            VALUES (gen_random_uuid(), %(id)s, 1, 'approved', 'testblurhash', gen_random_uuid()::text)""",
-                   dict(id=p['id']))
+            VALUES (%(u)s, %(id)s, 1, 'approved', 'testblurhash', gen_random_uuid()::text)""",
+                   dict(u=secrets.token_hex(32), id=p['id']))
     return p
 
 
