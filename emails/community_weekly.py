@@ -5,6 +5,7 @@ from __future__ import annotations
 import html as _html
 from typing import Optional
 from service.config import EMAIL_DOMAIN
+from service.spotlight.country import display_country
 from emails.base import render, button, chip, title_image, callout, INK_SOFT, MUTED, SANS
 
 FROM_ADDR = f"support@{EMAIL_DOMAIN}"
@@ -15,6 +16,14 @@ def _esc(value) -> str:
     into an alt="..." attribute, so escape quotes as well as angle brackets.
     Same convention as emails/feedback.py and emails/marriage_checklist.py."""
     return _html.escape(str(value), quote=True)
+
+
+def _esc_country(value) -> str:
+    """`person.country` is an alpha-2 code, so "in BB" is what the raw column
+    would put in a member's inbox. Named here rather than in the query that
+    fetches it: the preview path and the real send both come through this
+    module, so neither can miss it."""
+    return _esc(display_country(value))
 
 
 def _esc_https(url: str, field: str) -> str:
@@ -29,7 +38,7 @@ def _esc_https(url: str, field: str) -> str:
 def _spotlight_block(sp: dict) -> str:
     first_name = _esc(sp['first_name'])
     age = _esc(sp['age'])
-    country = _esc(sp['country'])
+    country = _esc_country(sp['country'])
     post_url = _esc_https(sp['post_url'], 'post_url')
     image_url = _esc_https(sp['image_url'], 'image_url')
     return f"""
@@ -43,7 +52,7 @@ def _spotlight_block(sp: dict) -> str:
 def _newcomers_block(rows: list[dict]) -> str:
     if not rows:
         return f'<p class="e-text" style="margin:0 0 20px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">No new members this week. Know someone who belongs here? Your invite link is in your profile.</p>'
-    items = "".join(f'<li style="margin:0 0 6px;">{_esc(r["first_name"])}' + (f' <span style="color:{MUTED};">in {_esc(r["country"])}</span>' if r.get('country') else '') + '</li>' for r in rows)
+    items = "".join(f'<li style="margin:0 0 6px;">{_esc(r["first_name"])}' + (f' <span style="color:{MUTED};">in {_esc_country(r["country"])}</span>' if r.get('country') else '') + '</li>' for r in rows)
     return f'<p class="e-text" style="margin:0 0 8px;font-family:{SANS};font-size:13px;letter-spacing:0.08em;text-transform:uppercase;color:{MUTED};font-weight:700;">New this week</p><ul style="margin:0 0 20px;padding-left:20px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">{items}</ul>'
 
 def _safe_spotlight_block(spotlight: Optional[dict]) -> str:

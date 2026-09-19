@@ -9,11 +9,12 @@ can serve it back without recomputing anything.
 Owner decision (Task 8): a roundup ships count-only -- no member tiles --
 until a per-member roundup approval flow exists. `tiles` is therefore only
 ever populated while the `roundup_tiles_enabled` setting is 'true' (seeded
-'false'); `count`/`countries` are unaffected either way.
+'false'); `count`/`countries`/`country_names` are unaffected either way.
 """
 from __future__ import annotations
 
 from service.growth.queries import _excluded
+from service.spotlight.country import display_country
 from service.spotlight.eligibility import eligibility, photo_url
 
 MAX_TILES = 4
@@ -55,9 +56,15 @@ _Q_CANDIDATES = """
      ORDER BY p.sign_up_time DESC
 """
 
+# The distinct COUNTRY CODES rather than a count of them: `country` is an
+# alpha-2 code, and the roundup's caption and its stored snapshot both face
+# the public, so the codes are turned into names in Python (the one mapping
+# point, `display_country`) and the distinct count is taken over the NAMES.
+# Counting in SQL first would have counted codes, and no name mapping could
+# have reached the number afterwards.
 _Q_TOTALS = """
     SELECT count(*) AS n,
-           count(DISTINCT country) AS countries
+           array_remove(array_agg(DISTINCT country), NULL) AS country_codes
       FROM person
      WHERE activated
        AND sign_up_time > NOW() - make_interval(days => %(days)s)
@@ -91,4 +98,9 @@ def roundup_snapshot(tx, days: int = 7) -> dict:
             if len(tiles) == MAX_TILES:
                 break
     totals = tx.execute(_Q_TOTALS, dict(days=days, ex=_excluded())).fetchone()
-    return dict(tiles=tiles, count=int(totals['n']), countries=int(totals['countries']))
+    names = sorted({display_country(c) or c for c in (totals['country_codes'] or []) if c})
+    # `countries` keeps its meaning and its type (the number the caption says
+    # members joined from); `country_names` is the same set spelled out, so a
+    # surface that wants to name them never has to re-resolve the codes.
+    return dict(tiles=tiles, count=int(totals['n']),
+                countries=len(names), country_names=names)

@@ -53,6 +53,7 @@ from service.spotlight.queue import (create_candidate, expire_member_approvals,
                                      OUTCOME_DELIVERY_STATE, PLATFORMS,
                                      SETTING_KEYS, FREE_KEYS)
 from service.spotlight.assets import asset_key, attach_platform_image, complete_render_if_ready
+from service.spotlight.country import display_country
 from service.spotlight import cleanup
 from service.spotlight.cleanup import (abandoned_job_rows, abandoned_jobs, enqueue_asset_delete,
                                        is_referenced, outstanding_jobs, overdue_removals)
@@ -577,7 +578,11 @@ def _queue_row(r, consent_ok: Optional[bool] = None) -> dict:
             person_id=r['subject_person_id'],
             first_name=r['first_name'],
             age=r['age'],
-            country=r['country'],
+            # `_Q_ROWS` selects the raw alpha-2 column; this is the one point
+            # every consumer of those rows goes through (the operator's queue
+            # list and the render tick that draws the card), so the code
+            # becomes a country name here and nowhere downstream.
+            country=display_country(r['country']),
             photo_url=photo_url(r['photo_uuid']) if r['photo_uuid'] else None,
         )
     row = dict(
@@ -1731,7 +1736,7 @@ def get_growth_spotlight_suggest(s: t.SessionInfo):
                 person_id=r['id'],
                 first_name=r['first_name'],
                 age=r['age'],
-                country=r['country'],
+                country=display_country(r['country']),
                 photo_url=photo_url(uuid_value) if uuid_value else None,
                 reason=_suggest_reason(r['spotlight_last_featured_at']),
                 suggested_caption=_member_of_week_caption(r['first_name'], r['age'], r['country']),
@@ -1766,13 +1771,20 @@ def _roundup_caption(count: int, countries: int) -> str:
     return 'New this week on Ahavah.'
 
 
+# Both builders take the raw `COALESCE(country, location_short_friendly)`
+# value their callers read, and name it here: a caption is published to the
+# public, so the mapping belongs at the point the sentence is built, where no
+# future caller can route around it.
+
 def _welcome_caption(first_name: str, country: Optional[str]) -> str:
+    country = display_country(country)
     if country:
         return f'Welcome to Ahavah, {first_name}. {country}.'
     return f'Welcome to Ahavah, {first_name}.'
 
 
 def _member_of_week_caption(first_name: str, age, country: Optional[str]) -> str:
+    country = display_country(country)
     if country:
         return f'Member of the week: {first_name}, {age}, {country}.'
     return f'Member of the week: {first_name}, {age}.'

@@ -7,6 +7,7 @@ from typing import Optional
 from emails.base import suppressed_sql_pattern
 from service.campaigns import (PLATFORMS, suppressed_predicate_sql,
                                unsubscribed_predicate_sql)
+from service.spotlight.country import display_country
 
 EXCLUDED_EMAILS = ('admin@ahavah.app',)
 
@@ -163,7 +164,11 @@ _Q_COUNT_NEWCOMERS = f"""
 """
 
 def newcomers_since(tx, person_id: int, since: datetime, limit: int = 5) -> list[dict]:
-    return [dict(r) for r in tx.execute(_Q_NEWCOMERS, dict(pid=person_id, since=since, lim=limit, ex=_excluded())).fetchall()]
+    """`p.country` is an alpha-2 code, and every caller of this puts the value
+    in front of a member ("Rivka in GB"), so the rows leave here already
+    naming the country."""
+    return [dict(r, country=display_country(r['country']))
+            for r in tx.execute(_Q_NEWCOMERS, dict(pid=person_id, since=since, lim=limit, ex=_excluded())).fetchall()]
 
 def count_newcomers_since(tx, person_id: int, since: datetime) -> int:
     return tx.execute(_Q_COUNT_NEWCOMERS, dict(pid=person_id, since=since, ex=_excluded())).fetchone()['n']

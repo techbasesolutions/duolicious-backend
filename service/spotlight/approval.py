@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 import service.spotlight.storage as st
 from service.config import WEB_BASE_URL
+from service.spotlight.country import display_country
 from service.spotlight.eligibility import photo_url
 from service.spotlight.nonce import issue_nonce
 from service.spotlight.revisions import current_revision
@@ -127,7 +128,10 @@ def card_state(tx, request_key: str) -> dict | None:
         email=row['email'],
         first_name=row['first_name'],
         age=row['age'],
-        country=row['country'],
+        # The column is an alpha-2 code; the member reads this on their own
+        # card screen, so it is named here, at the one point every caller of
+        # card_state goes through, rather than at each route.
+        country=display_country(row['country']),
         status=row['status'],
         photos=[dict(uuid=r['uuid'], url=photo_url(r['uuid'])) for r in photo_rows],
         kind=row['kind'],
