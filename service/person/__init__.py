@@ -2758,6 +2758,46 @@ def post_verify(s: t.SessionInfo):
     with api_tx() as tx:
         tx.execute(Q_UPDATE_VERIFICATION_JOB, params)
 
+# The verification_job_status enum (init-api.sql) has exactly five values:
+# 'uploading-photo', 'queued', 'running', 'success', 'failure'. The first
+# three mean the check has not produced a result yet.
+_VERIFICATION_UNFINISHED_STATUSES = frozenset({
+    'uploading-photo',
+    'queued',
+    'running',
+})
+
+
+def verification_outcome(status, verification_level_name) -> str:
+    """What the check actually concluded, in one client facing word.
+
+    The cron writes status='success' for two different results: a selfie
+    that matched the member's profile photos ('Photos'), and one that only
+    passed the anti-spoof gestures ('Basics only'). Branching on status
+    alone reads the second as approval, which is how members came to be
+    told they were verified when they were not, so the split is resolved
+    here rather than in the client.
+
+    Anything unrecognised falls through to 'pending'. That is the only
+    safe default: 'photos' and 'basics_only' both claim a completed check,
+    and 'none' claims a rejection we cannot evidence, while 'pending'
+    claims nothing and leaves the client polling.
+    """
+    if status == 'success':
+        # Only 'Photos' proves a profile photo was matched. 'Basics only'
+        # is the honest name for everything else that completed, including
+        # a level we do not recognise.
+        return 'photos' if verification_level_name == 'Photos' else 'basics_only'
+    if status == 'failure':
+        return 'none'
+    if status is not None and status not in _VERIFICATION_UNFINISHED_STATUSES:
+        # A value the enum gained without this mapping being updated.
+        # Report it, then fall through to the safe answer.
+        print('Unrecognised verification_job status:', status)
+    # Queued, running, still uploading, or no job row at all.
+    return 'pending'
+
+
 def get_check_verification(s: t.SessionInfo):
     with api_tx() as tx:
         row = tx.execute(
@@ -2766,6 +2806,10 @@ def get_check_verification(s: t.SessionInfo):
         ).fetchone()
 
     if row:
+        # Additive only. Every pre-existing key keeps its name, type and
+        # meaning; other callers read this endpoint.
+        row['outcome'] = verification_outcome(
+            row.get('status'), row.get('verification_level_name'))
         return row
     return '', 400
 

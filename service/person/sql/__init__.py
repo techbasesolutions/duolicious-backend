@@ -2924,6 +2924,21 @@ AND (
 )
 """
 
+# `verification_level_name` is NOT a column on verification_job. The cron
+# passes that name to Q_UPDATE_VERIFICATION_STATUS, which resolves it
+# against the verification_level lookup table and stores the id on
+# person.verification_level_id, so the person row is the only place the
+# outcome survives. It is only written on a successful run, which is
+# exactly the case the client cannot currently tell apart: 'Photos' means
+# the selfie matched a profile photo, 'Basics only' means the anti-spoof
+# gestures passed and nothing matched.
+#
+# The verification_job join is a LATERAL taking the newest row by id.
+# Nothing constrains verification_job to one row per person (no unique
+# index on person_id in init-api.sql or any migration), and the insert
+# paths delete-then-insert inside a transaction that two concurrent
+# uploads can interleave, so a plain LEFT JOIN with no ORDER BY was
+# non deterministic about which attempt the member was shown.
 Q_CHECK_VERIFICATION = """
 SELECT
     person.verified_gender,
@@ -2935,13 +2950,28 @@ SELECT
         WHERE person_id = %(person_id)s
     ) AS verified_photos,
     verification_job.status,
-    verification_job.message
+    verification_job.message,
+    verification_level.name AS verification_level_name,
+    person.ahavah_verification_tier
 FROM
     person
 LEFT JOIN
-    verification_job
+    verification_level
 ON
-    verification_job.person_id = person.id
+    verification_level.id = person.verification_level_id
+LEFT JOIN LATERAL (
+    SELECT
+        status,
+        message
+    FROM
+        verification_job
+    WHERE
+        verification_job.person_id = person.id
+    ORDER BY
+        id DESC
+    LIMIT
+        1
+) AS verification_job ON TRUE
 WHERE
     person.id = %(person_id)s
 """
