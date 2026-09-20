@@ -23,8 +23,8 @@ from contextlib import suppress
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from functools import lru_cache
 
+from emails.base import ASSETS_DIR, remote_asset_url
 from service.config import EMAIL_DOMAIN, PRODUCT_NAME
 
 SMTP_HOST: str = os.environ["DUO_SMTP_HOST"]
@@ -64,16 +64,30 @@ if RESEND_FROM_OVERRIDE and os.environ.get("DUO_ENV") == "prod":
 # the matching file from emails/assets, which ships inside the container image
 # (see scripts/sync_email_assets.sh).
 #
-# Nothing below may ever break a send. Every failure path here drops the image
-# and logs, so the worst case is the email the product sent yesterday.
-EMAIL_ASSETS_DIR: pathlib.Path = (
-    pathlib.Path(__file__).resolve().parent.parent / "emails" / "assets"
-)
+# Nothing below may ever break a send. Every failure path here logs and points
+# the image back at its public https url, so the worst case is the email the
+# product sent yesterday.
+
+# One definition, owned by emails.base, which the templates read too. Two
+# independent guesses at the layout would disagree silently: every branded
+# email would ask for a cid the mailer could not load. emails.base imports
+# only stdlib, so there is no cycle here.
+EMAIL_ASSETS_DIR: pathlib.Path = ASSETS_DIR
 
 # `src="cid:logo-horizontal-wht.png"`. The cid is the file name, so one name
 # serves both the inline part and the public https url it falls back to. No
-# slashes in the character class, so a cid cannot name a path.
-_CID_REFERENCE = re.compile(r"cid:([A-Za-z0-9][A-Za-z0-9._-]*)")
+# slashes in the character class, so a cid cannot name a path. Anchored to a
+# src attribute because member free text reaches the body too (feedback.py),
+# and "acid:" is not a reference.
+_CID_REFERENCE = re.compile(
+    r"(?P<open>src=(?P<quote>[\"']))cid:(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?P=quote)"
+)
+
+# Successful reads only. Caching a failure would mean one transient OSError
+# unbrands every email this worker sends until the container restarts, and
+# the point of the cache is only to keep disk reads off the send path. Dict
+# get and set are atomic under the GIL, so no lock is needed.
+_ASSET_CACHE: dict[str, bytes] = {}
 
 
 def _asset_content_type(name: str) -> str:
@@ -81,49 +95,95 @@ def _asset_content_type(name: str) -> str:
     return guessed or "image/png"
 
 
-@lru_cache(maxsize=256)
 def _load_email_asset(name: str) -> bytes | None:
     """Read one bundled brand image, or None when it cannot be read.
 
     Cached per process: the same handful of logos and titles goes out with
     every email, and a send is not the place to re-read them from disk.
     """
+    cached = _ASSET_CACHE.get(name)
+    if cached is not None:
+        return cached
     try:
         root = EMAIL_ASSETS_DIR.resolve()
         path = (root / name).resolve()
         if path.parent != root or not path.is_file():
             print(f"Email asset not available for inlining: {name!r}")
             return None
-        return path.read_bytes()
+        data = path.read_bytes()
     except Exception as exc:
         print(f"Could not read email asset {name!r}: {exc}")
         return None
+    _ASSET_CACHE[name] = data
+    return data
 
 
-def _inline_email_assets(body: str) -> list[tuple[str, bytes]]:
-    """Every distinct `cid:` name the html asks for, paired with its bytes.
+def _restore_remote_srcs(body: str, names: set[str] | None = None) -> str:
+    """Point `cid:` srcs back at the public https url. `names` of None means
+    every one of them.
 
-    Order follows first appearance, so the parts read in document order. A
-    name that cannot be loaded is dropped: the reader sees the alt text,
-    which beats a send that fails.
+    This is the never break a send rule, written once. A brand image the
+    mailer cannot carry inside the message falls back to the url the email
+    used before any of this existed, which most readers still see, rather
+    than a cid with no part behind it, which every reader sees as a broken
+    box. Never raises.
     """
-    found: list[tuple[str, bytes]] = []
+    if not body:
+        return body
+
+    def swap(match: "re.Match[str]") -> str:
+        name = match.group("name")
+        if names is not None and name not in names:
+            return match.group(0)
+        return f'{match.group("open")}{remote_asset_url(name)}{match.group("quote")}'
+
     try:
+        return _CID_REFERENCE.sub(swap, body)
+    except Exception as exc:
+        print(f"Could not restore remote email asset urls: {exc}")
+        return body
+
+
+def _prepare_inline_body(body: str) -> tuple[str, list[tuple[str, bytes]]]:
+    """The html to send, paired with the images to carry alongside it.
+
+    Every `cid:` the mailer could load becomes an inline part. Every one it
+    could not is rewritten back to the https url in the body that actually
+    goes out, so the plan's invariant ("a missing asset falls back to the
+    remote url") is true in the mailer and not only at render time. That
+    matters because service/campaigns/outbox.py stores rendered html and the
+    cron drains it later, possibly from a different deploy.
+
+    Order follows first appearance, so the parts read in document order.
+    """
+    try:
+        loaded: list[tuple[str, bytes]] = []
+        unresolved: set[str] = set()
         seen: set[str] = set()
-        for name in _CID_REFERENCE.findall(body or ""):
+        for match in _CID_REFERENCE.finditer(body or ""):
+            name = match.group("name")
             if name in seen:
                 continue
             seen.add(name)
             data = _load_email_asset(name)
-            if data is not None:
-                found.append((name, data))
+            if data is None:
+                unresolved.add(name)
+            else:
+                loaded.append((name, data))
+        if unresolved:
+            return _restore_remote_srcs(body, unresolved), loaded
+        return body, loaded
     except Exception as exc:
         print(f"Could not collect inline email assets: {exc}")
-        return []
-    return found
+        return _restore_remote_srcs(body), []
 
 
-def _resend_attachments(body: str) -> list[dict]:
+def _inline_email_assets(body: str) -> list[tuple[str, bytes]]:
+    """Every distinct `cid:` name the html asks for, paired with its bytes."""
+    return _prepare_inline_body(body)[1]
+
+
+def _resend_attachments(inline: list[tuple[str, bytes]]) -> list[dict]:
     """The same inline images in the shape Resend's API documents.
 
     https://resend.com/docs/api-reference/emails/send-email lists
@@ -141,7 +201,7 @@ def _resend_attachments(body: str) -> list[dict]:
                 "content_type": _asset_content_type(name),
                 "content_id": name,
             }
-            for name, data in _inline_email_assets(body)
+            for name, data in inline
         ]
     except Exception as exc:
         print(f"Inline email assets skipped for the Resend send: {exc}")
@@ -231,16 +291,20 @@ class Smtp:
 
         _from_addr: str = from_addr or f"no-reply@{EMAIL_DOMAIN}"
 
+        # An image the mailer cannot load goes back to its https url here, so
+        # the body that ships never holds a cid with no part behind it.
+        body, inline = _prepare_inline_body(body)
+
         alternative = MIMEMultipart("alternative")
         alternative.attach(MIMEText(body, "html"))
 
         # No cid in the body means no wrapper: the message is exactly the
         # multipart/alternative this mailer has always sent.
         msg: MIMEMultipart = alternative
-        inline = _inline_email_assets(body)
         if inline:
             try:
-                related = MIMEMultipart("related")
+                # RFC 2387 requires `type`, naming the root part's media type.
+                related = MIMEMultipart("related", type="multipart/alternative")
                 related.attach(alternative)
                 for name, data in inline:
                     part = MIMEImage(
@@ -251,9 +315,11 @@ class Smtp:
                     related.attach(part)
                 msg = related
             except Exception as exc:
-                # Fall back to today's message rather than lose the send.
+                # Fall back to today's message rather than lose the send, and
+                # point every image at its url so none of them comes out dead.
                 print(f"Inline email assets skipped: {exc}")
-                msg = alternative
+                msg = MIMEMultipart("alternative")
+                msg.attach(MIMEText(_restore_remote_srcs(body), "html"))
 
         msg["From"] = f"{PRODUCT_NAME} <{_from_addr}>"
         msg["To"] = to_addr
@@ -300,6 +366,9 @@ class Smtp:
         _from_addr: str = (
             RESEND_FROM_OVERRIDE or from_addr or f"no-reply@{EMAIL_DOMAIN}"
         )
+        # An image the mailer cannot load goes back to its https url here, so
+        # the html that ships never holds a cid with no attachment behind it.
+        body, inline = _prepare_inline_body(body)
         payload: dict = {
             "from": f"{PRODUCT_NAME} <{_from_addr}>",
             "to": [to_addr],
@@ -315,18 +384,36 @@ class Smtp:
             }
         # Inline brand images, when the html asks for any. A body with no
         # cid adds no key, so that payload is the one production sends today.
-        attachments = _resend_attachments(body)
+        attachments = _resend_attachments(inline)
         if attachments:
             payload["attachments"] = attachments
-        resp = requests.post(
-            RESEND_API_URL,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {self.password}",
-                "User-Agent": "ahavah-backend/1.0",
-            },
-            timeout=15,
-        )
+
+        def _post(body_to_send: dict):
+            return requests.post(
+                RESEND_API_URL,
+                json=body_to_send,
+                headers={
+                    "Authorization": f"Bearer {self.password}",
+                    "User-Agent": "ahavah-backend/1.0",
+                },
+                timeout=15,
+            )
+
+        resp = _post(payload)
+        if resp.status_code >= 300 and "attachments" in payload:
+            # The attachments key is the only thing new in this payload, so a
+            # rejection of it must not take the email with it. Drop the
+            # images, point the html back at the public urls and send again:
+            # an email that looks like it did last week beats one that never
+            # arrives. Raise only if this second attempt fails too.
+            print(
+                f"Resend rejected the send with inline attachments "
+                f"(HTTP {resp.status_code}): {resp.text[:500]}. Retrying with "
+                f"the brand images as remote urls."
+            )
+            payload.pop("attachments", None)
+            payload["html"] = _restore_remote_srcs(payload["html"])
+            resp = _post(payload)
         if resp.status_code >= 300:
             raise Exception(
                 f"Resend API HTTP {resp.status_code}: {resp.text[:500]}"

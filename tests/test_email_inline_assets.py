@@ -28,6 +28,7 @@ from smtp import Smtp
 
 PNG = 'logo-horizontal-wht.png'
 PNG_DARK = 'logo-horizontal.png'
+ORIGIN = 'https://ahavah.app'
 
 # Python picks a random multipart boundary per message, so two runs of the
 # same code never match byte for byte. Normalise it and the comparison is
@@ -64,9 +65,9 @@ def mailer(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _clear_asset_cache():
-    smtp_module._load_email_asset.cache_clear()
+    smtp_module._ASSET_CACHE.clear()
     yield
-    smtp_module._load_email_asset.cache_clear()
+    smtp_module._ASSET_CACHE.clear()
 
 
 def _send(mailer, body: str) -> str:
@@ -127,17 +128,46 @@ def test_the_optional_headers_survive_an_inline_send(mailer):
     assert 'List-Unsubscribe-Post: List-Unsubscribe=One-Click' in raw
 
 
-def test_an_asset_that_cannot_be_read_is_skipped_and_the_mail_still_goes(mailer):
+def test_the_related_part_names_its_root_media_type(mailer):
+    """RFC 2387 makes `type` a required parameter of multipart/related. Most
+    clients infer the root from the first part; older Outlook and some
+    gateways are documented to care."""
+    raw = _send(mailer, f'<img src="cid:{PNG}"/>')
+    assert 'multipart/related' in raw
+    assert 'type="multipart/alternative"' in raw
+
+
+def test_an_asset_that_cannot_be_read_falls_back_to_the_remote_url(mailer):
+    """The plan's invariant, on the mailer as well as the template: a missing
+    asset is today's behaviour, never a dead image. A cid with no part behind
+    it renders as a broken box, which is worse than the remote url it
+    replaced."""
     raw = _send(mailer, '<img src="cid:not-a-real-asset.png"/>')
     assert 'multipart/related' not in raw
-    assert 'not-a-real-asset.png' in raw     # the body is untouched
     assert 'Content-ID' not in raw
+    assert f'src="{ORIGIN}/email/not-a-real-asset.png"' in raw
+    assert 'cid:not-a-real-asset.png' not in raw
 
 
 def test_a_readable_asset_beside_a_missing_one_still_goes_inline(mailer):
     raw = _send(mailer, f'<img src="cid:{PNG}"/><img src="cid:nope.png"/>')
     assert f'Content-ID: <{PNG}>' in raw
     assert 'Content-ID: <nope.png>' not in raw
+    assert f'src="cid:{PNG}"' in raw
+    assert f'src="{ORIGIN}/email/nope.png"' in raw
+
+
+def test_a_cid_in_member_text_is_not_treated_as_an_asset(mailer):
+    """emails/feedback.py interpolates a member's free text into the body. A
+    member writing a file name must not attach a 35 KB image, and a word like
+    "acid:" must not be read as a reference at all."""
+    raw = _send(
+        mailer,
+        '<p>they wrote cid:badge-instagram.png, and acid:logo-horizontal.png</p>',
+    )
+    assert 'multipart/related' not in raw
+    assert 'Content-ID' not in raw
+    assert 'cid:badge-instagram.png' in raw   # member text is left alone
 
 
 def test_a_cid_cannot_reach_outside_the_assets_folder():
@@ -170,10 +200,52 @@ def test_an_asset_is_read_once_per_process(monkeypatch):
     assert reads.count(PNG) == 1
 
 
+def test_a_transient_read_failure_is_not_cached(monkeypatch):
+    """Only successes are worth caching. One OSError must not unbrand every
+    email this worker sends until the container restarts."""
+    import pathlib
+
+    real = pathlib.Path.read_bytes
+    attempts: list[int] = []
+
+    def flaky(self):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError('disk gone')
+        return real(self)
+
+    monkeypatch.setattr('pathlib.Path.read_bytes', flaky)
+    assert smtp_module._load_email_asset(PNG) is None
+    assert smtp_module._load_email_asset(PNG) is not None
+
+
+def test_the_mailer_and_the_templates_read_the_same_assets_folder():
+    """Two independent guesses at the layout would fail silently and totally:
+    base.py would emit cid: for everything while the mailer loaded nothing."""
+    import emails.base
+
+    assert smtp_module.EMAIL_ASSETS_DIR.resolve() == emails.base.ASSETS_DIR.resolve()
+
+
+def test_every_cid_a_template_can_ask_for_is_loadable_by_the_mailer():
+    """asset_src() decides a name travels inline. The mailer has to be able
+    to load exactly that name. One walk over the bundled set binds the two,
+    with no database and no send."""
+    from emails.base import ASSETS_DIR, asset_src
+
+    bundled = sorted(p.name for p in ASSETS_DIR.glob('*.png'))
+    assert bundled, 'emails/assets/ holds no png'
+    for name in bundled:
+        assert asset_src(name) == f'cid:{name}'
+        assert smtp_module._load_email_asset(name), name
+
+
 # --- the Resend https path (what production uses) --------------------------
 
 class _FakeResponse:
-    status_code = 200
+    def __init__(self, status_code: int = 200, text: str = '') -> None:
+        self.status_code = status_code
+        self.text = text
 
     def json(self) -> dict:
         return {'id': 'msg-1'}
@@ -195,6 +267,28 @@ def resend(monkeypatch):
 
     monkeypatch.setattr(requests, 'post', fake_post)
     return Smtp('host', 25, 'user', 're_key'), posted
+
+
+@pytest.fixture
+def resend_recording(monkeypatch):
+    """An Smtp on the Resend path that keeps every payload it posted, and can
+    be told what status to answer with, call by call."""
+    monkeypatch.setattr(smtp_module, 'USE_RESEND_API', True)
+    monkeypatch.setattr(smtp_module, 'RESEND_FROM_OVERRIDE', '')
+    posts: list[dict] = []
+    statuses: list[int] = []
+
+    import requests
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        # A snapshot, not the live dict: the retry edits the payload in place
+        # and requests serialises it at post time either way.
+        posts.append(dict(json or {}))
+        status = statuses.pop(0) if statuses else 200
+        return _FakeResponse(status, 'attachments: invalid')
+
+    monkeypatch.setattr(requests, 'post', fake_post)
+    return Smtp('host', 25, 'user', 're_key'), posts, statuses
 
 
 def test_the_resend_payload_carries_the_attachments_in_the_documented_shape(resend):
@@ -242,6 +336,59 @@ def test_a_missing_asset_does_not_stop_the_resend_send(resend):
     assert 'attachments' not in posted['json']
 
 
+def test_a_missing_asset_leaves_the_remote_url_in_the_resend_html(resend):
+    """service/campaigns/outbox.py stores rendered html and the cron drains
+    it later, possibly from a different deploy. An asset renamed between the
+    two must not leave a dead cid in the message that actually ships."""
+    mailer, posted = resend
+    mailer._try_send(
+        subject='s', body='<img src="cid:nope.png"/>', to_addr='to@example.com')
+    assert posted['json']['html'] == f'<img src="{ORIGIN}/email/nope.png"/>'
+
+
+def test_a_resend_rejection_of_the_attachments_still_sends_the_email(
+        resend_recording):
+    """The one new failure mode that could take out every outbound email in
+    the product. A rejected payload drops the images, puts the urls back and
+    posts again, so the email still arrives, unbranded at worst."""
+    mailer, posts, statuses = resend_recording
+    statuses.append(422)
+
+    got = mailer._try_send(
+        subject='s', body=f'<img src="cid:{PNG}"/>', to_addr='to@example.com')
+
+    assert got == 'msg-1'
+    assert len(posts) == 2
+    assert 'attachments' in posts[0]
+    assert 'attachments' not in posts[1]
+    assert posts[1]['html'] == f'<img src="{ORIGIN}/email/{PNG}"/>'
+    assert posts[1]['subject'] == 's'
+    assert posts[1]['to'] == ['to@example.com']
+
+
+def test_a_resend_rejection_with_no_attachments_is_not_retried(resend_recording):
+    """The fallback exists for the attachments key alone. A genuine failure
+    stays a failure, so Smtp.send's own retry and logging still apply."""
+    mailer, posts, statuses = resend_recording
+    statuses.append(422)
+
+    with pytest.raises(Exception):
+        mailer._try_send(
+            subject='s', body='<p>hello</p>', to_addr='to@example.com')
+    assert len(posts) == 1
+
+
+def test_a_resend_rejection_that_survives_the_retry_still_raises(
+        resend_recording):
+    mailer, posts, statuses = resend_recording
+    statuses.extend([422, 500])
+
+    with pytest.raises(Exception):
+        mailer._try_send(
+            subject='s', body=f'<img src="cid:{PNG}"/>', to_addr='to@example.com')
+    assert len(posts) == 2
+
+
 # --- the templates ask for inline assets -----------------------------------
 
 def test_the_shell_logo_asks_for_an_inline_part():
@@ -281,6 +428,18 @@ def test_a_cache_busting_query_still_resolves_to_the_bundled_file():
     from emails.base import asset_src
 
     assert asset_src(f'{PNG}?v=2') == f'cid:{PNG}'
+
+
+def test_the_social_badges_travel_inside_the_message():
+    """referral_community.py built its badge urls by hand, so the Instagram,
+    Threads and Facebook glyphs stayed remote and stayed blank for exactly
+    the reader this work exists for."""
+    from emails.referral_community import referral_community_html
+
+    html = referral_community_html('someone@example.org', 'abc123')
+    for name in ('badge-instagram.png', 'badge-threads.png', 'badge-facebook.png'):
+        assert f'src="cid:{name}"' in html
+    assert f'{ORIGIN}/email/badge-' not in html
 
 
 def test_a_sign_in_code_email_carries_its_branding_inside_the_message(mailer):
