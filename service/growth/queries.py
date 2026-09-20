@@ -129,6 +129,37 @@ def dormant_cohort(tx, days: int = 30, resend_days: int = 30) -> list[dict]:
     return [dict(r) for r in tx.execute(
         _Q_DORMANT, dict(days=days, resend=resend_days, ex=_excluded(), sup=suppressed_sql_pattern())).fetchall()]
 
+# Owner decision 2026-09-19: "new faces should go to all members", not only
+# the ones who went quiet. Same shape as _Q_DORMANT, minus the dormancy
+# window, and a member who has never liked, passed or messaged is included
+# with their sign-up time standing in for a last action. The resend cap still
+# holds, and the runner's own frequency cap still applies on top.
+_Q_ALL_MEMBERS = f"""
+    WITH act AS (
+      SELECT p.id, p.email, p.name, p.reinvite_sent_at, p.sign_up_time,
+             {_last_action_sql('p.id')} AS last_action
+        FROM person p
+       WHERE p.activated AND p.deletion_requested_at IS NULL
+         AND lower(p.email) <> ALL(%(ex)s)
+         AND NOT ({unsubscribed_predicate_sql('notifications', 'p.id')})
+         AND NOT ({suppressed_predicate_sql('p.email')})
+    )
+    SELECT id AS person_id, email, name,
+           CASE WHEN last_action > to_timestamp(0) THEN last_action ELSE sign_up_time END AS last_action
+      FROM act
+     WHERE (reinvite_sent_at IS NULL OR reinvite_sent_at < NOW() - make_interval(days => %(resend)s))
+     ORDER BY last_action
+"""
+
+
+def all_members_cohort(tx, resend_days: int = 30) -> list[dict]:
+    """Every reachable member, with the moment their "since you were here"
+    counts from: their last like, pass or message, or their sign-up when they
+    have never acted."""
+    return [dict(r) for r in tx.execute(
+        _Q_ALL_MEMBERS, dict(resend=resend_days, ex=_excluded(), sup=suppressed_sql_pattern())).fetchall()]
+
+
 def _newcomer_predicate_sql(person_ref: str = '%(pid)s', since_ref: str = '%(since)s') -> str:
     """The WHERE predicate for 'newcomers a member would want to see': shared
     by the name-list query, the count query and the E3 recipient count so the
@@ -181,7 +212,8 @@ def count_newcomers_since(tx, person_id: int, since: datetime) -> int:
 _Q_COUNT_REINVITE_COHORT = f"""
     WITH act AS (
       SELECT p.id, p.reinvite_sent_at,
-             {_last_action_sql('p.id')} AS last_action
+             CASE WHEN {_last_action_sql('p.id')} > to_timestamp(0)
+                  THEN {_last_action_sql('p.id')} ELSE p.sign_up_time END AS last_action
         FROM person p
        WHERE p.activated AND p.deletion_requested_at IS NULL
          AND lower(p.email) <> ALL(%(ex)s)
@@ -190,8 +222,9 @@ _Q_COUNT_REINVITE_COHORT = f"""
     )
     SELECT count(*) AS n
       FROM act d
-     WHERE d.last_action > to_timestamp(0)
-       AND d.last_action < NOW() - make_interval(days => %(days)s)
+     WHERE (%(days)s <= 0
+            OR (d.last_action > to_timestamp(0)
+                AND d.last_action < NOW() - make_interval(days => %(days)s)))
        AND (d.reinvite_sent_at IS NULL OR d.reinvite_sent_at < NOW() - make_interval(days => %(resend)s))
        AND EXISTS (
          SELECT 1 FROM person p
@@ -199,8 +232,10 @@ _Q_COUNT_REINVITE_COHORT = f"""
        )
 """
 
-def count_reinvite_cohort(tx, days: int = 30, resend_days: int = 30) -> int:
-    """How many members `emails.send_reinvite.recipients()` would return."""
+def count_reinvite_cohort(tx, days: int = 0, resend_days: int = 30) -> int:
+    """How many members `emails.send_reinvite.recipients()` would return.
+    `days = 0` means every member, not only the dormant ones (owner decision
+    2026-09-19); a positive value keeps the old dormancy window."""
     return int(tx.execute(_Q_COUNT_REINVITE_COHORT,
                           dict(days=days, resend=resend_days, ex=_excluded(), sup=suppressed_sql_pattern())).fetchone()['n'])
 
