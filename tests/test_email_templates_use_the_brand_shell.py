@@ -277,3 +277,44 @@ def test_every_asset_a_template_asks_for_is_bundled():
 def test_templates_are_syntactically_whole():
     for path in _template_files():
         ast.parse(path.read_text(encoding='utf-8'))
+
+
+def test_the_body_font_falls_back_to_something_close_before_arial():
+    """Gmail, Outlook and Yahoo strip <link> and do not support web fonts, so
+    Plus Jakarta Sans never loads there and the stack decides what the reader
+    actually sees. The stack ended at Arial until 2026-09-20, which is a
+    neo-grotesque and the worst available match for a geometric humanist face.
+    The owner flagged the result as off brand three times before the cause was
+    found. Keep the closer families ahead of Arial.
+    """
+    from emails.base import SANS
+
+    assert 'Plus Jakarta Sans' in SANS, 'the brand face must still be asked for first'
+    for family in ('Segoe UI', 'Roboto'):
+        assert family in SANS, (
+            f'{family} is missing from the body font stack. Without it a '
+            f'reader on that platform drops to Arial. Stack is: {SANS}')
+    # Order matters: a fallback only helps if the reader reaches it first.
+    assert SANS.index('Segoe UI') < SANS.index('Arial')
+    assert SANS.index('Roboto') < SANS.index('Arial')
+
+
+def test_no_member_facing_email_calls_the_community_a_diaspora():
+    """Ahavah serves Torah-observant believers, who are mostly not Jewish.
+    "The diaspora" reads as the Jewish diaspora, which tells most of the
+    community the product is not for them. The owner has corrected this
+    framing repeatedly. Scanned across emails/ and service/ because the
+    footer line was duplicated into 30 templates.
+    """
+    offenders = []
+    roots = [EMAILS_DIR, EMAILS_DIR.parent / 'service']
+    for root in roots:
+        for path in root.rglob('*.py'):
+            if '__pycache__' in str(path):
+                continue
+            text = path.read_text(encoding='utf-8')
+            if 'diaspora' in text.lower():
+                offenders.append(_repo_relative(path))
+    assert not offenders, (
+        'These say "diaspora", which frames Ahavah as Jewish. Say '
+        '"Torah-observant believers" instead:\n  ' + '\n  '.join(sorted(offenders)))

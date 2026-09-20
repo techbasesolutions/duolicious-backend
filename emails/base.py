@@ -114,7 +114,23 @@ CANVAS = "#ECE9E0"
 PANEL = "#FBF9F4"
 MUTED = "#6A6580"        # ≈ canonical oklch(0.45 0.05 280)
 SERIF = "'Ultra', Georgia, 'Times New Roman', serif"        # display
-SANS = "'Plus Jakarta Sans', Arial, Helvetica, sans-serif"  # body
+
+# Body copy. The fallbacks are the whole point of this line, so do not trim
+# them back to Arial.
+#
+# Gmail, Outlook and Yahoo strip <link> tags and do not support web fonts at
+# all, so Plus Jakarta Sans NEVER loads there no matter what we do. The stack
+# below is what those readers actually see. It used to end at Arial, a
+# neo-grotesque that is the worst available match for a geometric humanist
+# face, and the owner flagged the result as off brand three times before the
+# cause was found (2026-09-20).
+#
+# Ordered by how close each is to Plus Jakarta Sans on the platform where it
+# is present: Segoe UI on Windows, Roboto on Android and in Gmail's own web
+# client, Helvetica Neue on older Apple clients. Apple Mail and iOS Mail do
+# support web fonts, so they still get the real face from the <link>.
+SANS = ("'Plus Jakarta Sans', 'Segoe UI', Roboto, 'Helvetica Neue', "
+        "Arial, sans-serif")  # body
 
 # Canonical .e__btn: lime pill, ink text, 18px/800, padding 18px 32px, radius 14px.
 def button(label: str, href: str, *, variant: str = "lime", full: bool = True) -> str:
