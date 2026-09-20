@@ -10,14 +10,20 @@ is used as the Resend API key (matches the `DUO_SMTP_PASS=re_...`
 configuration pattern Resend itself documents for SMTP-bridge clients).
 """
 
+import base64
+import mimetypes
 import os
+import pathlib
+import re
 import smtplib
 import threading
 import time
 import traceback
 from contextlib import suppress
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from functools import lru_cache
 
 from service.config import EMAIL_DOMAIN, PRODUCT_NAME
 
@@ -48,6 +54,98 @@ if RESEND_FROM_OVERRIDE and os.environ.get("DUO_ENV") == "prod":
         f"in production — every outbound From will be rewritten. Unset this "
         f"env var in .env.production before public launch."
     )
+
+
+# --- inline brand assets ---------------------------------------------------
+# A mail client decides per sender whether to fetch a remote image, so every
+# piece of Ahavah branding in an email is a permission away from not showing
+# up. An image carried inside the message needs no permission and no network.
+# The mailer reads the `cid:` names out of the html it is handed and attaches
+# the matching file from emails/assets, which ships inside the container image
+# (see scripts/sync_email_assets.sh).
+#
+# Nothing below may ever break a send. Every failure path here drops the image
+# and logs, so the worst case is the email the product sent yesterday.
+EMAIL_ASSETS_DIR: pathlib.Path = (
+    pathlib.Path(__file__).resolve().parent.parent / "emails" / "assets"
+)
+
+# `src="cid:logo-horizontal-wht.png"`. The cid is the file name, so one name
+# serves both the inline part and the public https url it falls back to. No
+# slashes in the character class, so a cid cannot name a path.
+_CID_REFERENCE = re.compile(r"cid:([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _asset_content_type(name: str) -> str:
+    guessed, _ = mimetypes.guess_type(name)
+    return guessed or "image/png"
+
+
+@lru_cache(maxsize=256)
+def _load_email_asset(name: str) -> bytes | None:
+    """Read one bundled brand image, or None when it cannot be read.
+
+    Cached per process: the same handful of logos and titles goes out with
+    every email, and a send is not the place to re-read them from disk.
+    """
+    try:
+        root = EMAIL_ASSETS_DIR.resolve()
+        path = (root / name).resolve()
+        if path.parent != root or not path.is_file():
+            print(f"Email asset not available for inlining: {name!r}")
+            return None
+        return path.read_bytes()
+    except Exception as exc:
+        print(f"Could not read email asset {name!r}: {exc}")
+        return None
+
+
+def _inline_email_assets(body: str) -> list[tuple[str, bytes]]:
+    """Every distinct `cid:` name the html asks for, paired with its bytes.
+
+    Order follows first appearance, so the parts read in document order. A
+    name that cannot be loaded is dropped: the reader sees the alt text,
+    which beats a send that fails.
+    """
+    found: list[tuple[str, bytes]] = []
+    try:
+        seen: set[str] = set()
+        for name in _CID_REFERENCE.findall(body or ""):
+            if name in seen:
+                continue
+            seen.add(name)
+            data = _load_email_asset(name)
+            if data is not None:
+                found.append((name, data))
+    except Exception as exc:
+        print(f"Could not collect inline email assets: {exc}")
+        return []
+    return found
+
+
+def _resend_attachments(body: str) -> list[dict]:
+    """The same inline images in the shape Resend's API documents.
+
+    https://resend.com/docs/api-reference/emails/send-email lists
+    `attachments[]` with `content` (a base64 string), `filename`,
+    `content_type` and `content_id`.
+    https://resend.com/docs/dashboard/emails/embed-inline-images adds that
+    `content_id` carries no angle brackets and the html points at it as
+    `src="cid:<content_id>"`, which is exactly the name of the file here.
+    """
+    try:
+        return [
+            {
+                "content": base64.b64encode(data).decode("ascii"),
+                "filename": name,
+                "content_type": _asset_content_type(name),
+                "content_id": name,
+            }
+            for name, data in _inline_email_assets(body)
+        ]
+    except Exception as exc:
+        print(f"Inline email assets skipped for the Resend send: {exc}")
+        return []
 
 
 class Smtp:
@@ -133,7 +231,30 @@ class Smtp:
 
         _from_addr: str = from_addr or f"no-reply@{EMAIL_DOMAIN}"
 
-        msg = MIMEMultipart("alternative")
+        alternative = MIMEMultipart("alternative")
+        alternative.attach(MIMEText(body, "html"))
+
+        # No cid in the body means no wrapper: the message is exactly the
+        # multipart/alternative this mailer has always sent.
+        msg: MIMEMultipart = alternative
+        inline = _inline_email_assets(body)
+        if inline:
+            try:
+                related = MIMEMultipart("related")
+                related.attach(alternative)
+                for name, data in inline:
+                    part = MIMEImage(
+                        data, _subtype=_asset_content_type(name).split("/", 1)[-1]
+                    )
+                    part.add_header("Content-ID", f"<{name}>")
+                    part.add_header("Content-Disposition", "inline", filename=name)
+                    related.attach(part)
+                msg = related
+            except Exception as exc:
+                # Fall back to today's message rather than lose the send.
+                print(f"Inline email assets skipped: {exc}")
+                msg = alternative
+
         msg["From"] = f"{PRODUCT_NAME} <{_from_addr}>"
         msg["To"] = to_addr
         msg["Subject"] = subject
@@ -144,7 +265,6 @@ class Smtp:
             # bulk senders since Feb 2024 (audit Email MED).
             msg["List-Unsubscribe"] = list_unsubscribe
             msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
-        msg.attach(MIMEText(body, "html"))
 
         self._smtp.sendmail(
             from_addr=_from_addr,
@@ -193,6 +313,11 @@ class Smtp:
                 "List-Unsubscribe": list_unsubscribe,
                 "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
             }
+        # Inline brand images, when the html asks for any. A body with no
+        # cid adds no key, so that payload is the one production sends today.
+        attachments = _resend_attachments(body)
+        if attachments:
+            payload["attachments"] = attachments
         resp = requests.post(
             RESEND_API_URL,
             json=payload,
