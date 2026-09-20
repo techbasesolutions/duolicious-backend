@@ -55,8 +55,8 @@ def member_welcome_html(
 {title_image("title-member-welcome.png", "title-member-welcome-wht.png", "Welcome to the family.", 512)}
 
 <p class="e-text" style="margin:0 0 16px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
-  You're in. Ahavah is Torah-observant matchmaking built by our own,
-  for the diaspora, and every early member starts with 6 months of
+  You're in. Ahavah is matchmaking built by and for Torah-observant
+  believers, and every early member starts with 6 months of
   Premium free. Yours is already live: it runs until
   <strong>{_fmt_date(premium_until)}</strong>, and 30 tokens are in
   your wallet for super likes, boosts and more.
@@ -71,7 +71,7 @@ def member_welcome_html(
 {callout("Tip: members who add photos and complete their profile get seen first. The map shows the whole community.")}
 """
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because you just joined Ahavah.
 <div style="margin-top:14px;">
   <a href="{unsubscribe_url}" style="color:{MUTED};font-weight:600;text-decoration:underline;">Unsubscribe</a>

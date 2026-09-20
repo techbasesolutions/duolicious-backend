@@ -63,7 +63,7 @@ def otp_template(otp: str) -> str:
 </p>
 """
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because someone requested a sign-in code for this email.
 <div style="margin-top:14px;">
   <a href="https://ahavah.app/faq" style="color:{MUTED};font-weight:600;text-decoration:underline;">Help</a>

@@ -135,7 +135,7 @@ def checklist_results_html(role: str | None, answers: list[dict]) -> str:
         "We never stored your answers. This summary was composed when you sent "
         "it, then your responses were discarded.<br/>"
         "Reply to this email to reach a real person. "
-        f'<a href="{SITE}" style="color:{INDIGO};font-weight:600;text-decoration:none;">Ahavah</a>, made for the diaspora.'
+        f'<a href="{SITE}" style="color:{INDIGO};font-weight:600;text-decoration:none;">Ahavah</a>, made for Torah-observant believers.'
     )
 
     return render(

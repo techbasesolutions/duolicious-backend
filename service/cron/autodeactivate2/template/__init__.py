@@ -46,7 +46,7 @@ def emailtemplate():
 {callout("One sign-in is all it takes. Your profile is restored the moment you're back.")}
 """
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because your {PRODUCT_NAME} profile was hidden after 30 days of inactivity.
 <div style="margin-top:14px;">
   <a href="https://ahavah.app/faq" style="color:{MUTED};font-weight:600;text-decoration:underline;">Help</a>

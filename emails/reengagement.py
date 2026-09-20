@@ -72,7 +72,7 @@ def _footer(email: str) -> str:
     unsub = _unsub_url("waitlist", email, WEB_BASE_URL)
     link_style = f"color:{MUTED};font-weight:600;text-decoration:underline;"
     return f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You are receiving this because you joined the waitlist at
 <a href="{SITE}" style="color:{INDIGO};font-weight:600;text-decoration:none;">ahavah.app</a>.
 <div style="margin-top:14px;">

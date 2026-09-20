@@ -85,7 +85,7 @@ def welcome_html(
 {callout("Premium and tokens are already on your account. Nothing to claim, nothing to enter.")}
 """
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because you're a member of Ahavah.
 <div style="margin-top:14px;">
   <a href="{unsubscribe_url}" style="color:{MUTED};font-weight:600;text-decoration:underline;">Unsubscribe</a>
@@ -128,7 +128,7 @@ def reminder_html(
 {callout("Your invite link never expires and there is no limit on how many friends can extend your Premium.")}
 """
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because you're a member of Ahavah.
 <div style="margin-top:14px;">
   <a href="{unsubscribe_url}" style="color:{MUTED};font-weight:600;text-decoration:underline;">Unsubscribe</a>

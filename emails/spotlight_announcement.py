@@ -37,7 +37,7 @@ def spotlight_announcement_html(confirm_url: str, settings_url: str, unsubscribe
 </p>
 """
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because you're a member of Ahavah.
 <div style="margin-top:14px;">
   <a href="{unsubscribe_url}" style="color:{MUTED};font-weight:600;text-decoration:underline;">Unsubscribe</a>

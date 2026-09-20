@@ -85,7 +85,7 @@ def card_live_html(first_name: str, image_url: str, post_url: str, share_url: st
 </p>
 """
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because you opted in to Community Spotlight.
 <div style="margin-top:14px;">
   <a href="{unsubscribe_url}" style="color:{MUTED};font-weight:600;text-decoration:underline;">Unsubscribe</a>

@@ -46,8 +46,8 @@ def digest_html(
     names = _name_list(new_names)
     lede = (
         f"Say hello to {names}, who joined in the last two weeks. "
-        f"The community now stands at {total_members} members across "
-        f"the diaspora, with {total_matches} matches made so far."
+        f"The community now stands at {total_members} members "
+        f"worldwide, with {total_matches} matches made so far."
     )
     body = f"""
 {chip("Community digest")}
@@ -65,7 +65,7 @@ def digest_html(
 {callout("New members appear on the map and in Discover as soon as they join.")}
 """
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because you're a member of Ahavah.
 <div style="margin-top:14px;">
   <a href="{unsubscribe_url}" style="color:{MUTED};font-weight:600;text-decoration:underline;">Unsubscribe</a>

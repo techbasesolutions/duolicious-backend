@@ -65,7 +65,7 @@ def deletion_pending_template(name: str, purge_iso: str) -> str:
 """
 
     footer_html = (
-        "Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>"
+        "Ahavah &middot; Matchmaking for Torah-observant believers.<br/>"
         "You are receiving this because you asked to delete your account at "
         f'<a href="{SITE}" style="color:{INDIGO};font-weight:600;text-decoration:none;">ahavah.app</a>.'
     )

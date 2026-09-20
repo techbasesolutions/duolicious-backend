@@ -51,7 +51,7 @@ def comeback_html(unsubscribe_url: str) -> str:
 {callout("One sign-in restores your profile instantly.")}
 """
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because your Ahavah profile was hidden after a
 period of inactivity.
 <div style="margin-top:14px;">

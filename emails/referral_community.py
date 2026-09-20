@@ -121,7 +121,7 @@ def _body(code: str) -> str:
 def _footer(email: str) -> str:
     unsub = _unsub_url("beta", email, WEB_BASE_URL)
     return f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because you opted into the Ahavah beta at
 <a href="{SITE}" style="color:{INDIGO};font-weight:600;text-decoration:none;">ahavah.app</a>.
 <div style="margin-top:14px;">

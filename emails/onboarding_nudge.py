@@ -51,7 +51,7 @@ def onboarding_nudge_html(name: str | None, unsubscribe_url: str) -> str:
 {callout("It takes about two minutes.")}
 """
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because you started creating an Ahavah profile.
 <div style="margin-top:14px;">
   <a href="{unsubscribe_url}" style="color:{MUTED};font-weight:600;text-decoration:underline;">Unsubscribe</a>

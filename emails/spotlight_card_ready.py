@@ -52,7 +52,7 @@ def card_ready_html(first_name: str, kind_label: str, card_url: str, expires_day
 {callout(f"This link works for {expires_days} days. If it expires, nothing is posted.")}
 """
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because you opted in to Community Spotlight.
 <div style="margin-top:14px;">
   <a href="{unsubscribe_url}" style="color:{MUTED};font-weight:600;text-decoration:underline;">Unsubscribe</a>

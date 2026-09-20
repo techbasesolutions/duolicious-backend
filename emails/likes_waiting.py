@@ -68,7 +68,7 @@ def likes_waiting_html(count: int, unsubscribe_url: str) -> str:
 {callout("Only you can see your likes. No one is told when you look.")}
 """
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because members liked your Ahavah profile.
 <div style="margin-top:14px;">
   <a href="{unsubscribe_url}" style="color:{MUTED};font-weight:600;text-decoration:underline;">Unsubscribe</a>

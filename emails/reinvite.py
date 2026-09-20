@@ -107,7 +107,7 @@ def reinvite_html(first_name: str, total_new: int, cta_url: str, unsubscribe_url
         preheader = f"{count_line}."
 
     footer = f"""
-Ahavah &middot; Torah-observant matchmaking for the diaspora.<br/>
+Ahavah &middot; Matchmaking for Torah-observant believers.<br/>
 You're receiving this because you're a member of Ahavah.
 <div style="margin-top:14px;">
   <a href="{unsubscribe_url}" style="color:{MUTED};font-weight:600;text-decoration:underline;">Unsubscribe</a>
