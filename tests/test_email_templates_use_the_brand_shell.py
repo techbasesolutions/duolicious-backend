@@ -39,6 +39,14 @@ _KNOWN_HAND_ROLLED = {
 # Staff-only mail, outside the member brand shell by design.
 _STAFF_ONLY = {'feedback.py', 'waitlist_admin.py'}
 
+# Large type that is DATA, not design: the six sign-in code digits change with
+# every email, so they cannot be an image. Named one by one, with the reason,
+# so the exception cannot quietly widen.
+_BIG_TYPE_ALLOWED = {
+    'service/person/template/__init__.py':
+        'the six sign-in code boxes: the code differs per email, so it cannot be an image',
+}
+
 # A heading tag, or a font size large enough to be acting as one. Either way
 # it is display type, which belongs in an Ultra title image.
 _HEADING_TAG = re.compile(r'<\s*h[1-4]\b', re.I)
@@ -46,9 +54,62 @@ _BIG_FONT = re.compile(r'font-size:\s*(\d{2,})px')
 _DISPLAY_PX = 24  # body copy in this system is 14 to 19px; 24+ is display type
 
 
+# Email templates also live outside emails/: the sign-in code, the dormancy
+# email and the message notifier each keep theirs beside the code that sends
+# it. The guard missed them until 2026-09-20, which is exactly how an
+# off-brand email reaches an inbox unnoticed.
+_OUTSIDE_TEMPLATE_DIRS = (
+    EMAILS_DIR.parent / 'service' / 'person' / 'template',
+    EMAILS_DIR.parent / 'service' / 'cron' / 'autodeactivate2' / 'template',
+    EMAILS_DIR.parent / 'service' / 'cron' / 'notifications' / 'template',
+)
+
+
 def _template_files() -> list[pathlib.Path]:
-    return sorted(p for p in EMAILS_DIR.glob('*.py')
-                  if p.name not in _NOT_TEMPLATES and not p.name.startswith('send_'))
+    files = [p for p in EMAILS_DIR.glob('*.py')
+             if p.name not in _NOT_TEMPLATES and not p.name.startswith('send_')]
+    for directory in _OUTSIDE_TEMPLATE_DIRS:
+        init = directory / '__init__.py'
+        # A template module outside emails/ counts only when it actually
+        # builds markup; service/cron/notifications/template just makes
+        # strings and urls for emails/notification.py.
+        if init.is_file() and '<' in init.read_text(encoding='utf-8'):
+            files.append(init)
+    return sorted(files)
+
+
+def test_the_guard_actually_sees_the_templates_outside_the_emails_folder():
+    """A list that silently finds nothing is worse than no list."""
+    found = {p for p in _template_files() if p.parent.name == 'template'}
+    assert found, 'no template module outside emails/ was picked up'
+    assert any('person' in str(p) for p in found), 'the sign-in code template is missing'
+
+
+def test_every_member_facing_email_is_sent_from_the_same_address():
+    """A mail client decides whether to load remote images per sender, and
+    every piece of Ahavah branding in an email is a remote image. The
+    sign-in code went out from its own noreply-otp@ address and reached the
+    owner unbranded, in a fallback font, while campaign mail from support@
+    rendered correctly (2026-09-20)."""
+    senders = {}
+    pattern = re.compile(r"""from_addr=f?["']([^"']*@\{?EMAIL_DOMAIN\}?)""")
+    roots = [EMAILS_DIR, EMAILS_DIR.parent / 'service']
+    for root in roots:
+        for path in root.rglob('*.py'):
+            if '__pycache__' in str(path):
+                continue
+            for addr in pattern.findall(path.read_text(encoding='utf-8')):
+                senders.setdefault(addr, []).append(path.name)
+    stray = {a: f for a, f in senders.items()
+             if not a.startswith('support@')
+             # Staff-only mail keeps its own addresses on purpose.
+             and not a.startswith(('waitlist@', 'feedback@'))}
+    assert not stray, ('These send from an address members never see elsewhere, so their '
+                       f'images may be blocked: {stray}')
+
+
+def _repo_relative(path: pathlib.Path) -> str:
+    return path.relative_to(EMAILS_DIR.parent).as_posix()
 
 
 def _hand_rolled(path: pathlib.Path) -> list[str]:
@@ -56,10 +117,16 @@ def _hand_rolled(path: pathlib.Path) -> list[str]:
     found = []
     if _HEADING_TAG.search(text):
         found.append('heading tag in the markup')
-    for size in sorted({int(m) for m in _BIG_FONT.findall(text)}):
-        if size >= _DISPLAY_PX:
-            found.append(f'inline font-size {size}px, display type')
+    if _repo_relative(path) not in _BIG_TYPE_ALLOWED:
+        for size in sorted({int(m) for m in _BIG_FONT.findall(text)}):
+            if size >= _DISPLAY_PX:
+                found.append(f'inline font-size {size}px, display type')
     return found
+
+
+def test_the_big_type_allowance_names_files_that_exist():
+    for rel in _BIG_TYPE_ALLOWED:
+        assert (EMAILS_DIR.parent / rel).is_file(), f'{rel} is allowed big type but is gone'
 
 
 def test_no_new_template_hand_rolls_a_headline():

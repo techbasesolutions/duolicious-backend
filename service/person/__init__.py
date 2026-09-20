@@ -302,10 +302,15 @@ def _send_otp(email: str, otp: str):
             subject=f"Sign in to {PRODUCT_NAME}",
             body=otp_template(otp),
             to_addr=email,
-            from_addr=f'noreply-otp@{EMAIL_DOMAIN}',
-            # Route confused-user replies to a human address instead of the
-            # noreply alias (which has no inbound MX). Audit Email #9.
-            reply_to=f'support@{EMAIL_DOMAIN}',
+            # Sent from the same address as every other Ahavah email
+            # (27 of 29 templates use support@). A mail client decides
+            # whether to load remote images per SENDER, and all of this
+            # email's branding is remote images: the logo and the Ultra
+            # title. From its own `noreply-otp@` address the member saw an
+            # unbranded email in a fallback font, reported 2026-09-20,
+            # while the campaign mail from support@ rendered properly.
+            # support@ also has a real inbox, so a reply reaches a human.
+            from_addr=f'support@{EMAIL_DOMAIN}',
         )
 
     try:
