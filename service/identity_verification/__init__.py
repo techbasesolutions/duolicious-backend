@@ -215,6 +215,50 @@ def post_start_id_flow(s):
 # POST /webhooks/stripe-identity
 # ---------------------------------------------------------------------------
 
+def _issuing_country(stripe, session: dict) -> Optional[str]:
+    """The country that issued the ID document, from the VerificationReport.
+
+    The old code read `verified_outputs.document.issuing_country` off the
+    webhook's session object. Two things are wrong with that, and together
+    they are why all 13 gold members in production carry a NULL country:
+
+      * `verified_outputs` is "not returned by default; request it with the
+        expand request parameter" (Stripe API reference, VerificationSession
+        object), so a webhook payload does not carry it at all;
+      * even when expanded it holds the person's verified data (address, dob,
+        name, id_number). The DOCUMENT's `issuing_country` lives on the
+        VerificationReport (Stripe API reference, VerificationReport object:
+        `document.issuing_country`).
+
+    So: take the report id off the session and fetch it. Falls back to the
+    verified address country if a report is somehow unavailable, and returns
+    None rather than raising, because a missing country must never cost a
+    member the promotion they just earned.
+    """
+    report_id = session.get('last_verification_report')
+    if isinstance(report_id, dict):          # already expanded
+        document = report_id.get('document') or {}
+        country = document.get('issuing_country')
+        if country:
+            return country
+        report_id = report_id.get('id')
+    if report_id and stripe is not None:
+        try:
+            report = stripe.identity.VerificationReport.retrieve(report_id)
+            document = (report.get('document') if hasattr(report, 'get')
+                        else getattr(report, 'document', None)) or {}
+            country = (document.get('issuing_country') if hasattr(document, 'get')
+                       else getattr(document, 'issuing_country', None))
+            if country:
+                return country
+        except Exception as e:               # network, permissions, shape
+            logger.warning('Could not read the verification report %s: %s', report_id, e)
+
+    verified_outputs = session.get('verified_outputs') or {}
+    address = verified_outputs.get('address') or {}
+    return address.get('country') or None
+
+
 def post_stripe_identity_webhook():
     """Stripe-signed webhook endpoint. No app auth — Stripe's signature is
     the auth. We look up the user via the session's metadata.user_id and
@@ -260,9 +304,14 @@ def post_stripe_identity_webhook():
             logger.warning('Stripe verified event missing metadata.user_id')
             return {'received': True, 'promoted': False, 'reason': 'no_user_id'}
 
-        verified_outputs = obj.get('verified_outputs') or {}
-        document = verified_outputs.get('document') or {}
-        country = document.get('issuing_country')
+        country = _issuing_country(stripe, obj)
+        if country is None:
+            # Not fatal: the promotion is what the member is waiting on, and
+            # the country is a record we keep about the document. Logged so a
+            # run of empty countries is visible rather than silent, which is
+            # how all 13 gold members in production ended up with no country
+            # at all (found 2026-09-19).
+            logger.warning('Stripe verified event: no issuing country resolved for user %s', user_id)
 
         promoted = promote_user(user_id, 'gold', country=country)
         return {'received': True, 'promoted': promoted}

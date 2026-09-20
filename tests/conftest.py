@@ -138,6 +138,7 @@ def stripe_signed_event() -> Callable[..., SignedEvent]:
     def _build(type: str = 'identity.verification_session.verified',
                metadata: dict | None = None,
                verified_outputs: dict | None = None,
+               last_verification_report: object | None = None,
                secret: str = 'whsec_test') -> SignedEvent:
         # The top-level `"object": "event"` and inner
         # `"object": "identity.verification_session"` discriminators are
@@ -152,7 +153,14 @@ def stripe_signed_event() -> Callable[..., SignedEvent]:
                 'object': {
                     'object':           'identity.verification_session',
                     'metadata':         metadata or {},
+                    # Stripe does NOT send verified_outputs in a webhook: the
+                    # API reference marks it "not returned by default; request
+                    # it with the expand request parameter". Kept here only so
+                    # a test can assert we do not depend on it. The document's
+                    # issuing country comes from the VerificationReport named
+                    # by last_verification_report.
                     'verified_outputs': verified_outputs or {},
+                    'last_verification_report': last_verification_report,
                 }
             },
         }

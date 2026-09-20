@@ -187,9 +187,13 @@ class TestStripeIdentityWebhook:
             _, code = r
             assert code == 400
 
-    def test_verified_event_calls_promote_user_with_country(
+    def test_verified_event_reads_the_country_from_the_verification_report(
         self, app, monkeypatch, stripe_signed_event,
     ):
+        """Stripe puts the document's issuing country on the
+        VerificationReport, and does not send verified_outputs in a webhook
+        at all. Reading it off the session (what this code used to do) is why
+        all 13 gold members in production have a NULL country."""
         self._wire_stripe(monkeypatch)
 
         promote_calls = []
@@ -201,10 +205,22 @@ class TestStripeIdentityWebhook:
         import service.identity_verification as iv
         monkeypatch.setattr(iv, 'promote_user', fake_promote)
 
+        retrieved = []
+
+        class _Report:
+            @staticmethod
+            def retrieve(report_id):
+                retrieved.append(report_id)
+                return {'id': report_id, 'document': {'issuing_country': 'BB',
+                                                      'status': 'verified'}}
+
+        import stripe
+        monkeypatch.setattr(stripe.identity, 'VerificationReport', _Report)
+
         payload = stripe_signed_event(
             type='identity.verification_session.verified',
             metadata={'user_id': '99'},
-            verified_outputs={'document': {'issuing_country': 'US'}},
+            last_verification_report='vr_test_1',
             secret=self.SECRET,
         )
         with app.test_request_context('/webhooks/stripe-identity', method='POST',
@@ -212,7 +228,69 @@ class TestStripeIdentityWebhook:
                                       headers={'Stripe-Signature': payload.sig}):
             r = iv.post_stripe_identity_webhook()
             assert r == {'received': True, 'promoted': True}
-            assert promote_calls == [(99, 'gold', 'US')]
+            assert retrieved == ['vr_test_1']
+            assert promote_calls == [(99, 'gold', 'BB')]
+
+    def test_verified_event_promotes_even_when_the_country_cannot_be_read(
+        self, app, monkeypatch, stripe_signed_event,
+    ):
+        """A missing country must never cost a member the promotion they
+        earned; it is a record we keep, not the verification itself."""
+        self._wire_stripe(monkeypatch)
+
+        promote_calls = []
+        import service.identity_verification as iv
+        monkeypatch.setattr(
+            iv, 'promote_user',
+            lambda person_id, level, country=None: (
+                promote_calls.append((person_id, level, country)) or True),
+        )
+
+        class _Report:
+            @staticmethod
+            def retrieve(report_id):
+                raise RuntimeError('stripe is down')
+
+        import stripe
+        monkeypatch.setattr(stripe.identity, 'VerificationReport', _Report)
+
+        payload = stripe_signed_event(
+            type='identity.verification_session.verified',
+            metadata={'user_id': '99'},
+            last_verification_report='vr_test_2',
+            secret=self.SECRET,
+        )
+        with app.test_request_context('/webhooks/stripe-identity', method='POST',
+                                      data=payload.body,
+                                      headers={'Stripe-Signature': payload.sig}):
+            r = iv.post_stripe_identity_webhook()
+            assert r == {'received': True, 'promoted': True}
+            assert promote_calls == [(99, 'gold', None)]
+
+    def test_verified_event_falls_back_to_the_verified_address_country(
+        self, app, monkeypatch, stripe_signed_event,
+    ):
+        self._wire_stripe(monkeypatch)
+
+        promote_calls = []
+        import service.identity_verification as iv
+        monkeypatch.setattr(
+            iv, 'promote_user',
+            lambda person_id, level, country=None: (
+                promote_calls.append((person_id, level, country)) or True),
+        )
+
+        payload = stripe_signed_event(
+            type='identity.verification_session.verified',
+            metadata={'user_id': '99'},
+            verified_outputs={'address': {'country': 'GB'}},
+            secret=self.SECRET,
+        )
+        with app.test_request_context('/webhooks/stripe-identity', method='POST',
+                                      data=payload.body,
+                                      headers={'Stripe-Signature': payload.sig}):
+            iv.post_stripe_identity_webhook()
+            assert promote_calls == [(99, 'gold', 'GB')]
 
     def test_verified_event_without_user_id_acks_but_does_not_promote(
         self, app, monkeypatch, stripe_signed_event,
