@@ -269,3 +269,52 @@ def post_stats(tx, request_key: str) -> dict:
             for bucket in (*_PLATFORM_BUCKETS, 'unknown')
         },
     }
+
+
+# --- Gendered newcomer counts (2026-09-19) -----------------------------------
+# Owner decision: until enough members have opted into Spotlight, the campaign
+# emails describe new arrivals as a COUNT of the people the reader is looking
+# for ("5 women joined since you were here") rather than naming anyone. Names
+# and faces return once approved Spotlight cards exist to show.
+
+_Q_SOUGHT_GENDERS = """
+    SELECT g.name FROM search_preference_gender s
+      JOIN gender g ON g.id = s.gender_id
+     WHERE s.person_id = %(pid)s
+     ORDER BY g.id
+"""
+
+# Plural forms for the gender names this product actually uses. Anything not
+# listed falls back to the name itself lowercased plus 's', and an unknown or
+# mixed preference degrades to the neutral word.
+_PLURALS = {'Man': 'men', 'Woman': 'women'}
+
+
+def sought_gender_label(tx, person_id: int, *, fallback: str = 'new members') -> str:
+    """How to describe, in plural, the people this member is looking for.
+    Returns `fallback` when the member seeks more than one gender or none is
+    recorded, so a sentence built on it never claims something untrue."""
+    names = [r['name'] for r in tx.execute(_Q_SOUGHT_GENDERS, dict(pid=person_id)).fetchall()]
+    if len(names) != 1:
+        return fallback
+    name = names[0]
+    return _PLURALS.get(name, f'{name.lower()}s')
+
+
+_Q_OPPOSITE_GENDER_JOINERS = """
+    SELECT count(*) AS n
+      FROM person p
+     WHERE p.activated
+       AND p.id <> %(pid)s
+       AND lower(p.email) <> ALL(%(ex)s)
+       AND p.sign_up_time > %(since)s
+       AND p.gender_id = %(gid)s
+"""
+
+
+def count_joiners_of_gender(tx, person_id: int, gender_id: int, since: datetime) -> int:
+    """Activated members of one gender who joined after `since`, excluding the
+    reader and the test accounts. Used for people who never finished
+    onboarding, who have a gender but no search preferences yet."""
+    return tx.execute(_Q_OPPOSITE_GENDER_JOINERS,
+                      dict(pid=person_id, gid=gender_id, since=since, ex=_excluded())).fetchone()['n']

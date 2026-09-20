@@ -3,11 +3,22 @@ from emails.reinvite import reinvite_html, SUBJECT
 from emails.send_reinvite import recipient_count, recipients
 from service.unsubscribe import stamp_unsubscribed
 
-def test_reinvite_html_lists_names_and_count():
+def test_reinvite_html_counts_the_people_the_member_seeks_and_names_nobody():
+    """Owner decision 2026-09-19: counts, not names. Nobody consented to being
+    named in a campaign email; Spotlight consent covers its own card only."""
     html = reinvite_html('Ehud', [dict(first_name='Rivka', country='GB'), dict(first_name='Sarah', country='US')], 4,
-                         'https://ahavah.app/s/k', 'https://ahavah.app/u/x')
-    assert 'title-reinvite.png' in html and 'Rivka' in html and 'Sarah' in html and '4 new members' in html
+                         'https://ahavah.app/s/k', 'https://ahavah.app/u/x', gender_label='women')
+    assert 'title-reinvite.png' in html
+    assert '4 women have joined' in html
+    assert 'Rivka' not in html and 'Sarah' not in html
     assert '—' not in html and '—' not in SUBJECT
+
+
+def test_reinvite_html_reads_naturally_for_one_person_and_without_a_label():
+    one = reinvite_html('Ehud', [], 1, 'https://ahavah.app/s/k', 'https://ahavah.app/u/x', gender_label='men')
+    assert '1 man has joined' in one
+    plain = reinvite_html('Ehud', [], 3, 'https://ahavah.app/s/k', 'https://ahavah.app/u/x')
+    assert '3 new members have joined' in plain
 
 def _sendable_email(person_id: int) -> str:
     """make_person hands out an @example.com address, which is on
@@ -48,12 +59,13 @@ def test_greeting_name_with_markup_is_escaped():
     assert '&lt;a href=&quot;x&quot;&gt;Ehud&lt;/a&gt;' in html
 
 
-def test_newcomer_name_and_country_are_escaped():
-    html = reinvite_html('Ehud', [dict(first_name='Ri"vka <script>', country='G<b>B</b>')], 1,
-                         'https://ahavah.app/s/k', 'https://ahavah.app/u/x')
+def test_member_supplied_text_is_escaped():
+    """The reader's own first name is the only member-supplied value left in
+    this template now that newcomers are counted rather than named."""
+    html = reinvite_html('Ri"vka <script>', [], 1, 'https://ahavah.app/s/k', 'https://ahavah.app/u/x',
+                         gender_label='men')
     assert '<script>' not in html
     assert 'Ri&quot;vka &lt;script&gt;' in html
-    assert 'G&lt;b&gt;B&lt;/b&gt;' in html
 
 
 # ---------------------------------------------------------------------------
