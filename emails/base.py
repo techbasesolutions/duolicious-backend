@@ -129,8 +129,19 @@ SERIF = "'Ultra', Georgia, 'Times New Roman', serif"        # display
 # is present: Segoe UI on Windows, Roboto on Android and in Gmail's own web
 # client, Helvetica Neue on older Apple clients. Apple Mail and iOS Mail do
 # support web fonts, so they still get the real face from the <link>.
-SANS = ("'Plus Jakarta Sans', 'Segoe UI', Roboto, 'Helvetica Neue', "
-        "Arial, sans-serif")  # body
+#
+# `system-ui` comes second because that is what the approved design asks for
+# ("'Plus Jakarta Sans', system-ui, sans-serif" in the Claude Design email
+# templates). The named families after it cover clients that do not
+# understand system-ui, so the design's intent survives either way.
+#
+# One thing does make Gmail render the real face: having Plus Jakarta Sans
+# installed locally. Gmail keeps inline font-family declarations, and Gmail
+# web resolves them against the reader's own fonts. It is not a fix we can
+# ship to members, but it is why the same email can look correct on one
+# machine and wrong on another.
+SANS = ("'Plus Jakarta Sans', system-ui, 'Segoe UI', Roboto, "
+        "'Helvetica Neue', Arial, sans-serif")  # body
 
 # Canonical .e__btn: lime pill, ink text, 18px/800, padding 18px 32px, radius 14px.
 def button(label: str, href: str, *, variant: str = "lime", full: bool = True) -> str:

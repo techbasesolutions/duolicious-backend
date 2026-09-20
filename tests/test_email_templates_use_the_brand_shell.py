@@ -290,6 +290,9 @@ def test_the_body_font_falls_back_to_something_close_before_arial():
     from emails.base import SANS
 
     assert 'Plus Jakarta Sans' in SANS, 'the brand face must still be asked for first'
+    assert 'system-ui' in SANS, (
+        "the approved design asks for \"'Plus Jakarta Sans', system-ui, "
+        'sans-serif", so system-ui belongs in the stack')
     for family in ('Segoe UI', 'Roboto'):
         assert family in SANS, (
             f'{family} is missing from the body font stack. Without it a '
