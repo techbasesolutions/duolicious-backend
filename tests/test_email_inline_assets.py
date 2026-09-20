@@ -378,6 +378,52 @@ def test_a_resend_rejection_with_no_attachments_is_not_retried(resend_recording)
     assert len(posts) == 1
 
 
+def test_a_rate_limit_does_not_drop_the_branding(resend_recording):
+    """A 429 says the payload was fine and the service was busy. Retrying it
+    here would hammer Resend while rate limited and, if the second post
+    squeaked through, would silently downgrade a good email to unbranded.
+    Smtp.send's own backoff owns this case."""
+    mailer, posts, statuses = resend_recording
+    statuses.append(429)
+
+    with pytest.raises(Exception):
+        mailer._try_send(
+            subject='s', body=f'<img src="cid:{PNG}"/>', to_addr='to@example.com')
+
+    assert len(posts) == 1, 'a 429 must not be retried inside _try_send'
+    assert 'attachments' in posts[0], 'the branding must survive a 429'
+
+
+def test_a_server_error_does_not_drop_the_branding(resend_recording):
+    """Same reasoning as the 429: a 5xx is not a payload rejection."""
+    mailer, posts, statuses = resend_recording
+    statuses.append(503)
+
+    with pytest.raises(Exception):
+        mailer._try_send(
+            subject='s', body=f'<img src="cid:{PNG}"/>', to_addr='to@example.com')
+
+    assert len(posts) == 1
+    assert 'attachments' in posts[0]
+
+
+def test_an_attachment_build_failure_still_puts_the_urls_back(
+        resend_recording, monkeypatch):
+    """The last hole in the invariant. If the attachments cannot be built at
+    all, the html must not keep pointing at cid parts that are not there:
+    that is the dead image this whole fallback exists to prevent."""
+    mailer, posts, statuses = resend_recording
+    monkeypatch.setattr(smtp_module, '_resend_attachments', lambda inline: [])
+
+    got = mailer._try_send(
+        subject='s', body=f'<img src="cid:{PNG}"/>', to_addr='to@example.com')
+
+    assert got == 'msg-1'
+    assert len(posts) == 1, 'no retry needed, the first post is already correct'
+    assert 'attachments' not in posts[0]
+    assert posts[0]['html'] == f'<img src="{ORIGIN}/email/{PNG}"/>'
+
+
 def test_a_resend_rejection_that_survives_the_retry_still_raises(
         resend_recording):
     mailer, posts, statuses = resend_recording

@@ -38,6 +38,12 @@ USE_RESEND_API: bool = os.environ.get("DUO_USE_RESEND_API", "false").lower() in 
 )
 RESEND_API_URL: str = "https://api.resend.com/emails"
 
+# Statuses that mean Resend refused this payload, so dropping the inline
+# attachments and retrying is worth a try. Deliberately excludes 429 and the
+# 5xx range: those say the payload was fine and the service was not, and
+# retrying them here would both add load and cost the branding for nothing.
+_RESEND_PAYLOAD_REJECTED: frozenset[int] = frozenset({400, 413, 415, 422})
+
 # Phase W staging: ahavah.app isn't verified in Resend yet (domain not
 # even registered). Override every outbound from-address to the universal
 # `onboarding@resend.dev` placeholder (works on every Resend account
@@ -387,6 +393,11 @@ class Smtp:
         attachments = _resend_attachments(inline)
         if attachments:
             payload["attachments"] = attachments
+        elif inline:
+            # The body asked for images the mailer could not turn into
+            # attachments. Leaving the cid srcs in place would render a
+            # broken image, which is worse than the remote url they replaced.
+            payload["html"] = _restore_remote_srcs(payload["html"])
 
         def _post(body_to_send: dict):
             return requests.post(
@@ -400,7 +411,11 @@ class Smtp:
             )
 
         resp = _post(payload)
-        if resp.status_code >= 300 and "attachments" in payload:
+        # Only statuses that mean "this payload was rejected". A 429 or a 5xx
+        # says nothing is wrong with the attachments, so retrying here would
+        # add load while rate limited and could silently downgrade a good
+        # email to unbranded. Those stay with Smtp.send's existing backoff.
+        if resp.status_code in _RESEND_PAYLOAD_REJECTED and "attachments" in payload:
             # The attachments key is the only thing new in this payload, so a
             # rejection of it must not take the email with it. Drop the
             # images, point the html back at the public urls and send again:
