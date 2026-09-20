@@ -22,6 +22,11 @@ import re
 
 EMAILS_DIR = pathlib.Path(__file__).resolve().parent.parent / 'emails'
 
+# The brand images the API attaches to a message. A mail client decides per
+# sender whether to fetch a remote image, so an asset the API can read and
+# send inline is the only branding that always arrives.
+ASSETS_DIR = EMAILS_DIR / 'assets'
+
 # base.py owns the shell (render, title_image, button, chip, callout). The
 # senders (send_*.py) pick recipients and never build markup.
 _NOT_TEMPLATES = {'base.py', '__init__.py'}
@@ -200,6 +205,56 @@ def test_every_title_image_names_a_file_that_exists_in_both_variants():
                     missing.append(f'{path.name}: {name}')
     assert not missing, ('Title images referenced but absent from '
                          'ahavah-web/public/email:\n  ' + '\n  '.join(missing))
+
+
+def _manifest_names() -> set[str]:
+    manifest_path = pathlib.Path(__file__).resolve().parent / 'email_assets_manifest.txt'
+    return {line.strip() for line in manifest_path.read_text(encoding='utf-8').splitlines()
+            if line.strip()}
+
+
+def test_the_brand_assets_ship_inside_the_api_image():
+    """The API cannot attach what it cannot read.
+
+    emails/assets/ is the copy the running container reads at send time, so
+    the inline branding survives a client that blocks remote images. Resync
+    with scripts/sync_email_assets.sh.
+    """
+    assert ASSETS_DIR.is_dir(), (
+        'emails/assets/ is missing. Run scripts/sync_email_assets.sh to copy '
+        'the brand images out of ahavah-web/public/email.')
+    bundled = {p.name for p in ASSETS_DIR.glob('*.png')}
+    assert bundled, 'emails/assets/ holds no png'
+
+
+def test_the_bundled_assets_and_the_manifest_agree():
+    """One list, two repos. A drift here means an email asks for a cid the
+    mailer cannot load, and the branding silently falls back to a remote url."""
+    available = _manifest_names()
+    bundled = {p.name for p in ASSETS_DIR.glob('*.png')} if ASSETS_DIR.is_dir() else set()
+    assert bundled == available, (
+        'emails/assets/ and tests/email_assets_manifest.txt disagree. Run '
+        'scripts/sync_email_assets.sh '
+        f'(in the manifest but not bundled: {sorted(available - bundled)}; '
+        f'bundled but not in the manifest: {sorted(bundled - available)})')
+
+
+def test_every_asset_a_template_asks_for_is_bundled():
+    """A title image or logo referenced by a template but absent from
+    emails/assets/ cannot go inline, so that email loses its headline in any
+    client that blocks remote images."""
+    bundled = {p.name for p in ASSETS_DIR.glob('*.png')} if ASSETS_DIR.is_dir() else set()
+    wanted = set()
+    call = re.compile(r'title_image\(\s*"([^"]+)"\s*,\s*"([^"]+)"')
+    for path in _template_files():
+        for light, dark in call.findall(path.read_text(encoding='utf-8')):
+            wanted.update(name.split('?', 1)[0] for name in (light, dark))
+    base_text = (EMAILS_DIR / 'base.py').read_text(encoding='utf-8')
+    wanted.update(re.findall(r'/email/([A-Za-z0-9._-]+\.png)', base_text))
+    missing = sorted(wanted - bundled)
+    assert not missing, (
+        'These assets are referenced by a template but are not in '
+        'emails/assets/, so they cannot be sent inline:\n  ' + '\n  '.join(missing))
 
 
 def test_templates_are_syntactically_whole():
