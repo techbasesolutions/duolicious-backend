@@ -11,7 +11,10 @@ One campaign, two states of reader:
             in sets activated = TRUE).
 
 Owner decisions 2026-09-19:
-  * counts, never names, and never the word "faces" while no face is shown.
+  * counts, never names, and never the word "faces" while no face is shown,
+    so this email uses the existing brand titles "Your profile is resting."
+    and "The community is growing." rather than title-reinvite.png, which
+    reads "New faces since you were away".
     Members consented to a Spotlight card, not to being named in a campaign
     email. Names and cards return here when enough members have opted in.
   * the count runs from when the reader was last online, not from their last
@@ -25,7 +28,7 @@ from __future__ import annotations
 import html as _html
 
 from service.config import EMAIL_DOMAIN
-from emails.base import render, button, chip, callout, INK, INK_SOFT, MUTED, SANS
+from emails.base import render, button, chip, callout, title_image, INK_SOFT, MUTED, SANS
 
 FROM_ADDR = f"support@{EMAIL_DOMAIN}"
 
@@ -54,15 +57,6 @@ def _singularise(plural: str) -> str:
     return {'women': 'woman', 'men': 'man'}.get(plural, plural[:-1] if plural.endswith('s') else plural)
 
 
-def _headline(text: str) -> str:
-    """A text headline where the other campaigns use an Ultra title image.
-    The existing title-reinvite.png reads "New faces since you were away",
-    which would promise faces this email does not show. A replacement image
-    is on the design brief; until it lands, the headline is live text."""
-    return (f'<h1 style="margin:18px 0 16px;font-family:{SANS};font-size:34px;line-height:1.15;'
-            f'font-weight:800;letter-spacing:-0.01em;color:{INK};">{text}</h1>')
-
-
 def reinvite_html(first_name: str, total_new: int, cta_url: str, unsubscribe_url: str,
                   gender_label: str = "new members", state: str = "quiet") -> str:
     who = gender_label or "new members"
@@ -75,7 +69,7 @@ def reinvite_html(first_name: str, total_new: int, cta_url: str, unsubscribe_url
         body = f"""
 {chip("Your profile is paused")}
 
-{_headline("Your place is held.")}
+{title_image("title-resting.png", "title-resting-wht.png", "Your profile is resting.", 528)}
 
 <p class="e-text" style="margin:0 0 16px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
   {name}, your profile is paused because you have been away, so nobody can see
@@ -98,7 +92,7 @@ def reinvite_html(first_name: str, total_new: int, cta_url: str, unsubscribe_url
         body = f"""
 {chip("Since you were last online")}
 
-{_headline("The community has grown.")}
+{title_image("title-digest.png", "title-digest-wht.png", "The community is growing.", 528)}
 
 <p class="e-text" style="margin:0 0 20px;font-family:{SANS};font-size:17px;line-height:1.55;color:{INK_SOFT};">
   {name}, {count_line}, and they match what you are looking for.
