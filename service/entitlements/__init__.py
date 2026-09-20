@@ -291,6 +291,40 @@ _FOUNDING_MEMBER_PREMIUM_DAYS = 183  # ~6 months
 _FOUNDING_MEMBER_STARTER_TOKENS = 30  # one month's stipend equivalent
 
 
+def beta_premium_until(person_id: int) -> Optional[datetime]:
+    """When this member's beta Premium runs out: their sign-up plus the
+    early-member window, or None once that has passed.
+
+    Every member who signs up during the beta gets Premium free for six
+    months (owner decision 2026-08-09, and the copy in
+    emails/beta_premium_reminder.py and emails/member_welcome.py says so).
+    Checkout runs on Stripe's TEST gateway during the beta so members can
+    try paid flows at no cost.
+
+    That combination has a sharp edge: Stripe cancels a TEST subscription
+    roughly 90 days after it is created, which fires
+    customer.subscription.deleted, and revoking on that event strips a beta
+    member of Premium they were promised and never paid for. It happened to
+    two members in September 2026 before anyone noticed. This function is
+    what the cancellation path falls back to.
+    """
+    with api_tx() as tx:
+        row = tx.execute(
+            'SELECT sign_up_time FROM person WHERE id = %(id)s',
+            dict(id=person_id),
+        ).fetchone()
+    if not row or not row['sign_up_time']:
+        return None
+    signed_up = row['sign_up_time']
+    if signed_up.tzinfo is None:
+        # `person.sign_up_time` is timestamp without time zone in this
+        # schema, and it is stored in UTC. Attach that so the comparison
+        # below is not naive against aware.
+        signed_up = signed_up.replace(tzinfo=timezone.utc)
+    until = signed_up + timedelta(days=_FOUNDING_MEMBER_PREMIUM_DAYS)
+    return until if until > datetime.now(timezone.utc) else None
+
+
 def grant_founding_member_if_eligible(
     person_id: int,
     person_uuid: str,

@@ -1023,8 +1023,30 @@ def post_stripe_checkout_webhook():
         # rule as one-shot bundles). The frontend's quota / spend gates
         # consult token_ledger directly, so an ex-subscriber can still
         # spend their remaining balance until it hits zero.
-        entitlements.revoke(person_id, _PREMIUM_ENTITLEMENT)
+        # ... unless the member is still inside their beta window. Every
+        # member who signed up during the beta has Premium free for six
+        # months, and checkout runs on Stripe's TEST gateway, where Stripe
+        # cancels a subscription about 90 days after it is created. Revoking
+        # on that cancellation took Premium away from two beta members in
+        # September 2026 who had been promised it and never paid a cent. A
+        # cancellation can end a PURCHASE; it cannot end the beta grant.
+        beta_until = entitlements.beta_premium_until(person_id)
         from database import api_tx
+        if beta_until is not None:
+            entitlements.grant(person_id, _PREMIUM_ENTITLEMENT, expires_at=beta_until)
+            with api_tx() as tx:
+                tx.execute(
+                    'UPDATE person SET subscription_expires_at = %(u)s WHERE id = %(id)s',
+                    dict(u=beta_until, id=person_id),
+                )
+                entitlements.record_event_tx(tx, event_id, event_type, app_user_id, event)
+            logger.info(
+                'stripe-checkout subscription deleted for person_id=%s; beta premium '
+                'held until %s', person_id, beta_until.date(),
+            )
+            return {'ok': True, 'revoked': False, 'beta_premium_until': beta_until.isoformat()}
+
+        entitlements.revoke(person_id, _PREMIUM_ENTITLEMENT)
         with api_tx() as tx:
             tx.execute(
                 'UPDATE person SET subscription_expires_at = NULL WHERE id = %(id)s',

@@ -509,7 +509,11 @@ def test_webhook_subscription_cancel_preserves_token_balance(
 ):
     """customer.subscription.deleted must (a) revoke the 'premium'
     entitlement + null subscription_expires_at, (b) NOT touch token_ledger.
-    Stipend tokens already credited remain spendable after cancellation."""
+    Stipend tokens already credited remain spendable after cancellation.
+
+    The member here signed up long enough ago that their six-month beta
+    grant has run out, so the cancellation really does end their Premium.
+    A member still inside that window is the test below."""
     from database import api_tx
     from service.tokens import credit
 
@@ -518,7 +522,8 @@ def test_webhook_subscription_cancel_preserves_token_balance(
         tx.execute(
             """UPDATE person
                   SET entitlements = ARRAY['premium'],
-                      subscription_expires_at = NOW() + INTERVAL '30 days'
+                      subscription_expires_at = NOW() + INTERVAL '30 days',
+                      sign_up_time = NOW() - INTERVAL '400 days'
                 WHERE id = %(id)s""",
             dict(id=person_uuid['id']),
         )
@@ -563,3 +568,63 @@ def test_webhook_subscription_cancel_preserves_token_balance(
     assert _balance(person_uuid['uuid']) == 5
 
 
+
+
+def test_webhook_subscription_cancel_keeps_beta_premium(
+    client, person_uuid, webhook_env,
+):
+    """A beta member keeps Premium when Stripe cancels their subscription.
+
+    Every member who signs up during the beta gets Premium free for six
+    months, and beta checkout runs on Stripe's TEST gateway, where Stripe
+    cancels a subscription about 90 days after it is created. Revoking on
+    that event took Premium from two members in September 2026 who had been
+    promised it and never paid. The cancellation can end a purchase; it
+    cannot end the grant.
+    """
+    from database import api_tx
+
+    with api_tx() as tx:
+        tx.execute(
+            """UPDATE person
+                  SET entitlements = ARRAY['premium'],
+                      subscription_expires_at = NOW() + INTERVAL '300 days',
+                      sign_up_time = NOW() - INTERVAL '90 days'
+                WHERE id = %(id)s""",
+            dict(id=person_uuid['id']),
+        )
+
+    payload = {
+        'id':     f'evt_cancel_beta_{uuid4().hex}',
+        'object': 'event',
+        'type':   'customer.subscription.deleted',
+        'data': {
+            'object': {
+                'object':   'subscription',
+                'id':       'sub_test_cancel_beta',
+                'customer': f'cus_{uuid4().hex}',
+                'metadata': {
+                    'user_id':     str(person_uuid['id']),
+                    'person_uuid': person_uuid['uuid'],
+                },
+            }
+        },
+    }
+    res = client.post(
+        '/webhooks/stripe-checkout',
+        data=json.dumps(payload).encode(),
+        headers={'Stripe-Signature': 't=0,v1=fake', 'Content-Type': 'application/json'},
+    )
+    assert res.status_code == 200
+
+    with api_tx('read committed') as tx:
+        row = tx.execute(
+            """SELECT entitlements, subscription_expires_at,
+                      (sign_up_time + INTERVAL '183 days') AT TIME ZONE 'UTC' AS beta_until
+                 FROM person WHERE id = %(id)s""",
+            dict(id=person_uuid['id']),
+        ).fetchone()
+    assert 'premium' in (row['entitlements'] or []), 'a beta member must keep Premium'
+    assert row['subscription_expires_at'] is not None
+    # Held to the beta window, not to the cancelled purchase's 300 days.
+    assert abs((row['subscription_expires_at'] - row['beta_until']).total_seconds()) < 60
