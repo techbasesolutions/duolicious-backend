@@ -20,8 +20,20 @@ EMAIL_ASSET_ORIGIN: str = os.environ.get(
 # The brand images bundled with the api (scripts/sync_email_assets.sh). When
 # one is here, the mailer can attach it to the message itself, so it renders
 # with no network call and no per-sender image permission from the reader's
-# client. See smtp/__init__.py.
-_ASSETS_DIR: pathlib.Path = pathlib.Path(__file__).resolve().parent / "assets"
+# client.
+#
+# This is the one definition of where those files live. smtp/__init__.py
+# imports it rather than deriving its own, because two guesses at the layout
+# would fail silently and totally: this module would emit cid: for every
+# image while the mailer could load none of them.
+ASSETS_DIR: pathlib.Path = pathlib.Path(__file__).resolve().parent / "assets"
+
+
+def remote_asset_url(file_name: str) -> str:
+    """The public https url for a brand image: what every Ahavah email used
+    before the images travelled inside the message, and the fallback whenever
+    they cannot."""
+    return f"{EMAIL_ASSET_ORIGIN}/email/{file_name}"
 
 
 @lru_cache(maxsize=256)
@@ -35,11 +47,11 @@ def asset_src(file_name: str) -> str:
     """
     name = file_name.split("?", 1)[0]
     try:
-        if name and (_ASSETS_DIR / name).is_file():
+        if name and (ASSETS_DIR / name).is_file():
             return f"cid:{name}"
     except Exception:
         pass
-    return f"{EMAIL_ASSET_ORIGIN}/email/{file_name}"
+    return remote_asset_url(file_name)
 
 
 LOGO_URL: str = asset_src("logo-horizontal.png")          # dark ink (on light)

@@ -20,7 +20,7 @@ from emails.base import (
     callout,
     title_image,
     is_suppressed_send,
-    EMAIL_ASSET_ORIGIN,
+    asset_src,
     INK,
     INK_SOFT,
     INDIGO,
@@ -44,8 +44,10 @@ def _social_badge(file_name: str, label: str, href: str) -> str:
     # A circular brand badge (official glyph baked into a PNG, pre-rendered by
     # scripts/render-badge.mjs) + label, as a centered table cell. Table layout
     # (not flexbox) so the row holds in Gmail; transparent PNG composites on
-    # both the light and dark card.
-    src = f"{EMAIL_ASSET_ORIGIN}/email/{file_name}"
+    # both the light and dark card. Through asset_src so the badge travels
+    # inside the message like every other brand image, rather than waiting on
+    # the reader's client to be willing to fetch it.
+    src = asset_src(file_name)
     return (
         f'<td align="center" style="padding:0 14px;">'
         f'<a href="{href}" target="_blank" style="text-decoration:none;">'

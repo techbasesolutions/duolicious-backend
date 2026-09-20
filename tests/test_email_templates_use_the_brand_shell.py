@@ -175,11 +175,13 @@ def test_every_title_image_names_a_file_that_exists_in_both_variants():
     which is how a hand-rolled heading comes to look necessary. Both variants
     must exist: the dark one keeps the headline visible in dark mode.
 
-    The manifest is the list of files in ahavah-web/public/email, checked in
-    here so this runs in CI where only this repo is mounted. Regenerate after
-    adding an email image:
+    The manifest is the list of files in emails/assets, checked in here so
+    this runs in CI where only this repo is mounted. scripts/sync_email_assets.sh
+    copies the images out of ahavah-web/public/email and regenerates it, so
+    the two lists are the same set after a sync. Run it after adding an email
+    image:
 
-        ls ../ahavah-web/public/email/*.png | xargs -n1 basename | sort > tests/email_assets_manifest.txt
+        ./scripts/sync_email_assets.sh
     """
     manifest_path = pathlib.Path(__file__).resolve().parent / 'email_assets_manifest.txt'
     available = {line.strip() for line in manifest_path.read_text(encoding='utf-8').splitlines()
@@ -237,6 +239,21 @@ def test_the_bundled_assets_and_the_manifest_agree():
         'scripts/sync_email_assets.sh '
         f'(in the manifest but not bundled: {sorted(available - bundled)}; '
         f'bundled but not in the manifest: {sorted(bundled - available)})')
+
+
+def test_no_template_builds_a_brand_image_url_by_hand():
+    """asset_src() in base.py is the one switch between an image that travels
+    inside the message and one the reader's client has to be willing to fetch.
+    A template that assembles the url itself opts that image out of the
+    branding this repo exists to guarantee, and it does it silently."""
+    offenders = sorted(
+        p.name for p in EMAILS_DIR.glob('*.py')
+        if p.name != 'base.py'
+        and 'EMAIL_ASSET_ORIGIN' in p.read_text(encoding='utf-8'))
+    assert not offenders, (
+        'These reach for EMAIL_ASSET_ORIGIN directly, so their images stay '
+        'remote and stay blank for a reader whose client blocks them. Use '
+        'asset_src() from emails/base.py:\n  ' + '\n  '.join(offenders))
 
 
 def test_every_asset_a_template_asks_for_is_bundled():
