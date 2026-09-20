@@ -10,12 +10,40 @@ carries the canonical classes, web fonts, and a prefers-color-scheme dark mode
 from __future__ import annotations
 
 import os
+import pathlib
+from functools import lru_cache
 
 EMAIL_ASSET_ORIGIN: str = os.environ.get(
     "AHAVAH_EMAIL_ASSET_ORIGIN", "https://ahavah.app"
 )
-LOGO_URL: str = f"{EMAIL_ASSET_ORIGIN}/email/logo-horizontal.png"          # dark ink (on light)
-LOGO_WHITE_URL: str = f"{EMAIL_ASSET_ORIGIN}/email/logo-horizontal-wht.png"  # white (on dark)
+
+# The brand images bundled with the api (scripts/sync_email_assets.sh). When
+# one is here, the mailer can attach it to the message itself, so it renders
+# with no network call and no per-sender image permission from the reader's
+# client. See smtp/__init__.py.
+_ASSETS_DIR: pathlib.Path = pathlib.Path(__file__).resolve().parent / "assets"
+
+
+@lru_cache(maxsize=256)
+def asset_src(file_name: str) -> str:
+    """The `src` for a brand image: a `cid:` part when the api ships the file,
+    the public https url when it does not.
+
+    One switch, in one place, so every template inherits it. The fallback is
+    exactly what every email sent before this existed, which is what makes a
+    missing asset harmless. Never raises.
+    """
+    name = file_name.split("?", 1)[0]
+    try:
+        if name and (_ASSETS_DIR / name).is_file():
+            return f"cid:{name}"
+    except Exception:
+        pass
+    return f"{EMAIL_ASSET_ORIGIN}/email/{file_name}"
+
+
+LOGO_URL: str = asset_src("logo-horizontal.png")          # dark ink (on light)
+LOGO_WHITE_URL: str = asset_src("logo-horizontal-wht.png")  # white (on dark)
 
 
 # --- Send suppression ------------------------------------------------------
@@ -100,8 +128,10 @@ def title_image(file_name: str, file_name_dark: str, alt: str, width: int) -> st
         f"width:{width}px;max-width:100%;height:auto;"
         "margin:18px 0 16px;border:0;outline:none;text-decoration:none;"
     )
-    light = f"{EMAIL_ASSET_ORIGIN}/email/{file_name}"       # dark ink, for light bg
-    dark = f"{EMAIL_ASSET_ORIGIN}/email/{file_name_dark}"   # white ink, for dark bg
+    # Both variants go inline when they are bundled, so the prefers-color-scheme
+    # swap below still works with no network.
+    light = asset_src(file_name)       # dark ink, for light bg
+    dark = asset_src(file_name_dark)   # white ink, for dark bg
     # Swap mirrors the logo light/dark swap (see _STYLE). Clients that ignore
     # prefers-color-scheme just show the light (dark-ink) image on the light card.
     return (

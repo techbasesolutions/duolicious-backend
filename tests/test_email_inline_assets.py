@@ -240,3 +240,56 @@ def test_a_missing_asset_does_not_stop_the_resend_send(resend):
         subject='s', body='<img src="cid:nope.png"/>', to_addr='to@example.com')
     assert got == 'msg-1'
     assert 'attachments' not in posted['json']
+
+
+# --- the templates ask for inline assets -----------------------------------
+
+def test_the_shell_logo_asks_for_an_inline_part():
+    from emails.base import render
+
+    html = render(title='t', preheader='p', body_html='<p>b</p>', footer_html='f')
+    assert f'src="cid:{PNG}"' in html
+    assert 'https://ahavah.app/email/logo-horizontal-wht.png' not in html
+    assert 'alt="Ahavah"' in html
+
+
+def test_both_title_variants_ask_for_an_inline_part():
+    """The dark variant is what keeps a headline visible in a dark-mode
+    client, so it has to travel inline too or the swap needs the network."""
+    from emails.base import title_image
+
+    html = title_image('title-otp.png', 'title-otp-wht.png', 'Your sign-in code.', 528)
+    assert 'src="cid:title-otp.png"' in html
+    assert 'src="cid:title-otp-wht.png"' in html
+    assert html.count('alt="Your sign-in code."') == 2
+
+
+def test_an_asset_that_is_not_bundled_keeps_the_https_url():
+    """The fallback is today's behaviour, never a broken image and never a
+    raise."""
+    from emails.base import asset_src, title_image
+
+    html = title_image('title-nope.png', 'title-nope-wht.png', 'x', 528)
+    assert 'src="https://ahavah.app/email/title-nope.png"' in html
+    assert 'src="https://ahavah.app/email/title-nope-wht.png"' in html
+    assert asset_src('title-nope.png') == 'https://ahavah.app/email/title-nope.png'
+
+
+def test_a_cache_busting_query_still_resolves_to_the_bundled_file():
+    """referral_intro.py appends ?v=2. A cid has no query string, so the
+    name before it is what names the part."""
+    from emails.base import asset_src
+
+    assert asset_src(f'{PNG}?v=2') == f'cid:{PNG}'
+
+
+def test_a_sign_in_code_email_carries_its_branding_inside_the_message(mailer):
+    """End to end on the real template: the email that reached the owner
+    unbranded on 2026-09-20."""
+    from service.person.template import otp_template
+
+    raw = _send(mailer, otp_template('123456'))
+    assert 'multipart/related' in raw
+    for name in (PNG, 'title-otp.png', 'title-otp-wht.png'):
+        assert f'Content-ID: <{name}>' in raw
+    assert 'https://ahavah.app/email/' not in raw
