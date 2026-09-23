@@ -31,11 +31,21 @@ def new_message_email(*, headline: str, open_url: str, unsubscribe_url: str) -> 
     )
 
 
-def _event_email(*, chip_label, title_light, title_dark, title_alt, lede,
-                 cta_label, cta_url, unsubscribe_url, subject, preheader) -> str:
+def _event_email(*, chip_label, lede, cta_label, cta_url, unsubscribe_url,
+                 subject, preheader, title_light=None, title_dark=None,
+                 title_alt=None) -> str:
+    # A brand title image or no headline at all. Display type is never hand
+    # rolled here: inline type carries one colour and vanishes on the dark
+    # card. An event with no title asset that says the right thing ships
+    # without one, and the chip plus the lede carry the message.
+    title_html = (
+        title_image(title_light, title_dark, title_alt or "", 460)
+        if title_light and title_dark
+        else ''
+    )
     body = f"""
       {chip(chip_label)}
-      {title_image(title_light, title_dark, title_alt, 460)}
+      {title_html}
       <p class="e-text" style="margin:0 0 26px;font-size:16px;line-height:1.55;color:{INK_SOFT};">
         {lede}
       </p>
@@ -73,6 +83,38 @@ def new_verification_email(tier: str, unsubscribe_url: str) -> str:
         unsubscribe_url=unsubscribe_url,
         subject="You're verified on Ahavah",
         preheader="Your verification was approved.",
+    )
+
+
+def verification_basics_only_email(unsubscribe_url: str) -> str:
+    """The check ran, the anti-spoof gestures passed, and the classifier
+    matched the selfie to none of the member's photos. No tier is granted,
+    which is precisely why this cannot stay silent. No brand title says
+    this, so it ships with no headline (see _event_email)."""
+    return _event_email(
+        chip_label="Verification",
+        lede=("We could not match your selfie to your photos. Your photos "
+              "need to clearly show your face in good light. Update a photo, "
+              "or try the check again."),
+        cta_label="Try the check again", cta_url=f"{WEB_BASE_URL}/verify",
+        unsubscribe_url=unsubscribe_url,
+        subject="We could not match your selfie to your photos",
+        preheader="The check ran, and it could not match your selfie.",
+    )
+
+
+def verification_not_passed_email(unsubscribe_url: str) -> str:
+    """The classifier rejected the selfie. It returns a truthiness score and
+    not an explanation, so this says the outcome and offers the retry, and
+    names no reason. No brand title says this either."""
+    return _event_email(
+        chip_label="Verification",
+        lede=("Your verification check did not pass. You can try the check "
+              "again when you are ready."),
+        cta_label="Try the check again", cta_url=f"{WEB_BASE_URL}/verify",
+        unsubscribe_url=unsubscribe_url,
+        subject="Your verification check did not pass",
+        preheader="You can try the check again when you are ready.",
     )
 
 

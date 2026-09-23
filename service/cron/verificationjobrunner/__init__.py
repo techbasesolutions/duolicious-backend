@@ -128,12 +128,25 @@ async def do_verification_job(verification_job: VerificationJob):
 
     # Notify the user of their verification result (gated by
     # push_verification, default on). Fire-and-forget; never block the job.
-    # 'Basics only' (success but no tier) is intentionally silent — there's
-    # no clear pass/fail to report. Gold/ID (Stripe Identity) is finalized
-    # elsewhere (service/identity_verification) and notified separately.
+    #
+    # Every outcome reports now. The two that used to say nothing were the
+    # whole defect. 'Basics only' (success, no tier) was silent on purpose,
+    # on the grounds that there was "no clear pass/fail to report", and a
+    # classifier rejection only ever pushed, so a member whose push never
+    # arrived heard nothing. Both left the member on a screen that never
+    # resolved. Gold/ID (Stripe Identity) is finalized elsewhere
+    # (service/identity_verification) and notified separately.
+    #
+    # A rejection names no reason. The classifier returns a truthiness
+    # score, not an explanation, so the copy reports the outcome and the
+    # retry and asserts nothing we could not evidence.
     try:
-        from service.notifications import send_to_user_safe, notify
-        from emails.notification import new_verification_email
+        from service.notifications import notify
+        from emails.notification import (
+            new_verification_email,
+            verification_basics_only_email,
+            verification_not_passed_email,
+        )
         if params['status'] == 'success' and params['target_tier']:
             tier = str(params['target_tier']).capitalize()
             notify(
@@ -144,13 +157,24 @@ async def do_verification_job(verification_job: VerificationJob):
                 email_subject="You're verified on Ahavah",
                 email_html_factory=lambda unsub: new_verification_email(tier, unsub),
             )
-        elif params['status'] == 'failure':
-            send_to_user_safe(
-                person_id=verification_job.person_id,
-                title="Verification update",
-                body="Your verification didn't pass. Tap to try again.",
+        elif params['status'] == 'success':
+            notify(
+                verification_job.person_id, "verification",
+                title="We could not match your selfie to your photos",
+                body=("Your photos need to clearly show your face in good "
+                      "light. Update a photo, or try the check again."),
                 url="/verify",
-                event_kind="verification",
+                email_subject="We could not match your selfie to your photos",
+                email_html_factory=verification_basics_only_email,
+            )
+        elif params['status'] == 'failure':
+            notify(
+                verification_job.person_id, "verification",
+                title="Your verification check did not pass",
+                body="You can try the check again when you are ready.",
+                url="/verify",
+                email_subject="Your verification check did not pass",
+                email_html_factory=verification_not_passed_email,
             )
     except Exception:
         import traceback
