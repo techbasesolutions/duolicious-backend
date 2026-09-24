@@ -25,6 +25,40 @@ from database import api_tx
 _MIGRATION = (Path(__file__).resolve().parent.parent
               / 'migrations' / '0053_verification_job_lease.sql')
 
+# Any two transactions that pick this number up serialise against each
+# other. Arbitrary, and only has to be unique among this suite's advisory
+# locks; 53 is the migration.
+_MIGRATION_ADVISORY_LOCK = 53
+
+
+def _ddl_connection():
+    """A connection for running the migration file on, set up so it cannot
+    stall the rest of the suite.
+
+    `ALTER TABLE` takes ACCESS EXCLUSIVE on `verification_job` and holds it
+    until this transaction ends, so everything else that touches that table
+    queues behind it, and anything already holding a lock on it blocks the
+    ALTER. Serially, which is how the suite runs today, that is harmless.
+    Under `-n auto` it is a stall in both directions.
+
+    Two guards. The advisory lock serialises the copies of this test
+    against each other, so two workers cannot each be waiting for the lock
+    the other is about to take. `lock_timeout` means a wait on any other
+    holder fails in a second, loudly and with a lock name, instead of
+    sitting there until the connection's 5 second statement_timeout kills
+    it with something less legible. Between them the ACCESS EXCLUSIVE
+    window is two ALTER statements and a SELECT.
+    """
+    conn = psycopg.connect(database._api_conninfo)
+    try:
+        conn.execute("SET lock_timeout = '1s'")
+        conn.execute('SELECT pg_advisory_xact_lock(%s)',
+                     (_MIGRATION_ADVISORY_LOCK,))
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
 
 def test_0053_columns_exist_with_the_declared_shape():
     with api_tx('read committed') as tx:
@@ -68,7 +102,7 @@ def test_0053_applies_twice_and_leaves_existing_rows_alone(make_person):
     """Re-running the file must not restamp a lease that is already set, or
     the reaper's clock resets on every deployment."""
     person = make_person()
-    with psycopg.connect(database._api_conninfo) as conn:
+    with _ddl_connection() as conn:
         try:
             job_id = conn.execute(
                 """INSERT INTO verification_job (
@@ -101,7 +135,7 @@ def test_0053_backfills_a_running_row_that_has_no_lease(make_person):
     """The deploy window case: old code set 'running' with no start time.
     The migration gives it one so it is reaped once, not immediately."""
     person = make_person()
-    with psycopg.connect(database._api_conninfo) as conn:
+    with _ddl_connection() as conn:
         try:
             job_id = conn.execute(
                 """INSERT INTO verification_job (
