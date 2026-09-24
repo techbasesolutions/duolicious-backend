@@ -27,20 +27,57 @@ import os
 from datetime import datetime, timedelta, timezone
 
 
-def _env_int(name: str, default: int) -> int:
-    """Unset or blank reads as the default. Compose files pass every cron
-    setting through as an empty string when it is not configured."""
-    raw = os.environ.get(name, '')
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
+_TRUE = frozenset({'1', 'true', 'yes', 'on'})
+_FALSE = frozenset({'', '0', 'false', 'no', 'off'})
+
+
+def _env_flag(name: str) -> bool:
+    """The on switch, spelled any of the obvious ways.
+
+    An operator turning this on will reach for `true` or `yes` as readily as
+    `1`, and a flag that reads an unrecognised value as off fails in the
+    worst possible direction: the log line is identical to a correct dormant
+    deploy, so you believe you enabled a thing you did not. Anything we do
+    not recognise raises at import instead, which stops the container and is
+    impossible to miss.
+    """
+    raw = os.environ.get(name, '').strip().lower()
+    if raw in _TRUE:
+        return True
+    if raw in _FALSE:
+        return False
+    raise ValueError(
+        f"{name}={raw!r} is not a yes or a no. Use one of "
+        f"{sorted(_TRUE)} or {sorted(_FALSE)}.")
+
+
+def _env_int(name: str, default: int, *, low: int, high: int) -> int:
+    """Unset or blank reads as the default, because compose files pass every
+    setting through as an empty string when it is not configured.
+
+    Out of range raises rather than clamping. `SEND_HOUR_UTC=25` would
+    otherwise reach `datetime.replace(hour=25)` inside the Growth > Emails
+    route and take the whole tab down with a 500, and `SEND_WEEKDAY=0` would
+    give a window that can never open beside a next-send date the dashboard
+    prints forever.
+    """
+    raw = os.environ.get(name, '').strip()
+    if not raw:
         return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name}={raw!r} is not a whole number.") from None
+    if not low <= value <= high:
+        raise ValueError(f"{name}={value} is outside {low} to {high}.")
+    return value
 
 
-SEND_WEEKDAY = _env_int('DUO_CRON_COMMUNITY_WEEKLY_WEEKDAY', 1)  # 1 = Monday
-SEND_HOUR_UTC = _env_int('DUO_CRON_COMMUNITY_WEEKLY_HOUR_UTC', 12)
-COMMUNITY_WEEKLY_ENABLED = bool(
-    _env_int('DUO_CRON_COMMUNITY_WEEKLY_ENABLED', 0))
+# ISO weekday: 1 is Monday, 7 is Sunday. isoweekday() never returns 0, so 0
+# here would be a window that can never open.
+SEND_WEEKDAY = _env_int('DUO_CRON_COMMUNITY_WEEKLY_WEEKDAY', 1, low=1, high=7)
+SEND_HOUR_UTC = _env_int('DUO_CRON_COMMUNITY_WEEKLY_HOUR_UTC', 12, low=0, high=23)
+COMMUNITY_WEEKLY_ENABLED = _env_flag('DUO_CRON_COMMUNITY_WEEKLY_ENABLED')
 
 
 def is_send_window(now: datetime) -> bool:

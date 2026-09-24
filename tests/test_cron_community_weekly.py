@@ -53,11 +53,16 @@ def _run(person, email, cid):
         from_addr='support@ahavah.app', unsub_scope='community', cap_days=6)
 
 
-def test_a_second_tick_in_the_same_week_queues_nothing(make_person, outbox_drain):
-    """The whole point of the schedule: the cron may tick many times on a
-    Monday, and an operator may press Send the same week. Both compute the
-    same id, and the second one must add no row. Not the window, not the
-    cap: the id.
+def test_a_second_tick_before_the_first_is_delivered_queues_nothing(make_person, outbox_drain):
+    """The cron may tick many times on a Monday while the outbox is still
+    draining the first batch. Nothing has been ACCEPTED yet at that point, so
+    there is no email_send_log row and `_Q_SAME_RUN` cannot help. What holds
+    here is the outbox's own unique key on
+    (campaign, campaign_id, person_id): `enqueue` returns None on conflict.
+
+    Named for that mechanism rather than for the id guard generally, because
+    the two are different and only one of them is load bearing in this
+    window. The id guard proper is the test below.
 
     make_person uses @example.com, which emails.base.is_suppressed_send
     blocks, so use a reserved-but-unsuppressed domain as the other campaign
@@ -75,12 +80,69 @@ def test_a_second_tick_in_the_same_week_queues_nothing(make_person, outbox_drain
     assert _outbox_count(p['id']) == 1
 
 
-def test_the_cron_and_the_admin_frontend_agree_on_the_id():
-    """Hard-coded against ahavah-admin/src/lib/growth-api.ts:565, which
-    builds `cmp_${year}w${padded}_${CAMPAIGN_SUFFIX[campaign]}`. If this
-    ever fails, a manual send and a scheduled send in the same week stop
-    colliding and a member gets the email twice."""
-    assert week_campaign_id(_at(2026, 9, 21, 12), 'e2') == 'cmp_2026w39_community'
+def test_the_week_id_format_is_pinned():
+    """A regression lock on THIS repo's half of the pair only.
+
+    The two sides are genuinely compared in
+    ahavah-admin/tests/growth-api.test.mjs, which reads this module from
+    disk and fails loudly on a divergence. That is the test that matters,
+    and it is the one that caught the real divergence on 2026-09-24, when
+    this module shipped 'community' and 'reinvite' against the admin's
+    established 'comm' and 'reinv'.
+
+    What used to stand here was a docstring claiming to check the admin repo
+    over an assertion comparing the Python function to its own output. It
+    passed the whole time the two sides disagreed. It is kept, honestly
+    named, only so a change to the id FORMAT is visible from inside this
+    repo without a checkout of the other one."""
+    assert week_campaign_id(_at(2026, 9, 21, 12), 'e2') == 'cmp_2026w39_comm'
+
+
+def test_the_id_guard_holds_once_the_first_batch_has_been_delivered(make_person, outbox_drain):
+    """The guard the plan and the cron docstring actually name: `_Q_SAME_RUN`
+    in service/campaigns/__init__.py, which reads email_send_log.
+
+    That table is only written when the drain ACCEPTS a message, so this test
+    drains before re-running. It then passes cap_days=0 to take the 6-day
+    frequency cap out of the picture entirely, because `can_send` folds both
+    checks into one `skipped_cap` counter and a test that left the cap on
+    could not say which of the two did the work. With the cap disabled, the
+    only thing that can stop the second run is the id.
+    """
+    p = make_person(name='Delivered')
+    email = f"delivered-{p['id']}@ahavah-test.invalid"
+    cid = week_campaign_id(_at(2026, 9, 21, 12), 'e2')
+
+    assert _run(p, email, cid)['queued'] == 1
+    assert len(outbox_drain(p['id'])) == 1, 'the drain did not deliver the first batch'
+    with api_tx('read committed') as tx:
+        assert tx.execute(
+            "SELECT count(*) AS n FROM email_send_log WHERE person_id = %(id)s",
+            dict(id=p['id'])).fetchone()['n'] == 1
+
+    again = run_campaign(
+        api_tx, 'e2', cid, [dict(person_id=p['id'], email=email, name='Delivered')],
+        lambda row: ('This week on Ahavah', '<p>hi</p>'), send=True,
+        from_addr='support@ahavah.app', unsub_scope='community', cap_days=0)
+    assert again['queued'] == 0, 'the same-run guard let a delivered week through'
+
+
+def test_the_id_guard_is_what_blocks_it_and_not_the_row_already_existing(make_person, outbox_drain):
+    """Negative control for the test above. Same shape, same drain, same
+    cap_days=0, only the id differs. If this queued nothing either, the test
+    above would be proving something other than the id."""
+    p = make_person(name='Delivered2')
+    email = f"delivered2-{p['id']}@ahavah-test.invalid"
+
+    assert _run(p, email, week_campaign_id(_at(2026, 9, 21, 12), 'e2'))['queued'] == 1
+    assert len(outbox_drain(p['id'])) == 1
+
+    other = run_campaign(
+        api_tx, 'e2', week_campaign_id(_at(2026, 9, 28, 12), 'e2'),
+        [dict(person_id=p['id'], email=email, name='Delivered2')],
+        lambda row: ('This week on Ahavah', '<p>hi</p>'), send=True,
+        from_addr='support@ahavah.app', unsub_scope='community', cap_days=0)
+    assert other['queued'] == 1
 
 
 def test_a_different_week_does_queue_again(make_person, outbox_drain):
@@ -143,9 +205,9 @@ def test_the_window_and_the_next_slot_never_both_point_at_now():
 def test_only_the_weekly_email_carries_a_schedule():
     from service.api.admin.growth_routes import _schedule_for
     now = _at(2026, 9, 24, 9)
-    assert _schedule_for('e2', now) is not None
+    assert _schedule_for('e2', now, None) is not None
     for other in ('e1', 'e3', 'e4', 'e5'):
-        assert _schedule_for(other, now) is None
+        assert _schedule_for(other, now, None) is None
 
 
 def test_a_disabled_schedule_offers_no_next_send_date():
@@ -153,7 +215,41 @@ def test_a_disabled_schedule_offers_no_next_send_date():
     was running would recreate the exact problem this work exists to fix."""
     from service.api.admin.growth_routes import _schedule_for
     import service.campaigns.schedule as sched
-    s = _schedule_for('e2', _at(2026, 9, 24, 9))
+    s = _schedule_for('e2', _at(2026, 9, 24, 9), None)
+    assert s is not None
     assert s['enabled'] is sched.COMMUNITY_WEEKLY_ENABLED
     if not sched.COMMUNITY_WEEKLY_ENABLED:
         assert s['next_send_at'] is None
+        # Nothing is running, so nothing can be late. "Overdue" next to
+        # "not scheduled" would be two different explanations for one row.
+        assert s['overdue'] is False
+
+
+def test_an_enabled_schedule_reports_a_week_that_never_went_out(monkeypatch):
+    """The mirror of the defect this whole branch exists to fix. A cron
+    container down for the whole Monday window loses the week in silence: no
+    rows, no error, nothing logged, while the row goes on promising "Next
+    Monday, 08:00" and the last-sent date quietly stops advancing."""
+    import service.api.admin.growth_routes as gr
+    monkeypatch.setattr(gr, 'COMMUNITY_WEEKLY_ENABLED', True)
+    now = _at(2026, 9, 24, 9)
+
+    fresh = gr._schedule_for('e2', now, _at(2026, 9, 21, 12))
+    assert fresh['overdue'] is False, 'a send three days ago is not overdue'
+
+    stale = gr._schedule_for('e2', now, _at(2026, 9, 14, 12))
+    assert stale['overdue'] is True, 'a missed week went unreported'
+
+    assert gr._schedule_for('e2', now, None)['overdue'] is True
+
+
+def test_a_late_send_inside_the_window_is_not_overdue(monkeypatch):
+    """Negative control on the threshold. The window runs to midnight, so a
+    send can legitimately land almost 12 hours after the slot. Eight days is
+    one cadence plus a day of slack precisely so that never trips."""
+    import service.api.admin.growth_routes as gr
+    monkeypatch.setattr(gr, 'COMMUNITY_WEEKLY_ENABLED', True)
+    # Sent 23:59 on Monday; it is now Monday 11:00 a week later, one hour
+    # before the next slot. That is the longest healthy gap there is.
+    s = gr._schedule_for('e2', _at(2026, 9, 28, 11), _at(2026, 9, 21, 23, 59))
+    assert s['overdue'] is False

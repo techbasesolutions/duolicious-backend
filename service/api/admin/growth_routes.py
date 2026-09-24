@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import duotypes as t
 import psycopg
@@ -35,12 +35,23 @@ _EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 # This exists because "last sent 24 Sep" with nothing beside it reads like a
 # healthy weekly rhythm whether or not anything will ever send the next one.
 # For months nothing did, and the row looked the same either way.
-def _schedule_for(campaign: str, now: datetime) -> dict | None:
+#
+# `overdue` closes the mirror image of that defect. A cron container that is
+# down for the whole Monday window loses the week silently: no queued rows, no
+# error, nothing logged, while the row goes on printing "Next Monday, 08:00"
+# and the last-sent date quietly stops advancing. Eight days is one full
+# cadence plus a day of slack, so it cannot fire on a healthy week however
+# late in the window the send landed.
+_OVERDUE_AFTER = timedelta(days=8)
+
+def _schedule_for(campaign: str, now: datetime, last_sent_at: datetime | None) -> dict | None:
     if campaign != 'e2':
         return None
-    return dict(enabled=COMMUNITY_WEEKLY_ENABLED,
-                next_send_at=next_send_at(now).isoformat()
-                if COMMUNITY_WEEKLY_ENABLED else None)
+    if not COMMUNITY_WEEKLY_ENABLED:
+        return dict(enabled=False, next_send_at=None, overdue=False)
+    overdue = last_sent_at is None or (now - last_sent_at) > _OVERDUE_AFTER
+    return dict(enabled=True, next_send_at=next_send_at(now).isoformat(),
+                overdue=overdue)
 
 _Q_LAST_SENT = """
     SELECT campaign, max(sent_at) AS at,
@@ -64,7 +75,7 @@ def get_admin_growth_emails(s: t.SessionInfo):
         out.append(dict(campaign=key, recipients=mod.recipient_count(),
                         last_sent_at=last['at'].isoformat() if last and last['at'] else None,
                         last_campaign_id=last['cid'] if last else None, system=False,
-                        schedule=_schedule_for(key, now)))
+                        schedule=_schedule_for(key, now, last['at'] if last else None)))
     # e4 (the member invite) and e5 (the card-went-live receipt) are sent by
     # the platform itself, not run from this admin screen: they have no
     # recipients()/recipient_count() module to ask, so their count comes

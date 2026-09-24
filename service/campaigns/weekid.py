@@ -10,7 +10,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-_SUFFIX = {'e1': 'spotlight', 'e2': 'community', 'e3': 'reinvite'}
+# Copied from CAMPAIGN_SUFFIX in ahavah-admin/src/lib/growth-api.ts. The
+# admin values are the established ones, because operators have been pressing
+# Send against them since before any of this was scheduled. Do not "tidy"
+# them into longer words: `comm` and `reinv` are what is already in
+# email_send_log, and they are pinned on both sides (see the cross-repo test
+# in ahavah-admin/tests/growth-api.test.mjs).
+_SUFFIX = {'e1': 'spotlight', 'e2': 'comm', 'e3': 'reinv'}
 
 
 def week_campaign_id(now: datetime, campaign: str) -> str:

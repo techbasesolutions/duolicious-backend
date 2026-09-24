@@ -37,6 +37,13 @@ def get_system_health(s: t.SessionInfo):
     return {
         'health': dict(health),
         'otp': dict(otp),
-        'outbox': dict(outbox),
+        # isoformat() rather than letting Flask's JSON provider have the raw
+        # datetime: its default is an RFC 2822 HTTP-date ("Thu, 24 Sep 2026
+        # 10:56:56 GMT"), every other timestamp on the admin surface is ISO
+        # 8601, and the TypeScript that reads this one is typed and tested
+        # against ISO.
+        'outbox': dict(outbox, oldest_queued_at=(
+            outbox['oldest_queued_at'].isoformat()
+            if outbox.get('oldest_queued_at') else None)),
         'verification': dict(verification),
     }

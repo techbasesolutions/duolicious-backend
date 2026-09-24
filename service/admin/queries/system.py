@@ -15,9 +15,11 @@ Q_SYSTEM_HEALTH = """
         (SELECT COUNT(*) FROM admin_audit_log) AS admin_actions_total
 """
 
-# OTP codes ISSUED in the last 24 hours. This counts duo_session rows, so it
-# says how many codes were created and nothing at all about whether any of
-# them arrived: there is no delivery signal for OTP anywhere in the system.
+# Sign-in SESSIONS with recent OTP activity. This counts duo_session rows by
+# otp_expiry, which is bumped on every new code AND zeroed on a successful
+# sign-in, so a member who asks for three codes on one session counts once.
+# It says nothing whatever about whether a code arrived: there is no delivery
+# signal for OTP anywhere in the system.
 # The System tab used to print a hardcoded "100%" success and a hardcoded
 # "0" failures on top of this number. Both are gone. Do not reintroduce a
 # rate here without a real provider log behind it.
@@ -42,15 +44,27 @@ Q_OTP_24H = """
 # timestamp (`sent_at`). A failed row nulls `reserved_at` and writes
 # `last_error` with no time of its own, so any window over failures would be
 # computed off `created_at`, which is when the message was QUEUED, not when
-# it failed. Failed and unknown are terminal states that should sit near
-# zero, so they are reported as standing totals rather than as a window this
-# table cannot honestly support.
+# it failed.
+#
+# So ONE of these six numbers is a window and five are all-time totals over a
+# table nothing prunes. The card that renders them has to say so, because a
+# single stuck row would otherwise put a permanent red warning on the System
+# tab, and a warning that never clears is a warning nobody reads. If that
+# becomes a real problem the answer is a failure timestamp on the table, not
+# a window quietly computed off the wrong column here.
+# EVERY state in outbox.STATES gets a column. A message that exists in the
+# table and appears on no line is worse than no panel at all: an operator
+# reconciling 26 recipients against 20 accepted needs somewhere for the other
+# six to be. `skipped` is where the drain puts a message it refused
+# (withdrawn, suppressed, unsubscribed, capped), and the cap in particular
+# will fill it on the first Monday after any manual send.
 Q_OUTBOX_HEALTH = """
     SELECT
       COUNT(*) FILTER (WHERE state = 'queued')             AS queued,
       COUNT(*) FILTER (WHERE state = 'reserved')           AS reserved,
       COUNT(*) FILTER (WHERE state = 'acceptance_unknown') AS acceptance_unknown,
       COUNT(*) FILTER (WHERE state = 'failed')             AS failed,
+      COUNT(*) FILTER (WHERE state = 'skipped')            AS skipped,
       COUNT(*) FILTER (WHERE state = 'accepted'
                          AND sent_at > NOW() - INTERVAL '24 hours') AS accepted_24h,
       MIN(created_at) FILTER (WHERE state = 'queued')      AS oldest_queued_at

@@ -34,7 +34,8 @@ from emails.community_weekly import FROM_ADDR
 from emails.send_community_weekly import (
     CAP_DAYS, UNSUB_SCOPE, build_for, recipients)
 from service.campaigns.runner import run_campaign
-from service.campaigns.schedule import COMMUNITY_WEEKLY_ENABLED, is_send_window
+from service.campaigns.schedule import (
+    COMMUNITY_WEEKLY_ENABLED, SEND_HOUR_UTC, is_send_window)
 from service.campaigns.weekid import week_campaign_id
 from service.config import WEB_BASE_URL
 from service.cron.cronutil import env_int, print_stacktrace, MAX_RANDOM_START_DELAY
@@ -48,6 +49,18 @@ from service.unsubscribe import make_url as unsub_url
 # repeat, so the poll only has to be fine enough to catch the day.
 COMMUNITY_WEEKLY_POLL_SECONDS = env_int(
     'DUO_CRON_COMMUNITY_WEEKLY_POLL_SECONDS', 60 * 60)
+
+# "It is weekly, why poll hourly" is a reasonable thought and a silent way to
+# lose most weeks: a poll longer than the window lands at a drifting offset
+# and steps straight over Monday with no error and no log line. The window is
+# from the send hour to midnight UTC, so refuse anything that cannot fit
+# inside it at least twice.
+_WINDOW_SECONDS = (24 - SEND_HOUR_UTC) * 60 * 60
+if COMMUNITY_WEEKLY_POLL_SECONDS * 2 > _WINDOW_SECONDS:
+    raise ValueError(
+        f'DUO_CRON_COMMUNITY_WEEKLY_POLL_SECONDS={COMMUNITY_WEEKLY_POLL_SECONDS} '
+        f'does not fit twice inside the {_WINDOW_SECONDS}s send window that '
+        f'starts at {SEND_HOUR_UTC}:00 UTC. Weeks would be skipped silently.')
 
 print(f'Hello from cron module: {__name__}')
 

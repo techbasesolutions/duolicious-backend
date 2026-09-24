@@ -89,6 +89,16 @@ services:
       DUO_R2_ACCESS_KEY_ID: ${DUO_R2_ACCESS_KEY_ID}
       DUO_R2_ACCESS_KEY_SECRET: ${DUO_R2_ACCESS_KEY_SECRET}
       DUO_BOTO_ENDPOINT_URL: ${DUO_BOTO_ENDPOINT_URL}
+      # The api does not SEND the weekly community email, the cron does. It
+      # reads these so the Growth > Emails row can say when the next send is
+      # due, which means the two services have to agree. Set them on the cron
+      # alone and the dashboard reports "not scheduled" about a live mailing;
+      # set them here alone and it promises a send nothing will make. Both,
+      # or neither. Both services also need a restart for a change to take:
+      # these are read once at import.
+      DUO_CRON_COMMUNITY_WEEKLY_ENABLED: ${DUO_CRON_COMMUNITY_WEEKLY_ENABLED:-0}
+      DUO_CRON_COMMUNITY_WEEKLY_WEEKDAY: ${DUO_CRON_COMMUNITY_WEEKLY_WEEKDAY:-1}
+      DUO_CRON_COMMUNITY_WEEKLY_HOUR_UTC: ${DUO_CRON_COMMUNITY_WEEKLY_HOUR_UTC:-12}
       # Branded URLs (must override base "https://api.ahavah.app" defaults
       # — staging uses droplet IP until domain registered)
       AHAVAH_API_BASE_URL: ${AHAVAH_API_BASE_URL}
@@ -233,6 +243,16 @@ services:
       DUO_CRON_SPOTLIGHT_RETENTION_POLL_SECONDS: ${DUO_CRON_SPOTLIGHT_RETENTION_POLL_SECONDS:-86400}
       DUO_CRON_EMAIL_OUTBOX_POLL_SECONDS: ${DUO_CRON_EMAIL_OUTBOX_POLL_SECONDS:-30}
       DUO_CRON_SPOTLIGHT_CLEANUP_POLL_SECONDS: ${DUO_CRON_SPOTLIGHT_CLEANUP_POLL_SECONDS:-600}
+      # The weekly community email (e2). OFF by default: turning it on mails
+      # the whole membership, so it is a deliberate act, not a side effect of
+      # a deploy. These four must ALSO be set on the `api` service, which
+      # reads the same settings to tell the Growth tab when the next send is
+      # due; set them here only and the dashboard says "not scheduled" about
+      # a mailing that is live.
+      DUO_CRON_COMMUNITY_WEEKLY_ENABLED: ${DUO_CRON_COMMUNITY_WEEKLY_ENABLED:-0}
+      DUO_CRON_COMMUNITY_WEEKLY_WEEKDAY: ${DUO_CRON_COMMUNITY_WEEKLY_WEEKDAY:-1}
+      DUO_CRON_COMMUNITY_WEEKLY_HOUR_UTC: ${DUO_CRON_COMMUNITY_WEEKLY_HOUR_UTC:-12}
+      DUO_CRON_COMMUNITY_WEEKLY_POLL_SECONDS: ${DUO_CRON_COMMUNITY_WEEKLY_POLL_SECONDS:-3600}
       DUO_CRON_MAX_RANDOM_START_DELAY: ${DUO_CRON_MAX_RANDOM_START_DELAY:-15}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       DUO_VERIFICATION_IMAGE_BASE_URL: ${DUO_VERIFICATION_IMAGE_BASE_URL}

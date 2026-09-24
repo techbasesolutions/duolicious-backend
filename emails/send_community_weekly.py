@@ -1,12 +1,14 @@
 """python -m emails.send_community_weekly [--send] [--campaign-id ID]"""
 from __future__ import annotations
 
-import argparse, uuid
+import argparse
+from datetime import datetime, timezone
 from database import api_tx
 from emails.base import suppressed_sql_pattern
 from emails.community_weekly import community_weekly_html, SUBJECT, FROM_ADDR
 from service.campaigns import make_campaign_link, suppressed_predicate_sql, unsubscribed_predicate_sql
 from service.campaigns.runner import run_campaign
+from service.campaigns.weekid import week_campaign_id
 from service.config import WEB_BASE_URL
 from service.growth.queries import _excluded
 from service.unsubscribe import make_url as _unsub_url
@@ -114,7 +116,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--send', action='store_true'); ap.add_argument('--campaign-id', default=None)
     a = ap.parse_args()
-    cid = a.campaign_id or f"e2-{uuid.uuid4().hex[:8]}"
+    # The week's id, the SAME one the cron and the admin Send button compute.
+    #
+    # This used to mint `e2-<random hex>`, which could never collide with
+    # anything. An operator running this on a Monday afternoon, not knowing
+    # the cron had already sent at 12:00, enqueued a second full cohort, and
+    # the only thing between the member and two copies was the 6-day cap,
+    # which is exactly what someone reaching for this script is often about
+    # to override. Sharing the id makes the second run a no-op instead.
+    cid = a.campaign_id or week_campaign_id(datetime.now(timezone.utc), 'e2')
     print(run_campaign(api_tx, 'e2', cid, recipients(), build_for, send=a.send, from_addr=FROM_ADDR,
                        unsub_scope=UNSUB_SCOPE, cap_days=CAP_DAYS,
                        list_unsubscribe=lambda e: f"<mailto:support@ahavah.app?subject=Unsubscribe>, <{_unsub_url(UNSUB_SCOPE, e, WEB_BASE_URL)}>"))
