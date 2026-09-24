@@ -18,16 +18,16 @@ Every member's primary photo was reviewed by eye on 2026-09-20 (50 accounts with
 
 | Member | id | Primary photo | Account |
 |---|---|---|---|
-| Max | 113 | abstract hexagon wallpaper, no person | active, 1 photo |
-| Navon | 117 | AI bear head on a suited body, and his second photo is the same | active, joined 19 Sep |
-| Vict | 49 | a German Shepherd | never activated, last seen 5 Jul |
-| Abby | 31 | a real photo of her, shot from behind, no face | active, 1 photo |
-| Raphael | 105 | a group of four, but his photo 2 is a real solo portrait | active |
-| Jan Perkins | 103 | a couple, 4 photos | never activated |
+| Member A | (redacted) | abstract hexagon wallpaper, no person | active, 1 photo |
+| Member B | (redacted) | AI bear head on a suited body, and his second photo is the same | active, joined 19 Sep |
+| Member C | (redacted) | a German Shepherd | never activated, last seen 5 Jul |
+| Member D | (redacted) | a real photo of her, shot from behind, no face | active, 1 photo |
+| Member E | (redacted) | a group of four, but his photo 2 is a real solo portrait | active |
+| Member F | (redacted) | a couple, 4 photos | never activated |
 
 The Admin account (23) uses the logo and is correct.
 
-**Why nothing caught it.** The only content check that runs is the nudity classifier, a 5 part 210 MB ONNX model derived from Bumble's private-detector, scored by `service/cron/nsfwphotorunner`. It answers one question, "is this lewd", and it answered correctly: Max scored 0.052 and Navon 0.065. No code in any of the three repos performs face detection. Upload itself checks only format, size, dimensions and an exact MD5 against `banned_photo_hash`.
+**Why nothing caught it.** The only content check that runs is the nudity classifier, a 5 part 210 MB ONNX model derived from Bumble's private-detector, scored by `service/cron/nsfwphotorunner`. It answers one question, "is this lewd", and it answered correctly: Member A scored 0.052 and Member B 0.065. No code in any of the three repos performs face detection. Upload itself checks only format, size, dimensions and an exact MD5 against `banned_photo_hash`.
 
 ## What this plan does not do
 
@@ -92,7 +92,7 @@ The Admin account (23) uses the logo and is correct.
 
 - [ ] A one-shot script clears `nsfw_score` to NULL in batches so the existing runner re-processes historical photos, or calls the checker directly, whichever the Task 2 author finds cleaner. It must be resumable and must not re-download a photo it has already checked.
 - [ ] Run it against production only after Tasks 1 to 4 are deployed, so anything it flags lands in `manual_review` with a working notify path behind it.
-- [ ] The six accounts in the audit table are handled by hand by the owner through the Photos tab, not by this script. Max and Navon are the two clear cases.
+- [ ] The six accounts in the audit table are handled by hand by the owner through the Photos tab, not by this script. Member A and Member B are the two clear cases.
 
 ### Task 6: Review and deploy
 
