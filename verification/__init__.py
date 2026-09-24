@@ -11,6 +11,13 @@ from pathlib import Path
 from service.config import USER_IMAGES_BASE_URL
 from verification.messages import *
 
+# How long one HTTP attempt at the classifier may take. Named rather than
+# inlined because it is an input to the reaper's lease: see the derivation in
+# service/verificationlease.py, which multiplies this by the SDK's retry count
+# to bound a whole verify() call. tests/test_verification_job_lease.py fails
+# if the two stop agreeing.
+VERIFICATION_HTTP_TIMEOUT_SECONDS = 45
+
 VERIFICATION_IMAGE_BASE_URL = os.getenv('DUO_VERIFICATION_IMAGE_BASE_URL')
 VERIFICATION_MOCK_RESPONSE_FILE = os.getenv('DUO_VERIFICATION_MOCK_RESPONSE_FILE')
 
@@ -389,7 +396,7 @@ async def real_verification_response(
                 claimed_ethnicity=claimed_ethnicity,
             ),
             max_tokens=500,
-            timeout=45,
+            timeout=VERIFICATION_HTTP_TIMEOUT_SECONDS,
         )).choices[0].message.content
     except:
         print(traceback.format_exc())

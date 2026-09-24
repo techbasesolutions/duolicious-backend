@@ -512,3 +512,35 @@ def test_the_outcome_falls_back_to_the_person_latch_when_the_job_is_null(
 
     assert row['verification_level_name'] == 'Photos'
     assert row['outcome'] == 'photos'
+
+
+def test_the_lease_still_covers_what_the_sdk_can_actually_take():
+    """VERIFICATION_LEASE_SECONDS is derived, not chosen, and the derivation
+    in service/verificationlease.py rests on one number this repo does not
+    own: the OpenAI SDK's default `max_retries`.
+
+    One verify() call is bounded at (max_retries + 1) attempts of 45 seconds
+    each, plus the SDK's own backoff. If a dependency bump raises that
+    default, the real ceiling moves past the lease and the reaper starts
+    re-queueing jobs that are merely being retried: the member's selfie goes
+    to the classifier twice and we pay for it twice. Nothing else in this
+    repo would notice, which is why the assumption is pinned here rather
+    than left in a comment.
+
+    If this fails after an upgrade, redo the arithmetic in
+    service/verificationlease.py and move the lease. Do not delete the test.
+    """
+    from openai import AsyncOpenAI
+    from service.verificationlease import VERIFICATION_LEASE_SECONDS
+    from verification import VERIFICATION_HTTP_TIMEOUT_SECONDS
+
+    attempts = AsyncOpenAI(api_key='test-key-not-used').max_retries + 1
+    # 0.5 then 1.0 second, per INITIAL_RETRY_DELAY doubling, capped at 8.0.
+    backoff = sum(min(0.5 * 2 ** n, 8.0) for n in range(attempts - 1))
+    worst_case = attempts * VERIFICATION_HTTP_TIMEOUT_SECONDS + backoff
+
+    assert VERIFICATION_LEASE_SECONDS > worst_case, (
+        f'the lease is {VERIFICATION_LEASE_SECONDS}s but one verify() call '
+        f'can now take up to {worst_case}s ({attempts} attempts). A reaper '
+        f'firing inside that window double charges a vision call and sends '
+        f"the member's selfie to the classifier twice.")
