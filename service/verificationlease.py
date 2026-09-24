@@ -44,8 +44,27 @@ total attempts at the same selfie. A submission that dies three times is not
 dying from bad luck, and each attempt is a paid vision call over up to eight
 images, so the row stops being retried and starts being counted instead.
 
-Both are settable from the environment so an operator can widen the lease
-during an OpenAI incident without a deploy.
+HOW MANY JOBS ONE TICK MAY START.
+
+The picker had no bound, so a backlog that built up during an OpenAI outage
+was handed to the worker in one listing and run sequentially inside a single
+`for` loop. At the ceiling above that is 136.5 seconds a job, and for as
+long as it lasts the worker never returns to the top of its loop and never
+re-reads the queue.
+
+Ten is the bound. It is picked so the ordinary tick is unaffected (a healthy
+classifier call is seconds, and ten of them is still a short tick) while the
+pathological one, every call exhausting its SDK retries, is capped at
+10 x 136.5 = 1365 seconds before the worker re-lists. Re-listing costs one
+indexed query, drops rows another worker has claimed since, and picks up
+anything submitted meanwhile. It does not slow a backlog down: the poll is
+one second and ORDER BY id keeps the queue fair across ticks, so a backlog
+of any depth drains at the same rate either way. The bound buys
+interruptibility, not throughput.
+
+All three are settable from the environment so an operator can widen the
+lease during an OpenAI incident, or drain a backlog faster, without a
+deploy.
 """
 from __future__ import annotations
 
@@ -67,3 +86,6 @@ VERIFICATION_LEASE_SECONDS = _env_int(
 
 VERIFICATION_MAX_REAPS = _env_int(
     'DUO_CRON_VERIFICATION_MAX_REAPS', 2)
+
+VERIFICATION_MAX_JOBS_PER_TICK = _env_int(
+    'DUO_CRON_VERIFICATION_MAX_JOBS_PER_TICK', 10)

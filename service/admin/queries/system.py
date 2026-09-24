@@ -29,16 +29,31 @@ Q_OTP_24H = """
 # the operator with no way to know it had happened.
 #
 #   queued      submitted, not yet picked up. Healthy for about a second.
-#   running     in flight and inside its lease. Healthy.
-#   stuck       running and past its lease. This is the number that matters:
-#               when the cron is healthy it is zero, and it goes non zero
-#               whether the cause is one dead worker or the whole runner
-#               being down. A row here is a member waiting with no answer.
-#   abandoned   the subset of `stuck` that has burned its retries. Nothing
-#               will ever pick these up again. They leave only when
-#               garbagerecords deletes the row.
-#   failed      checks the classifier rejected. Not an error on its own, but
-#               a wall of them means the classifier, not the members.
+#   running     in flight and inside its lease. Healthy. A lease is what
+#               makes a run healthy, so a row with no lease at all is not
+#               counted here: see `stuck`.
+#   stuck       running and either past its lease or holding none. This is
+#               the number that matters: when the cron is healthy it is
+#               zero, and it goes non zero whether the cause is one dead
+#               worker or the whole runner being down. A row here is a
+#               member waiting with no answer.
+#
+#               A NULL lease belongs here rather than under `running`.
+#               Migration 0053 stamped every row that existed and the claim
+#               query always sets one, so it should be unreachable; if it
+#               ever is reached, Q_ELIGIBLE_VERIFICATION_JOBS refuses to
+#               reap it, so counting it as healthy would make it invisible
+#               to the reaper and to the operator at once, which is the
+#               worst of the two readings.
+#   abandoned   the subset of `stuck` that has burned its retries. The cron
+#               ends these and notifies the member, so this is a count of
+#               rows waiting for that sweep and reads zero when the runner
+#               is up. A number that stays non zero means nothing is
+#               running the sweep.
+#   failed      checks that did not pass, whether the classifier rejected
+#               them or they died more times than they may be retried. Not
+#               an error on its own, but a wall of them means the
+#               classifier, not the members.
 #
 # `verification_job` rows are deleted at `expires_at`, which defaults to
 # three days after the row is created, so every count here is a rolling
@@ -50,15 +65,15 @@ Q_VERIFICATION_JOBS = """
         ) AS verification_queued,
         COUNT(*) FILTER (
             WHERE status = 'running'
-              AND (
-                  running_since IS NULL
-               OR running_since >= NOW() - make_interval(secs => %(lease_seconds)s)
-              )
+              AND running_since IS NOT NULL
+              AND running_since >= NOW() - make_interval(secs => %(lease_seconds)s)
         ) AS verification_running,
         COUNT(*) FILTER (
             WHERE status = 'running'
-              AND running_since IS NOT NULL
-              AND running_since < NOW() - make_interval(secs => %(lease_seconds)s)
+              AND (
+                  running_since IS NULL
+               OR running_since < NOW() - make_interval(secs => %(lease_seconds)s)
+              )
         ) AS verification_stuck,
         COUNT(*) FILTER (
             WHERE status = 'running'

@@ -25,17 +25,33 @@ They also pin the two rulings of 2026-09-23.
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from uuid import uuid4
 
+import psycopg
 import pytest
 
+import database
 import service.cron.verificationjobrunner as runner
 from database import api_tx
+from service.cron.verificationjobrunner.sql import (
+    Q_ABANDONED_VERIFICATION_JOBS,
+    Q_CLAIM_VERIFICATION_JOB,
+    Q_UPDATE_VERIFICATION_STATUS,
+)
 from service.verificationlease import (
     VERIFICATION_LEASE_SECONDS,
+    VERIFICATION_MAX_JOBS_PER_TICK,
     VERIFICATION_MAX_REAPS,
 )
 from verification import Failure, Success, VerificationResult
+
+
+_LEASE_PARAMS = dict(
+    lease_seconds=VERIFICATION_LEASE_SECONDS,
+    max_reaps=VERIFICATION_MAX_REAPS,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -125,10 +141,26 @@ def _eligible_ids() -> list[int]:
     with api_tx() as tx:
         rows = tx.execute(
             Q_ELIGIBLE_VERIFICATION_JOBS,
-            dict(lease_seconds=VERIFICATION_LEASE_SECONDS,
-                 max_reaps=VERIFICATION_MAX_REAPS),
+            dict(**_LEASE_PARAMS, max_jobs=VERIFICATION_MAX_JOBS_PER_TICK),
         ).fetchall()
     return [r['id'] for r in rows]
+
+
+def _abandoned_ids(limit: int = 500) -> list[int]:
+    """The ids the tick would end rather than run again."""
+    with api_tx() as tx:
+        rows = tx.execute(
+            Q_ABANDONED_VERIFICATION_JOBS,
+            dict(**_LEASE_PARAMS, max_jobs=limit),
+        ).fetchall()
+    return [r['id'] for r in rows]
+
+
+def _counts() -> dict:
+    from service.admin.queries import Q_VERIFICATION_JOBS
+
+    with api_tx() as tx:
+        return dict(tx.execute(Q_VERIFICATION_JOBS, _LEASE_PARAMS).fetchone())
 
 
 def _job(job_id: int, person_id: int, *, claimed_uuids=None,
@@ -165,24 +197,52 @@ def _rejected() -> VerificationResult:
     )
 
 
-def _run(monkeypatch, job, result) -> list[dict]:
-    """Run one job with a stubbed classifier and a silent notifier.
-    Returns one entry per classifier call, so a test can prove the
-    classifier was NOT called for a job the worker failed to claim."""
+def _silence_notifications(monkeypatch, notified: list | None = None):
+    """Record notifications instead of sending them. `notified` collects one
+    entry per notification, so a test can prove the member was told once,
+    or not at all."""
     import service.notifications as notifications
 
+    def record(person_id, event_kind, **kw):
+        if notified is not None:
+            notified.append(dict(person_id=person_id, event_kind=event_kind, **kw))
+
+    monkeypatch.setattr(notifications, 'notify', record)
+    monkeypatch.setattr(notifications, 'send_to_user_safe', lambda *a, **kw: None)
+
+
+def _run(monkeypatch, job, result, notified: list | None = None,
+         during_verify=None) -> list[dict]:
+    """Run one job with a stubbed classifier and a silent notifier.
+    Returns one entry per classifier call, so a test can prove the
+    classifier was NOT called for a job the worker failed to claim.
+
+    `during_verify` runs while this worker's classifier call is notionally
+    in flight, which is where another worker gets the chance to reap the
+    row out from under it."""
     calls: list[dict] = []
 
     async def fake_verify(**kwargs):
         calls.append(kwargs)
+        if during_verify is not None:
+            during_verify()
         return result
 
     monkeypatch.setattr(runner, 'verify', fake_verify)
-    monkeypatch.setattr(notifications, 'notify', lambda *a, **kw: None)
-    monkeypatch.setattr(notifications, 'send_to_user_safe', lambda *a, **kw: None)
+    _silence_notifications(monkeypatch, notified)
 
     asyncio.run(runner.do_verification_job(job))
     return calls
+
+
+def _open_worker_connection():
+    """A second worker's own connection, for the races that need two.
+
+    `api_tx` shares one process-wide connection behind a lock, so a test
+    that needs two transactions open at once cannot use it for both.
+    """
+    return psycopg.connect(database._api_conninfo,
+                           row_factory=psycopg.rows.dict_row)
 
 
 # ---------------------------------------------------------------------------
@@ -246,20 +306,13 @@ def test_a_row_past_the_retry_ceiling_is_not_picked_up(make_person):
 def test_a_row_past_the_retry_ceiling_is_counted_as_stuck(make_person):
     """Not picked up must not mean invisible. That is the same silence this
     wave exists to remove, moved from the member to the operator."""
-    from service.admin.queries import Q_VERIFICATION_JOBS
-
     person = make_person()
     _insert_job(
         person['id'], status='running',
         running_age_seconds=VERIFICATION_LEASE_SECONDS + 30,
         reap_count=VERIFICATION_MAX_REAPS)
 
-    with api_tx() as tx:
-        counts = dict(tx.execute(
-            Q_VERIFICATION_JOBS,
-            dict(lease_seconds=VERIFICATION_LEASE_SECONDS,
-                 max_reaps=VERIFICATION_MAX_REAPS),
-        ).fetchone())
+    counts = _counts()
 
     assert counts['verification_stuck'] >= 1
     assert counts['verification_abandoned'] >= 1
@@ -268,19 +321,159 @@ def test_a_row_past_the_retry_ceiling_is_counted_as_stuck(make_person):
 def test_a_failed_job_is_counted_for_the_operator(make_person):
     """The operator asked for stuck AND failed. A classifier that starts
     rejecting everything reads as a wall of failures, not as silence."""
-    from service.admin.queries import Q_VERIFICATION_JOBS
-
     person = make_person()
     _insert_job(person['id'], status='failure')
 
-    with api_tx() as tx:
-        counts = dict(tx.execute(
-            Q_VERIFICATION_JOBS,
-            dict(lease_seconds=VERIFICATION_LEASE_SECONDS,
-                 max_reaps=VERIFICATION_MAX_REAPS),
-        ).fetchone())
+    assert _counts()['verification_failed'] >= 1
 
-    assert counts['verification_failed'] >= 1
+
+def test_a_running_row_with_no_lease_is_counted_as_stuck(make_person):
+    """A row with no lease is one the picker refuses to reap, so counting it
+    as healthily running would make it invisible to the reaper and to the
+    operator at the same time, which is the worst of the two readings.
+    Migration 0053 and the claim query between them should make this
+    unreachable; if it is ever reached it has to be visible."""
+    person = make_person()
+    job_id = _insert_job(person['id'], status='running', running_age_seconds=None)
+
+    before = _counts()
+    assert job_id not in _eligible_ids(), 'the picker still refuses this row'
+
+    # A second identical row moves `stuck`, not `running`.
+    _insert_job(person['id'], status='running', running_age_seconds=None)
+    after = _counts()
+
+    assert after['verification_stuck'] == before['verification_stuck'] + 1
+    assert after['verification_running'] == before['verification_running']
+
+
+def test_the_picker_hands_a_worker_a_bounded_batch(make_person):
+    """An unbounded listing after an OpenAI outage puts the worker inside
+    one `for` loop for as long as the backlog is deep, at up to 136.5
+    seconds a job, never returning to the top of verify_forever and never
+    re-reading the queue."""
+    person = make_person()
+    for _ in range(VERIFICATION_MAX_JOBS_PER_TICK + 2):
+        _insert_job(person['id'], status='queued')
+
+    assert len(_eligible_ids()) == VERIFICATION_MAX_JOBS_PER_TICK
+
+
+# ---------------------------------------------------------------------------
+# An abandoned job ends, and says so
+# ---------------------------------------------------------------------------
+
+def _end_abandoned(monkeypatch, job_id: int, person_id: int,
+                   notified: list | None = None) -> None:
+    _silence_notifications(monkeypatch, notified)
+    asyncio.run(runner.end_abandoned_verification_job(job_id, person_id))
+
+
+def _abandoned_job(person_id: int) -> int:
+    return _insert_job(
+        person_id, status='running',
+        running_age_seconds=VERIFICATION_LEASE_SECONDS + 30,
+        reap_count=VERIFICATION_MAX_REAPS)
+
+
+def test_an_abandoned_job_is_listed_for_the_tick_to_end(make_person):
+    person = make_person()
+    job_id = _abandoned_job(person['id'])
+
+    assert job_id not in _eligible_ids(), 'it must not be run again'
+    assert job_id in _abandoned_ids(), 'but something has to finish it'
+
+
+def test_an_abandoned_job_reaches_a_terminal_state(monkeypatch, make_person):
+    """The defect: the picker excluded it, nothing else wrote the row, and
+    it sat in 'running' until garbagerecords deleted it three days later.
+    /check-verification said `pending` the whole time."""
+    person = make_person()
+    job_id = _abandoned_job(person['id'])
+
+    _end_abandoned(monkeypatch, job_id, person['id'])
+
+    row = _job_row(job_id)
+    assert row['status'] == 'failure'
+    assert row['running_since'] is None, 'a finished row holds no lease'
+    assert row['level_name'] == 'No verification'
+
+
+def test_an_abandoned_job_tells_the_member_once(monkeypatch, make_person):
+    """The wave's constraint is that a member is never left waiting with no
+    exit. The web client's 90 second poll timeout is not an exit: it is a
+    message that does not know the check is dead."""
+    person = make_person()
+    job_id = _abandoned_job(person['id'])
+
+    notified: list[dict] = []
+    _end_abandoned(monkeypatch, job_id, person['id'], notified)
+
+    assert len(notified) == 1
+    call = notified[0]
+    assert call['person_id'] == person['id']
+    assert call['event_kind'] == 'verification'
+    assert call['title'] == 'Your verification check did not pass'
+    assert call['url'] == '/verify'
+
+    # A second worker that listed the same row writes nothing and says
+    # nothing. One dead check, one message.
+    again: list[dict] = []
+    _end_abandoned(monkeypatch, job_id, person['id'], again)
+    assert again == []
+
+
+def test_an_abandoned_job_names_no_reason(monkeypatch, make_person):
+    """Nothing came back from the classifier at all, so there is nothing to
+    report beyond that the check did not finish. The message is rendered on
+    the rejected card."""
+    person = make_person()
+    job_id = _abandoned_job(person['id'])
+
+    _end_abandoned(monkeypatch, job_id, person['id'])
+
+    with api_tx() as tx:
+        message = tx.execute(
+            'SELECT message FROM verification_job WHERE id = %(id)s',
+            dict(id=job_id),
+        ).fetchone()['message']
+
+    assert message == 'This check did not finish. You can try again.'
+    for accusation in ('edited', 'screenshot', 'fake', 'fraud', 'reject',
+                       'denied', 'suspicious', 'someone else'):
+        assert accusation not in message.lower()
+
+
+def test_ending_an_abandoned_job_never_lowers_the_tier(monkeypatch, make_person):
+    """Ruling 2 holds here as much as it does for a reap. An attempt that
+    never produced an answer takes nothing away."""
+    person = make_person()
+    _grant(person['id'], 'Photos', 'silver')
+    job_id = _abandoned_job(person['id'])
+
+    _end_abandoned(monkeypatch, job_id, person['id'])
+
+    after = _person_row(person['id'])
+    assert after['tier'] == 'silver'
+    assert after['level_name'] == 'Photos'
+
+
+def test_an_abandoned_job_stops_reading_as_pending(monkeypatch, make_person):
+    """The member's actual exit. Before this the endpoint reported `pending`
+    for three days, which is the API telling them to keep waiting for an
+    answer that was never coming."""
+    from service.person import get_check_verification
+    from types import SimpleNamespace
+
+    person = make_person()
+    job_id = _abandoned_job(person['id'])
+
+    s = SimpleNamespace(person_id=person['id'], person_uuid=person['uuid'])
+    assert get_check_verification(s=s)['outcome'] == 'pending'
+
+    _end_abandoned(monkeypatch, job_id, person['id'])
+
+    assert get_check_verification(s=s)['outcome'] == 'none'
 
 
 # ---------------------------------------------------------------------------
@@ -310,23 +503,235 @@ def test_claiming_a_queued_row_does_not_count_a_reap(monkeypatch, make_person):
 
 
 def test_the_reaper_cannot_take_a_row_another_worker_holds(monkeypatch, make_person):
-    """Both workers list the row while it is stale. The first claim wins and
-    refreshes the lease; the second re-reads the row and finds it fresh, so
-    the selfie is not sent to the classifier twice on one submission."""
+    """Two workers list the same stale row and race on the claim, for real:
+    one transaction is held open on its own connection while the runner's
+    claim queues behind its row lock.
+
+    The old version of this test ran the two claims one after the other and
+    let the first one finish the job, so the second claim failed the
+    `status = 'queued' OR 'running'` test and never reached the lease at
+    all. It passed for a reason that had nothing to do with the thing it is
+    named after.
+
+    Two properties are asserted here. The loser does not reach the
+    classifier, which is the safety property: one submission, one paid
+    vision call, and a member's selfie is never sent twice. And the loser
+    does not RAISE, which is the property that was broken: at the
+    connection's default REPEATABLE READ this claim aborts with
+    SerializationFailure, and that exception escapes do_verification_job,
+    kills the rest of the tick's loop and surfaces as what looks like a
+    database fault.
+    """
     person = make_person()
     job_id = _insert_job(
         person['id'], status='running',
         running_age_seconds=VERIFICATION_LEASE_SECONDS + 30)
 
-    first = _run(monkeypatch, _job(job_id, person['id']), _matched())
-    assert len(first) == 1
+    winner = _open_worker_connection()
+    committer = None
+    try:
+        winner.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED')
+        won = winner.execute(
+            Q_CLAIM_VERIFICATION_JOB,
+            dict(verification_job_id=job_id, **_LEASE_PARAMS),
+        ).fetchall()
+        assert len(won) == 1, 'the first worker should have taken the row'
+
+        # The winner commits a second from now. Until it does, its
+        # transaction is open and holds the row, so the runner's claim below
+        # queues behind the row lock instead of seeing anything at all.
+        def commit_the_winner():
+            time.sleep(1.0)
+            winner.commit()
+
+        committer = threading.Thread(target=commit_the_winner)
+        committer.start()
+
+        # The real losing worker, on the real code path.
+        calls = _run(monkeypatch, _job(job_id, person['id']), _matched())
+    finally:
+        if committer is not None:
+            committer.join(timeout=30)
+        winner.close()
+
+    assert calls == [], 'a held row must not reach the classifier'
     assert _job_row(job_id)['reap_count'] == 1
 
-    # Worker two, acting on the listing it took before worker one claimed.
-    second = _run(monkeypatch, _job(job_id, person['id']), _matched())
 
-    assert second == [], 'a held row must not reach the classifier'
-    assert _job_row(job_id)['reap_count'] == 1
+def test_the_claim_is_made_at_read_committed(monkeypatch, make_person):
+    """The isolation level is not decorative, and nothing else in the repo
+    would notice if it went back to the default. Both of the runner's
+    transactions ask for READ COMMITTED: the claim, so a losing worker can
+    re-evaluate the predicate and match nothing rather than being aborted,
+    and the write, so the lease fence can report "somebody else finished
+    this" by matching no row."""
+    person = make_person()
+    job_id = _insert_job(person['id'], status='queued')
+
+    levels: list[str] = []
+    real_api_tx = runner.api_tx
+
+    def recording_api_tx(*args, **kwargs):
+        levels.append(
+            args[0] if args else kwargs.get('isolation_level', 'default'))
+        return real_api_tx(*args, **kwargs)
+
+    monkeypatch.setattr(runner, 'api_tx', recording_api_tx)
+    _run(monkeypatch, _job(job_id, person['id']), _matched())
+
+    assert levels == ['read committed', 'read committed'], levels
+
+
+def test_repeatable_read_is_why_the_claim_pins_its_isolation_level(make_person):
+    """Why the line above has to stay. This is the defect itself, run
+    against the real database on two real connections, at both levels.
+
+    At READ COMMITTED the losing claim re-evaluates its WHERE clause
+    against the winner's committed row, finds a lease refreshed a moment
+    ago and returns no row, which is what the claim's comment describes and
+    what do_verification_job is written to handle. At REPEATABLE READ,
+    which is what every connection in this repo opens with by default,
+    PostgreSQL cannot let it re-evaluate anything and aborts it instead.
+
+    If this test ever starts failing at READ COMMITTED, the claim's whole
+    concurrency story has changed and do_verification_job needs rereading.
+    """
+    person = make_person()
+    job_id = _insert_job(
+        person['id'], status='running',
+        running_age_seconds=VERIFICATION_LEASE_SECONDS + 30)
+
+    def race(isolation_level: str):
+        outcome: dict = {}
+        a = _open_worker_connection()
+        b = _open_worker_connection()
+        try:
+            for conn in (a, b):
+                conn.execute(
+                    f'SET TRANSACTION ISOLATION LEVEL {isolation_level}')
+            claim = dict(verification_job_id=job_id, **_LEASE_PARAMS)
+            outcome['a'] = a.execute(
+                Q_CLAIM_VERIFICATION_JOB, claim).fetchall()
+
+            def claim_b():
+                try:
+                    outcome['b'] = b.execute(
+                        Q_CLAIM_VERIFICATION_JOB, claim).fetchall()
+                except BaseException as e:    # noqa: BLE001 - reported below
+                    outcome['b_error'] = e
+
+            t = threading.Thread(target=claim_b)
+            t.start()
+            time.sleep(1.0)
+            a.commit()
+            t.join(timeout=30)
+        finally:
+            for conn in (a, b):
+                try:
+                    conn.rollback()
+                finally:
+                    conn.close()
+        return outcome
+
+    committed = race('READ COMMITTED')
+    assert len(committed['a']) == 1
+    assert 'b_error' not in committed, committed.get('b_error')
+    assert committed['b'] == [], 'the loser should have matched no row'
+
+    # Put the row back the way the first race found it.
+    with api_tx() as tx:
+        tx.execute(
+            """
+            UPDATE verification_job
+               SET running_since = NOW() - make_interval(secs => %(age)s),
+                   reap_count = 0
+             WHERE id = %(id)s
+            """,
+            dict(age=VERIFICATION_LEASE_SECONDS + 30, id=job_id),
+        )
+
+    repeatable = race('REPEATABLE READ')
+    assert len(repeatable['a']) == 1
+    assert isinstance(repeatable.get('b_error'),
+                      psycopg.errors.SerializationFailure), (
+        'REPEATABLE READ no longer aborts the losing claim. If that is a '
+        'deliberate change, the isolation level pinned in '
+        'do_verification_job can be revisited; until then it has to stay.')
+
+
+# ---------------------------------------------------------------------------
+# The lease fences the write, not just the claim
+# ---------------------------------------------------------------------------
+
+def test_a_worker_that_lost_its_lease_does_not_overwrite_the_reapers_result(
+        monkeypatch, make_person):
+    """Worker A claims job 7 and stalls. Its lease runs out, worker B reaps
+    the row, runs it, writes `Photos` and tells the member their check
+    passed. A then wakes up with an answer of its own.
+
+    Without a fence on the write, A overwrites B's row and notifies a second
+    time, so the member gets two messages about one selfie which can say
+    opposite things. The claim's lease guards STARTING a run and gives
+    nothing on finishing one.
+
+    B is a real second connection, doing its reap and its write while A's
+    classifier call is notionally in flight.
+    """
+    person = make_person()
+    job_id = _insert_job(person['id'], status='queued')
+
+    def worker_b_reaps_and_finishes():
+        conn = _open_worker_connection()
+        try:
+            conn.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED')
+            # A's lease runs out while its call is in flight.
+            conn.execute(
+                """
+                UPDATE verification_job
+                   SET running_since = NOW() - make_interval(secs => %(age)s)
+                 WHERE id = %(id)s
+                """,
+                dict(age=VERIFICATION_LEASE_SECONDS + 30, id=job_id),
+            )
+            claimed = conn.execute(
+                Q_CLAIM_VERIFICATION_JOB,
+                dict(verification_job_id=job_id, **_LEASE_PARAMS),
+            ).fetchone()
+            assert claimed, 'worker B should have been able to reap the row'
+            conn.execute(
+                Q_UPDATE_VERIFICATION_STATUS,
+                dict(verification_job_id=job_id,
+                     claimed_at=claimed['running_since'],
+                     person_id=person['id'],
+                     verified_uuids=['worker-b-photo'],
+                     verified_age=True, verified_gender=True,
+                     verified_ethnicity=False,
+                     status='success', message='',
+                     verification_level_name='Photos',
+                     target_tier='bronze',
+                     raw_json='{}'),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    notified: list[dict] = []
+    calls = _run(
+        monkeypatch, _job(job_id, person['id']),
+        _matched(verified_uuids=[]),          # A's answer: Basics only
+        notified=notified,
+        during_verify=worker_b_reaps_and_finishes,
+    )
+
+    assert len(calls) == 1, 'worker A did claim the row and did run'
+
+    row = _job_row(job_id)
+    assert row['level_name'] == 'Photos', (
+        "worker A wrote its own answer over the reaper's")
+    assert row['status'] == 'success'
+    assert _person_row(person['id'])['tier'] == 'bronze'
+    assert notified == [], (
+        'worker A told the member a second time about one selfie')
 
 
 def test_a_row_past_the_ceiling_is_not_claimable(monkeypatch, make_person):
@@ -453,13 +858,13 @@ def test_the_level_is_written_on_the_job_row_on_failure(monkeypatch, make_person
     assert _job_row(job_id)['level_name'] == 'No verification'
 
 
-def test_a_historical_row_holds_no_level(make_person):
-    """Backfilled as NULL by design. Nothing invents an answer for an
-    attempt that finished before the column existed."""
-    person = make_person()
-    job_id = _insert_job(person['id'], status='success')
-
-    assert _job_row(job_id)['verification_level_id'] is None
+# `test_a_historical_row_holds_no_level` lived here and was deleted in the
+# fix wave of 2026-09-24. It inserted a row and asserted that a nullable
+# column was NULL, which restates the schema rather than testing anything
+# the code does. The behaviour it was reaching for, that a historical row
+# reads as "unknown" and falls back to the person latch instead of being
+# read as 'Basics only', is pinned by
+# test_the_outcome_falls_back_to_the_person_latch_when_the_job_is_null.
 
 
 def test_the_outcome_is_read_from_the_job_not_the_person(make_person):
