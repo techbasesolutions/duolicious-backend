@@ -139,6 +139,8 @@ def stripe_signed_event() -> Callable[..., SignedEvent]:
                metadata: dict | None = None,
                verified_outputs: dict | None = None,
                last_verification_report: object | None = None,
+               session_id: str = 'vs_test_session',
+               last_error: dict | None = None,
                secret: str = 'whsec_test') -> SignedEvent:
         # The top-level `"object": "event"` and inner
         # `"object": "identity.verification_session"` discriminators are
@@ -152,7 +154,13 @@ def stripe_signed_event() -> Callable[..., SignedEvent]:
             'data': {
                 'object': {
                     'object':           'identity.verification_session',
+                    'id':               session_id,
                     'metadata':         metadata or {},
+                    # `last_error` rides on requires_input sessions and holds
+                    # a machine code plus a reason string. It is an operator
+                    # record. Tests use it to prove member-facing copy never
+                    # repeats it back at the member.
+                    'last_error':       last_error,
                     # Stripe does NOT send verified_outputs in a webhook: the
                     # API reference marks it "not returned by default; request
                     # it with the expand request parameter". Kept here only so

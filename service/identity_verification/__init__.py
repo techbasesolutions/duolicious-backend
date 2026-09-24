@@ -23,7 +23,10 @@ Endpoints exposed via service/api/__init__.py:
   POST /webhooks/stripe-identity
        → Stripe-signed webhook. On `verification_session.verified`,
          promotes the linked person to verification_level='gold' and
-         records the issuing country + verification timestamp.
+         records the issuing country + verification timestamp. Every other
+         session outcome is recorded against the same person (migration
+         0054), and `requires_input` also tells the member their check
+         needs another try.
 """
 
 from __future__ import annotations
@@ -171,6 +174,101 @@ def promote_user(person_id: int, level: str, country: Optional[str] = None) -> b
 
 
 # ---------------------------------------------------------------------------
+# The outcomes that are not a promotion
+# ---------------------------------------------------------------------------
+
+# Stripe event type -> the outcome we store. `verified` is absent on
+# purpose: a success is recorded by ahavah_verification_tier and
+# id_verified_country / id_verified_at, and writing it here as well would
+# give us two places that can disagree about the same fact. This latch
+# describes the attempts that granted nothing.
+NON_VERIFIED_OUTCOMES = {
+    'identity.verification_session.created':        'created',
+    'identity.verification_session.processing':     'processing',
+    'identity.verification_session.requires_input': 'requires_input',
+    'identity.verification_session.canceled':       'canceled',
+}
+
+# The one the member can act on. `canceled` is written and not notified:
+# the member cancelled, so they already know. `created` and `processing`
+# are not news either, and they are stored so that a member who starts a
+# new check is not left carrying last week's `requires_input`.
+NOTIFIED_OUTCOMES = {'requires_input'}
+
+
+def record_identity_outcome(
+    person_id: int,
+    status: str,
+    *,
+    session_id: Optional[str] = None,
+    error_code: Optional[str] = None,
+) -> bool:
+    """Stores the last thing Stripe told us about this member's ID check.
+
+    Returns True if a row was written. False means the member does not
+    exist, or they are already gold.
+
+    Gold is terminal for this latch. Stripe redelivers events and they can
+    arrive out of order, so without that guard a late `requires_input`
+    would tell a member who is already verified to go and try again, which
+    is the exact class of lie this wave exists to remove. The tier is never
+    read or changed here: this function only ever writes these four
+    columns.
+
+    `error_code` is overwritten on every outcome, including with None. A
+    code left over from the previous attempt would send an operator after
+    the wrong thing.
+    """
+    with api_tx() as tx:
+        row = tx.execute(
+            """
+            UPDATE person
+               SET id_verification_status     = %(status)s,
+                   id_verification_status_at  = NOW(),
+                   id_verification_session_id = %(session_id)s,
+                   id_verification_error_code = %(error_code)s
+             WHERE id = %(id)s
+               AND ahavah_verification_tier <> 'gold'
+            RETURNING id
+            """,
+            dict(id=person_id, status=status,
+                 session_id=session_id, error_code=error_code),
+        ).fetchone()
+    return row is not None
+
+
+def _notify_id_check_needs_another_try(person_id: int) -> None:
+    """Tells the member their ID check needs another try, through the same
+    notify() path and the same `verification` preference every other
+    verification outcome uses.
+
+    The copy names no reason. Stripe gives a last_error.code on some of
+    these events and it is a machine code rather than an explanation, so
+    repeating it at a member would assert something we cannot evidence. It
+    is stored for operators instead.
+
+    Fire-and-forget: notify() already swallows its own failures, and this
+    catches anything it cannot, because a notification that blows up must
+    never turn a webhook into a non-2xx and make Stripe retry.
+    """
+    try:
+        from service.notifications import notify
+        from emails.notification import verification_id_check_retry_email
+        notify(
+            person_id, "verification",
+            title="Your ID check needs another try",
+            body="You can start the check again when you are ready.",
+            url="/verify/gold",
+            email_subject="Your ID check needs another try",
+            email_html_factory=verification_id_check_retry_email,
+        )
+    except Exception:
+        import traceback
+        print("identity_verification requires_input notify failed:")
+        print(traceback.format_exc())
+
+
+# ---------------------------------------------------------------------------
 # POST /verification/start-id-flow
 # ---------------------------------------------------------------------------
 
@@ -264,10 +362,11 @@ def post_stripe_identity_webhook():
     the auth. We look up the user via the session's metadata.user_id and
     promote them to 'gold' on `verification_session.verified`.
 
-    Other event types are accepted (200 response) but logged-only:
-      - `requires_input`  — user needs to retry; no DB write
-      - `canceled`        — user abandoned; no DB write (could surface in admin)
-      - `processing`      — pending; no DB write
+    The other session events are persisted against the same
+    metadata.user_id (see record_identity_outcome) and only
+    `requires_input` notifies, because it is the only one the member can
+    act on. Anything else Stripe sends is acknowledged with a 200 and
+    logged: a non-2xx makes Stripe retry the same event for days.
     """
     stripe = _stripe()
     if stripe is None or _webhook_secret is None:
@@ -316,14 +415,36 @@ def post_stripe_identity_webhook():
         promoted = promote_user(user_id, 'gold', country=country)
         return {'received': True, 'promoted': promoted}
 
-    elif event_type in (
-        'identity.verification_session.requires_input',
-        'identity.verification_session.canceled',
-        'identity.verification_session.processing',
-        'identity.verification_session.created',
-    ):
-        # Acknowledged but no DB change. Future: surface to admin queue.
-        return {'received': True, 'promoted': False}
+    elif event_type in NON_VERIFIED_OUTCOMES:
+        # These used to be acknowledged and dropped. `requires_input` is
+        # Stripe's "the member has to try again", and dropping it left the
+        # member on a screen that never resolved with nothing to act on.
+        status = NON_VERIFIED_OUTCOMES[event_type]
+        meta = obj.get('metadata') or {}
+        user_id = _coerce_int(meta.get('user_id'))
+        if not user_id:
+            logger.warning('Stripe %s event missing metadata.user_id', status)
+            return {'received': True, 'promoted': False, 'recorded': False,
+                    'reason': 'no_user_id'}
+
+        last_error = obj.get('last_error')
+        error_code = (last_error.get('code')
+                      if isinstance(last_error, dict) else None)
+
+        recorded = record_identity_outcome(
+            user_id, status,
+            session_id=obj.get('id'),
+            error_code=error_code,
+        )
+        if not recorded:
+            # Either no such member, or they are already gold and this
+            # latch refuses to contradict a tier they earned.
+            logger.info(
+                'Stripe %s event recorded nothing for user %s', status, user_id)
+        elif status in NOTIFIED_OUTCOMES:
+            _notify_id_check_needs_another_try(user_id)
+
+        return {'received': True, 'promoted': False, 'recorded': recorded}
 
     # Unknown event types — return 200 so Stripe doesn't retry forever, but log.
     logger.info(f'Unhandled Stripe Identity event: {event_type}')

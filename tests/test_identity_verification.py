@@ -321,6 +321,13 @@ class TestStripeIdentityWebhook:
     def test_canceled_event_acked_no_promote(
         self, app, monkeypatch, stripe_signed_event,
     ):
+        """A cancellation never promotes. Since task 5 it is also recorded
+        against the member, and the response carries `recorded` to say so.
+        This test keeps its original subject, the promotion, and does not
+        pin whether the write landed, because that depends on whether
+        person 99 happens to exist in this database. The write is covered
+        against a real person in
+        tests/test_identity_verification_outcomes.py."""
         self._wire_stripe(monkeypatch)
 
         promote_called = []
@@ -339,7 +346,9 @@ class TestStripeIdentityWebhook:
                                       data=payload.body,
                                       headers={'Stripe-Signature': payload.sig}):
             r = iv.post_stripe_identity_webhook()
-            assert r == {'received': True, 'promoted': False}
+            assert r['received'] is True
+            assert r['promoted'] is False
+            assert 'recorded' in r
             assert promote_called == []
 
 

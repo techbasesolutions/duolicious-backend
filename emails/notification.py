@@ -118,6 +118,25 @@ def verification_not_passed_email(unsubscribe_url: str) -> str:
     )
 
 
+def verification_id_check_retry_email(unsubscribe_url: str) -> str:
+    """Stripe Identity returned `requires_input`: the ID check did not
+    finish and the member has to start another one. Stripe attaches a
+    last_error.code to some of these. That is an operator record, not an
+    explanation to repeat at a member, so this names no reason and makes no
+    claim about the document or the person holding it. No brand title says
+    this, so it ships with no headline (see _event_email)."""
+    return _event_email(
+        chip_label="Verification",
+        lede=("Your ID check needs another try. You can start the check "
+              "again when you are ready."),
+        cta_label="Start the check again",
+        cta_url=f"{WEB_BASE_URL}/verify/gold",
+        unsubscribe_url=unsubscribe_url,
+        subject="Your ID check needs another try",
+        preheader="You can start the check again when you are ready.",
+    )
+
+
 def new_like_email(unsubscribe_url: str) -> str:
     return _event_email(
         chip_label="New like",
