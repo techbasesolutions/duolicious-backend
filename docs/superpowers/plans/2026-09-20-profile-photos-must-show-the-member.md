@@ -1,3 +1,5 @@
+Linear: TEC-946
+
 # A profile photo has to show the member Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax for tracking.

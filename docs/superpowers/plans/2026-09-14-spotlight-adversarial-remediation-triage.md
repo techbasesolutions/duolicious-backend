@@ -1,3 +1,5 @@
+Linear: TEC-869
+
 # Spotlight adversarial review: triage and remediation scope
 
 Date: 2026-09-14. Source: `C:/Users/Ehud/Documents/2026-09-14-community-spotlight-adversarial-review-and-remediation.md` (12 findings, 13 probes reported passing against the local stack; the probe file and README it references were not found on disk, so verdicts below rest on reading the cited code). Status: triage complete; remediation plan to follow after owner decisions. Nothing implemented yet.

@@ -1,3 +1,5 @@
+Linear: TEC-862
+
 # Community Spotlight, Phase A: pre-flight record (2026-09-13)
 
 Spec: `docs/superpowers/specs/2026-09-13-community-spotlight-design.md`, section 8.

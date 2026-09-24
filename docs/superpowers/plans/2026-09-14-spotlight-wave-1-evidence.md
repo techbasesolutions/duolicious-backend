@@ -1,3 +1,5 @@
+Linear: TEC-869
+
 # Community Spotlight, Wave 1: acceptance evidence
 
 Date: 2026-09-15. API repo `D:/Antigravity/ahavah-api`, branch `spotlight-wave-1`, HEAD `7094181`. Admin repo `D:/Antigravity/ahavah-admin`, branch `spotlight-wave-1`, HEAD `85d6dd6`.

@@ -1,3 +1,5 @@
+Linear: TEC-945
+
 # Scheduled social posting with approval, and Threads Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax for tracking.

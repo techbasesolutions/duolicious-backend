@@ -1,4 +1,5 @@
 # Beta-tester referrals — Handover
+Linear: TEC-833
 
 > **Audience:** the next agent (fresh session, no prior context) picking up where this session left off.
 > **Date:** 2026-06-06 (last updated end of session, after final review pass)

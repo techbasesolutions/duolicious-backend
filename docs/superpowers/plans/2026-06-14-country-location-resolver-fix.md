@@ -1,3 +1,5 @@
+Linear: TEC-841
+
 # Country-Location Resolver Fix Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.

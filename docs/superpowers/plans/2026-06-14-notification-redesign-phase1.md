@@ -1,3 +1,5 @@
+Linear: TEC-841
+
 # Notification Redesign — Phase 1 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans (inline) or subagent-driven-development. Steps use `- [ ]`.

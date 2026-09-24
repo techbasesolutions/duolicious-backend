@@ -1,3 +1,5 @@
+Linear: TEC-942
+
 # Community Spotlight, Wave 3: acceptance evidence
 
 Date: 2026-09-15. API repo `D:/Antigravity/ahavah-api`, branch `spotlight-wave-3`, on top of `ebc7d5e`. Admin repo `D:/Antigravity/ahavah-admin`, branch `spotlight-wave-3`, on top of `1b9479d`. Web repo `D:/Antigravity/ahavah-web`, branch `spotlight-wave-3`, on top of `7728165`. Nothing is merged and nothing is pushed.

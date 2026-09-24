@@ -1,3 +1,5 @@
+Linear: TEC-942
+
 # Community Spotlight, Wave 3c (fraud gate, cleanup, local acceptance run) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax for tracking.

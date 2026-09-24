@@ -1,3 +1,5 @@
+Linear: TEC-942
+
 # Community Spotlight: local acceptance run against the release matrix
 
 Date: 2026-09-16 (probe timestamps read 2026-09-17 UTC). Source of the gates: "Release acceptance matrix" in `C:/Users/Ehud/Documents/2026-09-14-community-spotlight-adversarial-review-and-remediation.md`, read together with its findings F01 to F12.

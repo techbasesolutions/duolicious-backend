@@ -1,4 +1,5 @@
 # Observability + Admin Monitoring — Handover
+Linear: TEC-837
 
 **Date written:** 2026-06-09
 **Status:** **DESIGN + PLAN COMPLETE, IMPLEMENTATION NOT YET STARTED.** Next agent should execute the plan top to bottom.

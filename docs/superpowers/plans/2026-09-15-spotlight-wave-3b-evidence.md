@@ -1,3 +1,5 @@
+Linear: TEC-942
+
 # Community Spotlight, Wave 3b: acceptance evidence
 
 Date: 2026-09-15. API repo `D:/Antigravity/ahavah-api`, branch `spotlight-wave-3b`. Web repo `D:/Antigravity/ahavah-web`, branch `spotlight-wave-3b` (its fork point `dff6bc6` is a prior commit already live in production, not part of this wave). Nothing is merged and nothing is pushed. Admin is untouched this wave.

@@ -1,4 +1,5 @@
 # Community Spotlight handoff for review (2026-09-13)
+Linear: TEC-862
 
 This document lets a reviewer with no prior context audit everything built for Ahavah Community Spotlight on 2026-09-13: what it is, where every artefact lives, how to run it, what the reviews found and what was ruled, and what is still open. Nothing described here has been pushed or deployed. Repos are under `D:/Antigravity/`.
 

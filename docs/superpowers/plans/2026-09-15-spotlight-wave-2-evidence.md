@@ -1,3 +1,5 @@
+Linear: TEC-869
+
 # Community Spotlight, Wave 2: acceptance evidence
 
 Date: 2026-09-15, refreshed after the whole-branch fix wave. API repo `D:/Antigravity/ahavah-api`, branch `spotlight-wave-2`; HEAD is the fix-wave commit 8450c49 `fix(spotlight): verbose deletes confirm keys, withdrawal skips queued invites, abandoned jobs surfaced, revision keys cleared, invite backlog cancels only terminal reasons, replaced keys enqueued`, sitting on `9088252`. Its SHA is recorded in `.superpowers/sdd/2026-09-15-spotlight-wave-2/fix-wave-report.md` (that directory is git-ignored, so a document inside the commit cannot name the commit's own hash). Admin repo `D:/Antigravity/ahavah-admin`, branch `spotlight-wave-2`, HEAD `1b9479d`, untouched by the fix wave.
