@@ -5,6 +5,10 @@ from verification.messages import (
     V_SOMETHING_WENT_WRONG,
 )
 from service.cron.cronutil import env_int, print_stacktrace, MAX_RANDOM_START_DELAY
+from service.verificationlease import (
+    VERIFICATION_LEASE_SECONDS,
+    VERIFICATION_MAX_REAPS,
+)
 import asyncio
 import random
 from dataclasses import dataclass
@@ -30,11 +34,24 @@ class VerificationJob:
     silver_burst_uuids: list[str] | None = None
 
 async def do_verification_job(verification_job: VerificationJob):
+    # Claim the row before spending a classifier call on it. The listing that
+    # produced this job took no locks, so another worker may have claimed it
+    # since, and a row whose lease is still fresh is being worked on right
+    # now. Claiming stamps a new lease and counts the re-queue if this was a
+    # reap. No claim, no run: the other worker owns the outcome.
     async with api_tx() as tx:
-        await tx.execute(
-            Q_SET_VERIFICATION_JOB_RUNNING,
-            dict(verification_job_id=verification_job.id)
+        cur = await tx.execute(
+            Q_CLAIM_VERIFICATION_JOB,
+            dict(
+                verification_job_id=verification_job.id,
+                lease_seconds=VERIFICATION_LEASE_SECONDS,
+                max_reaps=VERIFICATION_MAX_REAPS,
+            )
         )
+        claimed = await cur.fetchone()
+
+    if not claimed:
+        return
 
     is_silver = bool(verification_job.silver_burst_uuids)
     # For a Silver burst, append the additional selfies as claimed
@@ -182,8 +199,18 @@ async def do_verification_job(verification_job: VerificationJob):
         print(traceback.format_exc())
 
 async def verify_once():
+    # Fresh submissions plus anything whose lease ran out. The listing is
+    # advisory: every job re-checks its own claim before running, so a row
+    # listed here and taken by another worker a moment later is simply
+    # skipped.
     async with api_tx() as tx:
-        cur = await tx.execute(Q_QUEUED_VERIFICATION_JOBS)
+        cur = await tx.execute(
+            Q_ELIGIBLE_VERIFICATION_JOBS,
+            dict(
+                lease_seconds=VERIFICATION_LEASE_SECONDS,
+                max_reaps=VERIFICATION_MAX_REAPS,
+            )
+        )
         rows = await cur.fetchall()
 
     verification_jobs = [

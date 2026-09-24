@@ -2924,14 +2924,13 @@ AND (
 )
 """
 
-# `verification_level_name` is NOT a column on verification_job. The cron
-# passes that name to Q_UPDATE_VERIFICATION_STATUS, which resolves it
-# against the verification_level lookup table and stores the id on
-# person.verification_level_id, so the person row is the only place the
-# outcome survives. It is only written on a successful run, which is
-# exactly the case the client cannot currently tell apart: 'Photos' means
-# the selfie matched a profile photo, 'Basics only' means the anti-spoof
-# gestures passed and nothing matched.
+# `verification_level_name` is not a column anywhere. The cron passes that
+# name to Q_UPDATE_VERIFICATION_STATUS, which resolves it against the
+# verification_level lookup table and writes the id in two places: on the
+# job row (migration 0053) and, on success only, on person as the latch the
+# rest of the product reads. 'Photos' means the selfie matched a profile
+# photo, 'Basics only' means the check completed and nothing matched, and
+# those are the two cases the client could not previously tell apart.
 #
 # The verification_job join is a LATERAL taking the newest row by id.
 # Nothing constrains verification_job to one row per person (no unique
@@ -2951,7 +2950,17 @@ SELECT
     ) AS verified_photos,
     verification_job.status,
     verification_job.message,
-    verification_level.name AS verification_level_name,
+    -- The job's own answer first, the person latch only as a fallback.
+    -- Ruling 1 of 2026-09-23: person.verification_level_id is a per-person
+    -- latch written by whichever attempt finished LAST, while this endpoint
+    -- reports the NEWEST attempt, so two attempts in flight at once can
+    -- leave the status describing one run and the level describing another.
+    -- Rows written before migration 0053 hold NULL here, which means
+    -- "unknown" rather than "nothing", and fall back to the latch.
+    COALESCE(
+        job_verification_level.name,
+        verification_level.name
+    ) AS verification_level_name,
     person.ahavah_verification_tier
 FROM
     person
@@ -2962,7 +2971,8 @@ ON
 LEFT JOIN LATERAL (
     SELECT
         status,
-        message
+        message,
+        verification_level_id
     FROM
         verification_job
     WHERE
@@ -2972,6 +2982,10 @@ LEFT JOIN LATERAL (
     LIMIT
         1
 ) AS verification_job ON TRUE
+LEFT JOIN
+    verification_level AS job_verification_level
+ON
+    job_verification_level.id = verification_job.verification_level_id
 WHERE
     person.id = %(person_id)s
 """

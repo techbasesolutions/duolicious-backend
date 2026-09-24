@@ -23,3 +23,51 @@ Q_OTP_24H = """
       FROM duo_session
      WHERE otp_expiry > NOW() - INTERVAL '24 hours'
 """
+
+# Verification jobs. Nothing in any of the three repos surfaced one of these
+# before, so a selfie check that died left the member on a polling screen and
+# the operator with no way to know it had happened.
+#
+#   queued      submitted, not yet picked up. Healthy for about a second.
+#   running     in flight and inside its lease. Healthy.
+#   stuck       running and past its lease. This is the number that matters:
+#               when the cron is healthy it is zero, and it goes non zero
+#               whether the cause is one dead worker or the whole runner
+#               being down. A row here is a member waiting with no answer.
+#   abandoned   the subset of `stuck` that has burned its retries. Nothing
+#               will ever pick these up again. They leave only when
+#               garbagerecords deletes the row.
+#   failed      checks the classifier rejected. Not an error on its own, but
+#               a wall of them means the classifier, not the members.
+#
+# `verification_job` rows are deleted at `expires_at`, which defaults to
+# three days after the row is created, so every count here is a rolling
+# three day window by design.
+Q_VERIFICATION_JOBS = """
+    SELECT
+        COUNT(*) FILTER (
+            WHERE status = 'queued'
+        ) AS verification_queued,
+        COUNT(*) FILTER (
+            WHERE status = 'running'
+              AND (
+                  running_since IS NULL
+               OR running_since >= NOW() - make_interval(secs => %(lease_seconds)s)
+              )
+        ) AS verification_running,
+        COUNT(*) FILTER (
+            WHERE status = 'running'
+              AND running_since IS NOT NULL
+              AND running_since < NOW() - make_interval(secs => %(lease_seconds)s)
+        ) AS verification_stuck,
+        COUNT(*) FILTER (
+            WHERE status = 'running'
+              AND running_since IS NOT NULL
+              AND running_since < NOW() - make_interval(secs => %(lease_seconds)s)
+              AND reap_count >= %(max_reaps)s
+        ) AS verification_abandoned,
+        COUNT(*) FILTER (
+            WHERE status = 'failure'
+        ) AS verification_failed
+      FROM verification_job
+"""

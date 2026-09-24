@@ -1,4 +1,17 @@
-Q_QUEUED_VERIFICATION_JOBS = """
+# Everything this tick may work on: a fresh submission, or a run that blew
+# its lease and is therefore dead rather than slow.
+#
+# A row is only reapable when it has a lease to blow. `running_since IS NOT
+# NULL` is load bearing: migration 0053 stamps every row that was already
+# 'running', so a NULL after that deploy means nothing ever claimed this row
+# through Q_CLAIM_VERIFICATION_JOB, and reaping on an unknown age would be
+# reaping on a guess.
+#
+# This listing takes no locks. It cannot: the worker runs the jobs one at a
+# time and a lock held across a 45 second classifier call would be a lock
+# held across a third party outage. Two workers can therefore list the same
+# row, which is exactly what Q_CLAIM_VERIFICATION_JOB arbitrates.
+Q_ELIGIBLE_VERIFICATION_JOBS = """
 SELECT
     id,
     person_id,
@@ -56,16 +69,61 @@ FROM
     verification_job AS vj
 WHERE
     status = 'queued'
+OR (
+        status = 'running'
+    AND
+        running_since IS NOT NULL
+    AND
+        running_since < NOW() - make_interval(secs => %(lease_seconds)s)
+    AND
+        reap_count < %(max_reaps)s
+)
+ORDER BY
+    id
 """
 
-Q_SET_VERIFICATION_JOB_RUNNING = """
+# Take the row, or find out somebody else already did.
+#
+# The WHERE clause is the same test the listing made, re-made against the row
+# as it stands now. That is the whole concurrency story: two workers that both
+# listed a stale row race here, Postgres serialises them on the row lock, and
+# the loser re-evaluates this predicate against the winner's committed row,
+# finds a lease that was refreshed a moment ago, and updates nothing. The
+# caller sees no returned id and does not call the classifier. A member's
+# selfie is never sent twice for one claim.
+#
+# `reap_count` counts re-queues, not runs, so it only moves when the row was
+# already 'running'. A first run is not a retry.
+#
+# This statement touches `verification_job` and nothing else. Ruling 2 of
+# 2026-09-23: the reaper never revokes. Re-queueing a dead run must not clear,
+# lower or otherwise touch person.verification_level_id or
+# person.ahavah_verification_tier. A member who earned a tier keeps it, and a
+# retry can only add.
+Q_CLAIM_VERIFICATION_JOB = """
 UPDATE
-    verification_job
+    verification_job AS vj
 SET
     status = 'running',
-    message = 'Our AI is checking your selfie'
+    message = 'Our AI is checking your selfie',
+    running_since = NOW(),
+    reap_count = vj.reap_count + CASE WHEN vj.status = 'running' THEN 1 ELSE 0 END
 WHERE
-    id = %(verification_job_id)s
+    vj.id = %(verification_job_id)s
+AND (
+        vj.status = 'queued'
+    OR (
+            vj.status = 'running'
+        AND
+            vj.running_since IS NOT NULL
+        AND
+            vj.running_since < NOW() - make_interval(secs => %(lease_seconds)s)
+        AND
+            vj.reap_count < %(max_reaps)s
+    )
+)
+RETURNING
+    vj.id
 """
 
 Q_UPDATE_VERIFICATION_STATUS = """
@@ -75,7 +133,26 @@ WITH updated_verification_job AS (
     SET
         status = %(status)s,
         message = %(message)s,
-        raw_json = %(raw_json)s
+        raw_json = %(raw_json)s,
+        -- Ruling 1 of 2026-09-23: this attempt's own outcome, written here
+        -- as well as on the person latch below. The latch is written only
+        -- on success and by whichever attempt finished LAST, while
+        -- /check-verification reports the NEWEST attempt, so reading a
+        -- per-job answer off the latch can describe a different run. This
+        -- is written on every branch, including failure, because a failed
+        -- attempt has an answer too and the latch is the one place it
+        -- could never be recorded.
+        verification_level_id = (
+            SELECT
+                id
+            FROM
+                verification_level
+            WHERE
+                name = %(verification_level_name)s
+        ),
+        -- The run is over, so it holds no lease. A finished row can never
+        -- be read as one that blew its deadline.
+        running_since = NULL
     WHERE
         id = %(verification_job_id)s
     RETURNING
