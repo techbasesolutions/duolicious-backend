@@ -15,13 +15,46 @@ Q_SYSTEM_HEALTH = """
         (SELECT COUNT(*) FROM admin_audit_log) AS admin_actions_total
 """
 
-# OTP delivery: rough proxy — count of duo_session created in last 24h.
-# Real "delivery success" requires a separate aws_smtp/Resend log integration
-# (deferred per spec §F). Returning total sent so the UI has SOMETHING.
+# OTP codes ISSUED in the last 24 hours. This counts duo_session rows, so it
+# says how many codes were created and nothing at all about whether any of
+# them arrived: there is no delivery signal for OTP anywhere in the system.
+# The System tab used to print a hardcoded "100%" success and a hardcoded
+# "0" failures on top of this number. Both are gone. Do not reintroduce a
+# rate here without a real provider log behind it.
 Q_OTP_24H = """
     SELECT COUNT(*) AS sent_24h
       FROM duo_session
      WHERE otp_expiry > NOW() - INTERVAL '24 hours'
+"""
+
+# Campaign email delivery, which unlike OTP delivery IS measured: every
+# message goes through email_outbox and the drain records what happened to
+# it (service/campaigns/outbox.py).
+#
+# Two deliberate choices here.
+#
+# `acceptance_unknown` is kept apart from `failed`. They mean opposite
+# things to whoever reads them: failed is known-not-sent and safe to retry,
+# unknown is the provider may have taken it before we lost the answer, so a
+# retry may put a second copy in a member's inbox.
+#
+# Only `accepted` carries a 24-hour window, because only `accepted` sets a
+# timestamp (`sent_at`). A failed row nulls `reserved_at` and writes
+# `last_error` with no time of its own, so any window over failures would be
+# computed off `created_at`, which is when the message was QUEUED, not when
+# it failed. Failed and unknown are terminal states that should sit near
+# zero, so they are reported as standing totals rather than as a window this
+# table cannot honestly support.
+Q_OUTBOX_HEALTH = """
+    SELECT
+      COUNT(*) FILTER (WHERE state = 'queued')             AS queued,
+      COUNT(*) FILTER (WHERE state = 'reserved')           AS reserved,
+      COUNT(*) FILTER (WHERE state = 'acceptance_unknown') AS acceptance_unknown,
+      COUNT(*) FILTER (WHERE state = 'failed')             AS failed,
+      COUNT(*) FILTER (WHERE state = 'accepted'
+                         AND sent_at > NOW() - INTERVAL '24 hours') AS accepted_24h,
+      MIN(created_at) FILTER (WHERE state = 'queued')      AS oldest_queued_at
+      FROM email_outbox
 """
 
 # Verification jobs. Nothing in any of the three repos surfaced one of these
