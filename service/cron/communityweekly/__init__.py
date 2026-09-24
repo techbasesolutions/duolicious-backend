@@ -34,32 +34,22 @@ from emails.community_weekly import FROM_ADDR
 from emails.send_community_weekly import (
     CAP_DAYS, UNSUB_SCOPE, build_for, recipients)
 from service.campaigns.runner import run_campaign
+from service.campaigns.schedule import COMMUNITY_WEEKLY_ENABLED, is_send_window
 from service.campaigns.weekid import week_campaign_id
 from service.config import WEB_BASE_URL
 from service.cron.cronutil import env_int, print_stacktrace, MAX_RANDOM_START_DELAY
 from service.unsubscribe import make_url as unsub_url
 
-# Monday 12:00 UTC is 08:00 in Barbados, the same slot the member of the
-# week cards are scheduled into (`mondaySlots` in the admin frontend).
-SEND_WEEKDAY = env_int('DUO_CRON_COMMUNITY_WEEKLY_WEEKDAY', 1)  # 1 = Monday
-SEND_HOUR_UTC = env_int('DUO_CRON_COMMUNITY_WEEKLY_HOUR_UTC', 12)
+# The slot, the window and the on switch live in service.campaigns.schedule,
+# because the Growth > Emails route has to answer "when is the next one" and
+# must not import a cron package to find out. See the note there.
 
 # Hourly. The window is the rest of the day and the id guard absorbs every
 # repeat, so the poll only has to be fine enough to catch the day.
 COMMUNITY_WEEKLY_POLL_SECONDS = env_int(
     'DUO_CRON_COMMUNITY_WEEKLY_POLL_SECONDS', 60 * 60)
 
-# Off by default so deploying this does not start sending mail on its own.
-# The owner turns it on once, deliberately.
-COMMUNITY_WEEKLY_ENABLED = env_int('DUO_CRON_COMMUNITY_WEEKLY_ENABLED', 0)
-
 print(f'Hello from cron module: {__name__}')
-
-
-def is_send_window(now: datetime) -> bool:
-    """Monday, at or after the send hour. A window rather than an instant:
-    a poll never wakes exactly on the hour, and a restart can skip one."""
-    return now.isoweekday() == SEND_WEEKDAY and now.hour >= SEND_HOUR_UTC
 
 
 def _send_once() -> None:

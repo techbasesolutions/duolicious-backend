@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
 import duotypes as t
 import psycopg
@@ -9,6 +10,7 @@ from flask import abort, jsonify, request
 from database import api_tx
 from service.admin import require_admin, record_audit
 from service.api.decorators import aget, apost
+from service.campaigns.schedule import COMMUNITY_WEEKLY_ENABLED, next_send_at
 from service.growth.queries import growth_stats
 import emails.send_spotlight_announcement as e1
 import emails.send_community_weekly as e2
@@ -27,6 +29,19 @@ _CAMPAIGNS = {'e1': e1, 'e2': e2, 'e3': e3}
 # job, and a preview is admin-only.
 _EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
+# e2 is the only campaign on a cadence. e1 announces a specific thing and e3
+# targets a chosen cohort, so both are operator-run by design and say so.
+#
+# This exists because "last sent 24 Sep" with nothing beside it reads like a
+# healthy weekly rhythm whether or not anything will ever send the next one.
+# For months nothing did, and the row looked the same either way.
+def _schedule_for(campaign: str, now: datetime) -> dict | None:
+    if campaign != 'e2':
+        return None
+    return dict(enabled=COMMUNITY_WEEKLY_ENABLED,
+                next_send_at=next_send_at(now).isoformat()
+                if COMMUNITY_WEEKLY_ENABLED else None)
+
 _Q_LAST_SENT = """
     SELECT campaign, max(sent_at) AS at,
            (array_agg(campaign_id ORDER BY sent_at DESC))[1] AS cid,
@@ -42,12 +57,14 @@ def get_admin_growth_emails(s: t.SessionInfo):
     # recipient_count() opens its own transaction per campaign, so it must be
     # called OUTSIDE the block above: the api connection lock is not
     # reentrant and nesting would deadlock the request.
+    now = datetime.now(timezone.utc)
     out = []
     for key, mod in _CAMPAIGNS.items():
         last = last_sent.get(key)
         out.append(dict(campaign=key, recipients=mod.recipient_count(),
                         last_sent_at=last['at'].isoformat() if last and last['at'] else None,
-                        last_campaign_id=last['cid'] if last else None, system=False))
+                        last_campaign_id=last['cid'] if last else None, system=False,
+                        schedule=_schedule_for(key, now)))
     # e4 (the member invite) and e5 (the card-went-live receipt) are sent by
     # the platform itself, not run from this admin screen: they have no
     # recipients()/recipient_count() module to ask, so their count comes
@@ -58,7 +75,8 @@ def get_admin_growth_emails(s: t.SessionInfo):
         last = last_sent.get(key)
         out.append(dict(campaign=key, recipients=int(last['n']) if last else 0,
                         last_sent_at=last['at'].isoformat() if last and last['at'] else None,
-                        last_campaign_id=last['cid'] if last else None, system=True))
+                        last_campaign_id=last['cid'] if last else None, system=True,
+                        schedule=None))
     return dict(campaigns=out)
 
 @apost('/admin/growth/emails/<campaign>/preview')

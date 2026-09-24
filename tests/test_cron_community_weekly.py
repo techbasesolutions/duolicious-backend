@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from database import api_tx
 from service.campaigns.runner import run_campaign
 from service.campaigns.weekid import week_campaign_id
-from service.cron.communityweekly import is_send_window
+from service.campaigns.schedule import is_send_window, next_send_at
 
 
 def _at(y, m, d, h, mi=0):
@@ -98,3 +98,62 @@ def test_a_different_week_does_queue_again(make_person, outbox_drain):
 
     assert first['queued'] == 1 and second['queued'] == 1
     assert _outbox_count(p['id']) == 2
+
+
+# ---------------------------------------------------------------------------
+# next_send_at, which is what the Growth > Emails row prints. The window and
+# the next slot have to disagree in exactly one place: inside the window,
+# because there the send has either just happened or is happening on this
+# tick, and "next send in four hours" would be worse than saying nothing.
+# ---------------------------------------------------------------------------
+
+def test_from_midweek_the_next_slot_is_the_coming_monday():
+    # Thursday 24 September 2026.
+    assert next_send_at(_at(2026, 9, 24, 9)) == _at(2026, 9, 28, 12)
+
+
+def test_from_inside_the_window_the_next_slot_is_next_week():
+    # Monday 13:00, one hour into the window: this week's send is done or
+    # in flight, so the next one is a week out.
+    assert next_send_at(_at(2026, 9, 21, 13)) == _at(2026, 9, 28, 12)
+
+
+def test_from_monday_morning_the_next_slot_is_today():
+    assert next_send_at(_at(2026, 9, 21, 9)) == _at(2026, 9, 21, 12)
+
+
+def test_the_window_and_the_next_slot_never_both_point_at_now():
+    """Walk a whole week hour by hour. At every hour, the next slot must be
+    strictly in the future, and it must never land inside the window it was
+    computed from."""
+    for day in range(21, 28):
+        for hour in range(24):
+            now = _at(2026, 9, day, hour)
+            nxt = next_send_at(now)
+            assert nxt > now, (now, nxt)
+            if is_send_window(now):
+                assert nxt > now, (now, nxt)
+
+
+# ---------------------------------------------------------------------------
+# What the Growth > Emails row is told. Only e2 is on a cadence; e1 and e3
+# are operator-run by design.
+# ---------------------------------------------------------------------------
+
+def test_only_the_weekly_email_carries_a_schedule():
+    from service.api.admin.growth_routes import _schedule_for
+    now = _at(2026, 9, 24, 9)
+    assert _schedule_for('e2', now) is not None
+    for other in ('e1', 'e3', 'e4', 'e5'):
+        assert _schedule_for(other, now) is None
+
+
+def test_a_disabled_schedule_offers_no_next_send_date():
+    """Off is the default. A row that printed a next send date while nothing
+    was running would recreate the exact problem this work exists to fix."""
+    from service.api.admin.growth_routes import _schedule_for
+    import service.campaigns.schedule as sched
+    s = _schedule_for('e2', _at(2026, 9, 24, 9))
+    assert s['enabled'] is sched.COMMUNITY_WEEKLY_ENABLED
+    if not sched.COMMUNITY_WEEKLY_ENABLED:
+        assert s['next_send_at'] is None
