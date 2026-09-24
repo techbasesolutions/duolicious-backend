@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 from flask import request
@@ -130,12 +131,25 @@ def promote_user(person_id: int, level: str, country: Optional[str] = None) -> b
             return False
 
         if level == 'gold':
+            # The four latch columns are cleared in the same statement. They
+            # describe attempts that granted nothing, and a member who
+            # failed one check and passed the next would otherwise hold gold
+            # while the latch still read `requires_input`. Nothing consumes
+            # the column yet, so today it could only mislead an operator;
+            # the first consumer would read it naively and tell a verified
+            # member to go and try again, which is the exact class of lie
+            # this wave exists to remove. record_identity_outcome refuses to
+            # write once a member is gold, so nothing puts them back.
             tx.execute(
                 """
                 UPDATE person
-                   SET ahavah_verification_tier = %(level)s::ahavah_verification_tier,
-                       id_verified_country      = %(country)s,
-                       id_verified_at           = NOW()
+                   SET ahavah_verification_tier   = %(level)s::ahavah_verification_tier,
+                       id_verified_country        = %(country)s,
+                       id_verified_at             = NOW(),
+                       id_verification_status     = NULL,
+                       id_verification_status_at  = NULL,
+                       id_verification_session_id = NULL,
+                       id_verification_error_code = NULL
                  WHERE id = %(id)s
                 """,
                 dict(id=person_id, level=level, country=country),
@@ -202,37 +216,72 @@ def record_identity_outcome(
     *,
     session_id: Optional[str] = None,
     error_code: Optional[str] = None,
+    event_at: Optional[datetime] = None,
 ) -> bool:
     """Stores the last thing Stripe told us about this member's ID check.
 
-    Returns True if a row was written. False means the member does not
-    exist, or they are already gold.
+    Returns True if this was NEWS: a member who exists, who is not already
+    gold, whose stored outcome this event actually changes, and whose
+    stored outcome is not already newer than this event. False for anything
+    else, including a redelivery of an event we have already recorded.
 
-    Gold is terminal for this latch. Stripe redelivers events and they can
-    arrive out of order, so without that guard a late `requires_input`
-    would tell a member who is already verified to go and try again, which
-    is the exact class of lie this wave exists to remove. The tier is never
-    read or changed here: this function only ever writes these four
-    columns.
+    That definition is load bearing. Stripe's webhook delivery is at least
+    once, it documents that an event may arrive more than once, and this
+    route deliberately answers 500 on a failed write so that Stripe retries
+    it. An unconditional write reported True on every one of those
+    deliveries, and the caller notifies on True, so one blurry document
+    produced "Your ID check needs another try" as many times as Stripe felt
+    like sending the event. Letting Stripe retry is only safe when the
+    retry is idempotent from the member's point of view, so the write
+    reports a transition rather than a write.
 
-    `error_code` is overwritten on every outcome, including with None. A
-    code left over from the previous attempt would send an operator after
-    the wrong thing.
+    Three guards, all in the one statement:
+
+      * gold is terminal. Stripe redelivers and can deliver out of order,
+        so without this a late `requires_input` would tell a member who is
+        already verified to go and try again.
+      * the outcome has to differ. Same status and same session is the same
+        news, however many times it arrives.
+      * the stored outcome must not already be newer. Stripe does not
+        guarantee ordering, so a late `created` or `processing` could
+        otherwise overwrite a `requires_input` that is the actionable
+        truth. The member has already been told at that point, so nothing
+        lies to them, but the operator record would be wrong.
+
+    `event_at` is the event's own `created` time, not the time we received
+    it, because that is the only ordering Stripe gives us. Unset falls back
+    to NOW(), which is at or after anything already stored and so never
+    blocks a write on its own.
+
+    The tier is never read or changed here: this function only ever writes
+    these four columns. `error_code` is overwritten on every outcome,
+    including with None. A code left over from the previous attempt would
+    send an operator after the wrong thing.
     """
     with api_tx() as tx:
         row = tx.execute(
             """
             UPDATE person
                SET id_verification_status     = %(status)s,
-                   id_verification_status_at  = NOW(),
+                   id_verification_status_at  = COALESCE(
+                       %(event_at)s::TIMESTAMPTZ, NOW()),
                    id_verification_session_id = %(session_id)s,
                    id_verification_error_code = %(error_code)s
              WHERE id = %(id)s
                AND ahavah_verification_tier <> 'gold'
+               AND (
+                   id_verification_status     IS DISTINCT FROM %(status)s
+                OR id_verification_session_id IS DISTINCT FROM %(session_id)s
+               )
+               AND (
+                   id_verification_status_at IS NULL
+                OR id_verification_status_at <= COALESCE(
+                       %(event_at)s::TIMESTAMPTZ, NOW())
+               )
             RETURNING id
             """,
-            dict(id=person_id, status=status,
-                 session_id=session_id, error_code=error_code),
+            dict(id=person_id, status=status, session_id=session_id,
+                 error_code=error_code, event_at=event_at),
         ).fetchone()
     return row is not None
 
@@ -435,10 +484,15 @@ def post_stripe_identity_webhook():
             user_id, status,
             session_id=obj.get('id'),
             error_code=error_code,
+            event_at=_event_time(event_data),
         )
         if not recorded:
-            # Either no such member, or they are already gold and this
-            # latch refuses to contradict a tier they earned.
+            # No such member, or they are already gold and this latch
+            # refuses to contradict a tier they earned, or this is a
+            # redelivery of something already recorded, or it is older than
+            # what is stored. `recorded` means "this is news", so the
+            # notification below fires once per outcome however many times
+            # Stripe sends it.
             logger.info(
                 'Stripe %s event recorded nothing for user %s', status, user_id)
         elif status in NOTIFIED_OUTCOMES:
@@ -449,6 +503,25 @@ def post_stripe_identity_webhook():
     # Unknown event types — return 200 so Stripe doesn't retry forever, but log.
     logger.info(f'Unhandled Stripe Identity event: {event_type}')
     return {'received': True, 'promoted': False}
+
+
+def _event_time(event_data: dict) -> Optional[datetime]:
+    """The event's own `created`, as a timestamp.
+
+    Stripe sends this as seconds since the epoch on every event. It is the
+    only ordering signal we get, because delivery order is not guaranteed
+    and receipt time says nothing about which of two events happened first.
+    Returns None when it is missing or unreadable, and the recorder then
+    falls back to NOW() rather than refusing the write: a missing timestamp
+    must never cost a member the record of what happened.
+    """
+    created = event_data.get('created')
+    if created is None:
+        return None
+    try:
+        return datetime.fromtimestamp(int(created), tz=timezone.utc)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
 
 
 def _coerce_int(v) -> Optional[int]:

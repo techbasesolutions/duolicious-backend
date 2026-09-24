@@ -141,6 +141,7 @@ def stripe_signed_event() -> Callable[..., SignedEvent]:
                last_verification_report: object | None = None,
                session_id: str = 'vs_test_session',
                last_error: dict | None = None,
+               created: int | None = None,
                secret: str = 'whsec_test') -> SignedEvent:
         # The top-level `"object": "event"` and inner
         # `"object": "identity.verification_session"` discriminators are
@@ -151,6 +152,12 @@ def stripe_signed_event() -> Callable[..., SignedEvent]:
             'id':      f'evt_test_{int(time.time() * 1000)}',
             'object':  'event',
             'type':    type,
+            # Seconds since the epoch, as Stripe sends it. It is the only
+            # ordering signal a webhook carries, so the recorder guards on
+            # it: delivery is at least once and out of order, and a late
+            # `created` must not overwrite a `requires_input` the member has
+            # already been told about.
+            'created': int(time.time()) if created is None else created,
             'data': {
                 'object': {
                     'object':           'identity.verification_session',

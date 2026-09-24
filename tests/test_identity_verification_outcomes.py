@@ -15,6 +15,8 @@ webhook still answers 2xx for everything Stripe can send it, and that the
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 
 import service.identity_verification as iv
@@ -469,6 +471,155 @@ def test_the_verified_path_still_notifies_with_the_tier_email(
 
 
 # ---------------------------------------------------------------------------
+# Stripe delivers at least once, so one outcome is one message
+# ---------------------------------------------------------------------------
+
+def test_a_redelivered_requires_input_notifies_the_member_only_once(
+    client, wired, make_person, stripe_signed_event,
+):
+    """Stripe documents that an event may arrive more than once, and this
+    route answers 500 on a failed write precisely so that Stripe retries
+    it. Letting Stripe retry is only safe when the retry is idempotent from
+    the member's point of view. The write was unconditional, so it reported
+    True on every delivery and the member was told "Your ID check needs
+    another try" once per delivery for one blurry document."""
+    person = make_person()
+    now = int(time.time())
+
+    responses = [
+        _post(
+            client, stripe_signed_event,
+            type='identity.verification_session.requires_input',
+            metadata={'user_id': str(person['id'])},
+            session_id='vs_redelivered',
+            last_error=LAST_ERROR,
+            created=now,
+        )
+        for _ in range(3)
+    ]
+
+    assert [r.status_code for r in responses] == [200, 200, 200]
+    # `recorded` means "this is news", which is the honest meaning for a key
+    # the response already exposes.
+    assert [r.get_json()['recorded'] for r in responses] == [True, False, False]
+    assert len(wired) == 1, 'one outcome, one message'
+    assert _identity_row(person['id'])['status'] == 'requires_input'
+
+
+def test_a_second_check_that_also_needs_input_does_notify(
+    client, wired, make_person, stripe_signed_event,
+):
+    """The control for the test above. A member who tries again and needs
+    input again has news: same status, different session."""
+    person = make_person()
+    now = int(time.time())
+
+    _post(client, stripe_signed_event,
+          type='identity.verification_session.requires_input',
+          metadata={'user_id': str(person['id'])},
+          session_id='vs_attempt_one', last_error=LAST_ERROR, created=now)
+    _post(client, stripe_signed_event,
+          type='identity.verification_session.requires_input',
+          metadata={'user_id': str(person['id'])},
+          session_id='vs_attempt_two', last_error=LAST_ERROR, created=now + 60)
+
+    assert len(wired) == 2
+    assert _identity_row(person['id'])['session_id'] == 'vs_attempt_two'
+
+
+def test_a_late_in_flight_event_does_not_overwrite_requires_input(
+    client, wired, make_person, stripe_signed_event,
+):
+    """Stripe does not guarantee ordering. A `created` or `processing` that
+    arrives after the `requires_input` it precedes would otherwise
+    overwrite the one outcome the member can act on. The member has already
+    been told at that point, so nothing lies to them, but the operator
+    record would be wrong."""
+    person = make_person()
+    now = int(time.time())
+
+    _post(client, stripe_signed_event,
+          type='identity.verification_session.requires_input',
+          metadata={'user_id': str(person['id'])},
+          session_id='vs_out_of_order', last_error=LAST_ERROR, created=now)
+
+    late = _post(client, stripe_signed_event,
+                 type='identity.verification_session.created',
+                 metadata={'user_id': str(person['id'])},
+                 session_id='vs_out_of_order', created=now - 120)
+
+    assert late.status_code == 200
+    assert late.get_json()['recorded'] is False
+    assert _identity_row(person['id'])['status'] == 'requires_input'
+
+
+def test_a_genuinely_newer_event_still_overwrites(
+    client, wired, make_person, stripe_signed_event,
+):
+    """The control. A member who starts a new check must not be left
+    carrying last week's requires_input."""
+    person = make_person()
+    now = int(time.time())
+
+    _post(client, stripe_signed_event,
+          type='identity.verification_session.requires_input',
+          metadata={'user_id': str(person['id'])},
+          session_id='vs_old_attempt', last_error=LAST_ERROR, created=now)
+
+    _post(client, stripe_signed_event,
+          type='identity.verification_session.processing',
+          metadata={'user_id': str(person['id'])},
+          session_id='vs_new_attempt', created=now + 300)
+
+    row = _identity_row(person['id'])
+    assert row['status'] == 'processing'
+    assert row['session_id'] == 'vs_new_attempt'
+
+
+# ---------------------------------------------------------------------------
+# Passing on the retry clears the latch
+# ---------------------------------------------------------------------------
+
+def test_a_gold_promotion_clears_the_retry_latch(
+    client, monkeypatch, wired, make_person, stripe_signed_event,
+):
+    """A member whose first check needed another try and whose second one
+    passed would otherwise hold gold while the latch still read
+    `requires_input`. Nothing consumes the column yet, so today it could
+    only mislead an operator; the first consumer would read it naively and
+    tell a verified member to go and try again."""
+    person = make_person()
+
+    _post(client, stripe_signed_event,
+          type='identity.verification_session.requires_input',
+          metadata={'user_id': str(person['id'])},
+          session_id='vs_first_try', last_error=LAST_ERROR)
+    assert _identity_row(person['id'])['status'] == 'requires_input'
+
+    class _Report:
+        @staticmethod
+        def retrieve(report_id):
+            return {'id': report_id, 'document': {'issuing_country': 'BB'}}
+
+    import stripe
+    monkeypatch.setattr(stripe.identity, 'VerificationReport', _Report)
+
+    _post(client, stripe_signed_event,
+          type='identity.verification_session.verified',
+          metadata={'user_id': str(person['id'])},
+          session_id='vs_second_try',
+          last_verification_report='vr_second_try')
+
+    row = _identity_row(person['id'])
+    assert row['tier'] == 'gold'
+    assert row['country'] == 'BB'
+    assert row['status'] is None
+    assert row['status_at'] is None
+    assert row['session_id'] is None
+    assert row['error_code'] is None
+
+
+# ---------------------------------------------------------------------------
 # The recorder itself
 # ---------------------------------------------------------------------------
 
@@ -495,3 +646,14 @@ def test_record_identity_outcome_reports_when_it_wrote_nothing(make_person):
 
     assert iv.record_identity_outcome(person['id'], 'canceled') is False
     assert iv.record_identity_outcome(2147483600, 'canceled') is False
+
+
+def test_record_identity_outcome_reports_a_repeat_as_no_news(make_person):
+    """The same outcome for the same session, twice, is one piece of news
+    however many times Stripe sends it."""
+    person = make_person()
+
+    assert iv.record_identity_outcome(
+        person['id'], 'requires_input', session_id='vs_same') is True
+    assert iv.record_identity_outcome(
+        person['id'], 'requires_input', session_id='vs_same') is False
