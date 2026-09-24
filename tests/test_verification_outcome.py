@@ -172,3 +172,44 @@ def test_the_newest_job_row_wins(make_person):
     assert row['status'] == 'queued'
     assert row['message'] == 'New attempt'
     assert row['outcome'] == 'pending'
+
+
+# --- what the member is allowed to read as a reason ------------------------
+
+def test_the_three_accusing_reasons_never_reach_the_member():
+    """The classifier can conclude a submission was edited, faked or a
+    screenshot. Each of those calls a member dishonest on the strength of a
+    model's score, and the notification for the same event is already
+    forbidden from using those words. Saying it on screen and not in the
+    email was the inconsistency, so the screen stops saying it.
+    """
+    from service.person import member_safe_reason
+    from verification.messages import (
+        V_DID_NOT_PASS, V_EDITED, V_NOT_REAL, V_SCREENSHOT,
+    )
+
+    for accusing in (V_EDITED, V_NOT_REAL, V_SCREENSHOT):
+        assert member_safe_reason(accusing) == V_DID_NOT_PASS, accusing
+        # The substitute must not smuggle the accusation back in.
+        for word in ('edited', 'screenshot', 'real photo', 'fake'):
+            assert word not in member_safe_reason(accusing).lower()
+
+
+def test_the_actionable_reasons_are_left_alone():
+    """Withholding these would make a retry guesswork. They describe the
+    submission, not the member's honesty, and each one names the thing to do
+    differently."""
+    from service.person import member_safe_reason
+    from verification.messages import (
+        V_EYEBROW, V_MANY_PEOPLE, V_NO_PEOPLE, V_SMILING, V_THUMBS_DOWN,
+    )
+
+    for actionable in (
+            V_EYEBROW, V_MANY_PEOPLE, V_NO_PEOPLE, V_SMILING, V_THUMBS_DOWN):
+        assert member_safe_reason(actionable) == actionable, actionable
+
+
+def test_an_absent_reason_stays_absent():
+    from service.person import member_safe_reason
+    assert member_safe_reason(None) is None
+    assert member_safe_reason('') == ''

@@ -11,6 +11,11 @@ V_QUEUED = 'Waiting in line for the next selfie checker.'
 V_REUSED_SELFIE = 'You can’t submit the same selfie more than once.'
 V_SMILING = 'Our AI thinks you’re not smiling.'
 V_SOMETHING_WENT_WRONG = 'Something went wrong.'
+# Substituted at the API boundary for the three reasons that accuse the
+# member of faking the submission. Says what happened and offers the one
+# action they have, without naming a cause we cannot evidence. See
+# service/person.member_safe_reason.
+V_DID_NOT_PASS = 'This check did not pass. You can try again.'
 # Written by the cron when a run has died more times than it is allowed to be
 # retried. Nothing came back from the classifier at all, so there is no
 # reason to name and none is named. It says what happened and offers the one

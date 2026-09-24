@@ -70,8 +70,12 @@ from datetime import datetime, timezone
 from duoaudio import put_audio_in_object_store
 from service.person.aboutdiff import diff_addition_with_context
 from verification.messages import (
+    V_DID_NOT_PASS,
+    V_EDITED,
+    V_NOT_REAL,
     V_QUEUED,
     V_REUSED_SELFIE,
+    V_SCREENSHOT,
     V_UPLOADING_PHOTO,
 )
 
@@ -2768,6 +2772,32 @@ _VERIFICATION_UNFINISHED_STATUSES = frozenset({
 })
 
 
+# Three of the classifier's reasons accuse the member of faking the
+# submission, on the strength of a model's score. We cannot stand behind
+# any of them, and the notification for the same event is already forbidden
+# from using these words (tests/test_verification_notifies.py). Saying it on
+# screen and not in the email is the inconsistency, so the screen stops.
+#
+# The rest are kept on purpose. "You are not smiling", "more than one person
+# in your photo" and the gesture prompts tell a member exactly what to do
+# differently, and withholding those would make a retry guesswork.
+#
+# The original string stays on verification_job.message for operators. Only
+# what reaches the member is substituted, and only here at the boundary.
+_ACCUSING_REASONS = {
+    V_EDITED,
+    V_NOT_REAL,
+    V_SCREENSHOT,
+}
+
+
+def member_safe_reason(message):
+    """The failure reason as a member should read it, or None."""
+    if message in _ACCUSING_REASONS:
+        return V_DID_NOT_PASS
+    return message
+
+
 def verification_outcome(status, verification_level_name) -> str:
     """What the check actually concluded, in one client facing word.
 
@@ -2810,6 +2840,7 @@ def get_check_verification(s: t.SessionInfo):
         # meaning; other callers read this endpoint.
         row['outcome'] = verification_outcome(
             row.get('status'), row.get('verification_level_name'))
+        row['message'] = member_safe_reason(row.get('message'))
         return row
     return '', 400
 
