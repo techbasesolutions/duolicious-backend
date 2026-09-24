@@ -14,6 +14,7 @@ from service.cron.fireholbuilder import build_firehol_forever
 from service.cron.spotlightretention import spotlight_retention_forever
 from service.cron.spotlightcleanup import spotlight_cleanup_forever
 from service.cron.emailoutbox import email_outbox_forever
+from service.cron.communityweekly import community_weekly_forever
 import asyncio
 from http.server import SimpleHTTPRequestHandler
 from socketserver import TCPServer
@@ -92,6 +93,12 @@ async def main():
         # The single drain of the durable email outbox: the only place SMTP
         # is spoken anywhere in the system. Every 30 seconds.
         email_outbox_forever(),
+
+        # e2, the weekly community email. Monday 12:00 UTC, guarded by the
+        # week's campaign id so a repeat tick, a restart and an operator
+        # pressing Send in the same week all collide on one send. Off
+        # unless DUO_CRON_COMMUNITY_WEEKLY_ENABLED=1.
+        community_weekly_forever(),
 
         check_connections_forever(),
 
